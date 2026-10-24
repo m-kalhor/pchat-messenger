@@ -1,5 +1,5 @@
 'use strict';
-// E2E crypto path: P-256 ECDH -> HKDF-SHA256 -> AES-256-GCM, mirroring android/kotlin/Crypto.kt.
+// E2E crypto path: P-256 ECDH -> HKDF-SHA256 -> AES-256-GCM, mirroring android/app/src/main/java/com/pchat/app/Crypto.kt.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const C = require('./helpers/pchat-crypto');
 
 test('Crypto.kt still uses the parameters this port mirrors', () => {
-  const kt = fs.readFileSync(path.join(__dirname, '..', 'android', 'kotlin', 'Crypto.kt'), 'utf8');
+  const kt = fs.readFileSync(path.join(__dirname, '..', 'android', 'app', 'src', 'main', 'java', 'com', 'pchat', 'app', 'Crypto.kt'), 'utf8');
   for (const s of [
     'ECGenParameterSpec("secp256r1")', 'KeyAgreement.getInstance("ECDH")', 'Mac.getInstance("HmacSHA256")',
     'SecretKeySpec(ByteArray(32), "HmacSHA256")', 'mac.update(1.toByte())', '"pchat-v1|" + listOf(a, b).sorted().joinToString("|")',

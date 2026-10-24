@@ -1,6 +1,6 @@
 'use strict';
 // Resumable chunked uploads (POST /api/uploads, PATCH with Upload-Offset) and Range downloads,
-// driven the same way android/kotlin/Engine.kt does it: encrypted 1 MiB chunks.
+// driven the same way android/app/src/main/java/com/pchat/app/Engine.kt does it: encrypted 1 MiB chunks.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');

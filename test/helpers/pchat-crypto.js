@@ -1,5 +1,5 @@
 'use strict';
-// Node port of android/kotlin/Crypto.kt (same algorithms, same byte layout).
+// Node port of android/app/src/main/java/com/pchat/app/Crypto.kt (same algorithms, same byte layout).
 // Keep the two in sync: if Crypto.kt changes, this file and test/crypto.test.js must change too.
 const crypto = require('node:crypto');
 
