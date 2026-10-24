@@ -36,7 +36,8 @@ function patch(tok, id, off, buf) {
       r.on('data', (d) => chunks.push(d));
       r.on('end', () => resolve({ status: r.statusCode, data: JSON.parse(Buffer.concat(chunks).toString()) }));
     });
-    req.on('error', (e) => { if (!answered) reject(e); });
+    // the server may close before we finish writing (EPIPE); give its already-sent answer a moment to be parsed
+    req.on('error', (e) => setTimeout(() => { if (!answered) reject(e); }, 500));
     req.end(buf);
   });
 }
@@ -118,10 +119,11 @@ test('wrong offset gets 409 with the real offset so the client can resync', asyn
   const id = c.data.uploadId;
   t.after(() => abandon(id));
   await patch(alice, id, 0, Buffer.alloc(MB, 1));
-  let r = await patch(alice, id, 0, Buffer.alloc(MB, 1));
+  // small bodies: the server answers 409 without reading the body, so keep it within socket buffers
+  let r = await patch(alice, id, 0, Buffer.alloc(16, 1));
   assert.equal(r.status, 409);
   assert.deepEqual(r.data, { error: 'offset_mismatch', offset: MB });
-  r = await patch(alice, id, 2 * MB, Buffer.alloc(MB, 1));
+  r = await patch(alice, id, 2 * MB, Buffer.alloc(16, 1));
   assert.equal(r.status, 409);
   assert.equal(r.data.offset, MB);
 });
@@ -171,7 +173,7 @@ test('a second concurrent PATCH on the same upload is refused as busy', async ()
   req.on('error', () => { });
   req.write(Buffer.alloc(64 * 1024));
   await new Promise((r) => setTimeout(r, 150));
-  const r = await patch(alice, id, 0, Buffer.alloc(MB));
+  const r = await patch(alice, id, 0, Buffer.alloc(16));
   assert.equal(r.status, 409);
   assert.equal(r.data.error, 'busy');
   req.destroy();
