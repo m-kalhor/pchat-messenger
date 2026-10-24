@@ -1,0 +1,16 @@
+/* Setup guide (also served over plain http before the certificate is trusted). */
+:root { --bg: #fff; --fg: #111418; --fg2: #6b7480; --card: #f1f3f6; --accent: #1e88e5; color-scheme: light dark; }
+@media (prefers-color-scheme: dark) { :root { --bg: #0e1621; --fg: #e9edf1; --fg2: #8b98a5; --card: #17212b; --accent: #3d9bf0; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.7 -apple-system, BlinkMacSystemFont, "Vazirmatn", Tahoma, sans-serif; }
+main { max-width: 620px; margin: 0 auto; padding: calc(env(safe-area-inset-top) + 20px) 16px calc(env(safe-area-inset-bottom) + 32px); }
+header { text-align: center; }
+header img { width: 72px; height: 72px; border-radius: 18px; }
+h1 { margin: 8px 0 0; font-size: 24px; }
+.lead { color: var(--fg2); margin-top: 4px; }
+ol { padding: 0; margin: 20px 0; list-style: none; counter-reset: s; }
+li { counter-increment: s; background: var(--card); border-radius: 14px; padding: 12px 14px 12px 14px; margin-bottom: 10px; position: relative; padding-right: 52px; }
+li::before { content: counter(s, persian); position: absolute; right: 14px; top: 12px; width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: #fff; text-align: center; line-height: 28px; font-weight: 700; }
+b { font-weight: 700; }
+.btn { display: inline-block; margin-top: 8px; background: var(--accent); color: #fff; text-decoration: none; padding: 10px 16px; border-radius: 12px; font-weight: 700; }
+.note { color: var(--fg2); font-size: 14px; }
+.fp { direction: ltr; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; word-break: break-all; background: var(--card); padding: 8px 10px; border-radius: 10px; }

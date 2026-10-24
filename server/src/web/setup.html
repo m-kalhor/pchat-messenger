@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="stylesheet" href="/setup.css">
+<title>نصب سپن روی آیفون</title>
+</head>
+<body>
+<main>
+<header>
+  <img src="/icon-180.png" alt="">
+  <h1>نصب سپن روی آیفون</h1>
+  <p class="lead">این کار فقط یک بار لازم است و حدود دو دقیقه طول می‌کشد.</p>
+</header>
+<ol>
+  <li>این صفحه را حتماً در <b>Safari</b> باز کنید (نه کروم یا مرورگر دیگر).</li>
+  <li>گواهی امنیتی سپن را دریافت کنید و در پیغام آیفون <b>Allow</b> را بزنید.<br>
+    <a class="btn" href="/sepan-ca.mobileconfig">دریافت گواهی سپن</a></li>
+  <li>به <b>Settings</b> بروید. بالای صفحه گزینهٔ <b>Profile Downloaded</b> را بزنید (یا از مسیر General ← VPN &amp; Device Management) و <b>Install</b> را بزنید.</li>
+  <li>در <b>Settings ← General ← About ← Certificate Trust Settings</b> کلید کنار <b>Sepan Root CA</b> را روشن کنید.</li>
+  <li>حالا سپن را باز کنید و وارد حساب خود شوید:<br>
+    <a class="btn" href="/" id="open">باز کردن سپن</a></li>
+  <li>در Safari دکمهٔ اشتراک‌گذاری <b>⬆️</b> و بعد <b>Add to Home Screen</b> را بزنید تا سپن مثل یک برنامه روی صفحهٔ اصلی بیاید. از این به بعد سپن را از همان آیکون باز کنید.</li>
+</ol>
+<p class="note">اگر در مرحلهٔ ۵ پیغام «اتصال امن نیست» دیدید، مرحلهٔ ۴ انجام نشده است.</p>
+<p class="note">برای اطمینان، اثر انگشت گواهی باید با چیزی که مدیر سرور به شما داده یکی باشد:</p>
+<p class="fp">{{CA_FINGERPRINT}}</p>
+<p class="note">این گواهی فقط برای اتصال امن به سرور سپن است. پیام‌ها جدا از آن، سرتاسری رمزنگاری می‌شوند. هر وقت خواستید می‌توانید آن را از Settings ← General ← VPN &amp; Device Management حذف کنید.</p>
+</main>
+</body>
+</html>

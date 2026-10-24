@@ -14,7 +14,7 @@ async function startServer(env = {}) {
   const app = extractApp();
   const port = await freePort();
   const fullEnv = {
-    ...process.env, PLAIN_HTTP: '1', PORT: String(port), DATA_DIR: app.dataDir, ADMIN_DISABLE: '1', MIN_FREE_MB: '0',
+    ...process.env, PLAIN_HTTP: '1', PORT: String(port), DATA_DIR: app.dataDir, ADMIN_DISABLE: '1', WEB_DISABLE: '1', MIN_FREE_MB: '0',
     NODE_NO_WARNINGS: '1', ...env,
   };
   const child = spawn(process.execPath, [path.join(app.appDir, 'server.js')], { env: fullEnv, stdio: ['ignore', 'pipe', 'pipe'] });
