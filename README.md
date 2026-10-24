@@ -39,9 +39,8 @@
 | مسیر | محتوا |
 |---|---|
 | `android/` | اپ اندروید (Kotlin، Jetpack Compose، فارسی و راست‌به‌چپ) |
-| `server/install.sh` | نصب سرور پایه (Node.js، سرویس systemd، فایروال، fail2ban) |
-| `server/install-calls.sh` | نصب سرور تماس (coturn) |
-| `server/upgrade-a.sh` | پنل مدیریت، پروفایل، ماتریس دید، آپلود تکه‌ای و پشتیبان‌گیری |
+| `server/src/` | کد سرور Node.js (API، پنل مدیریت، پشتیبان‌گیری، ابزار `msgadmin`) |
+| `server/install.sh` | نصب و ارتقای سرور: کپی کد، سرویس systemd، گواهی، coturn برای تماس و پنل مدیریت |
 | `docs/TUTORIAL.md` | آموزش کامل نصب و استفاده |
 | `docs/ARCHITECTURE.md` | جزئیات فنی، رمزنگاری و API |
 | `CHANGELOG.md` | تاریخچه‌ی نسخه‌ها |
