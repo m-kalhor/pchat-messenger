@@ -210,6 +210,15 @@ object Engine {
         tick.value++
     }
 
+    /** Re-reads contacts and groups in the background, so a group the admin added while a "refresh" event was missed still shows up. */
+    fun refreshDirectory() {
+        if (Api.token == null) return
+        scope.launch {
+            try { refreshUsers() } catch (e: Exception) { }
+            try { refreshGroups() } catch (e: Exception) { }
+        }
+    }
+
     private fun pubOf(u: String): String? =
         if (u == me) identity?.pubB64 else users.value.firstOrNull { it.username == u }?.pubkey
 

@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,6 +24,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
@@ -53,7 +55,7 @@ class MainActivity : ComponentActivity() {
         deepLink.value = intent.getStringExtra("convo")
     }
 
-    override fun onStart() { super.onStart(); Engine.appVisible = true }
+    override fun onStart() { super.onStart(); Engine.appVisible = true; Engine.refreshDirectory() }
     override fun onStop() { super.onStop(); Engine.appVisible = false }
 }
 
@@ -87,6 +89,21 @@ fun App(deepLink: MutableState<String?>) {
             act.setShowWhenLocked(call.phase != CallPhase.IDLE)
             act.setTurnScreenOn(call.phase == CallPhase.INCOMING)
         }
+        // never let the screen time out during a call (a video call used to go black)
+        if (act != null) {
+            if (call.phase != CallPhase.IDLE) act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else act.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // voice call held to the ear: switch the screen off with the proximity sensor, like Telegram
+    val earpiece = call.phase != CallPhase.IDLE && call.phase != CallPhase.INCOMING && !call.video && !call.speaker
+    DisposableEffect(earpiece) {
+        val pm = ctx.getSystemService(PowerManager::class.java)
+        val lock = if (earpiece && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK))
+            pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "pchat:proximity").apply { setReferenceCounted(false); acquire(4 * 3600 * 1000L) }
+        else null
+        onDispose { try { lock?.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } catch (e: Exception) { } }
     }
 
     LaunchedEffect(deepLink.value) {
