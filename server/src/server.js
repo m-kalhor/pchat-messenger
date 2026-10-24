@@ -570,6 +570,9 @@ backup.startScheduler();
 const ctx = { kick, refreshAll, profileChanged, onlineUsers, isOnline };
 require('./adminpanel').start(ctx, tlsOptions);
 
+// ---------- web version / PWA for iPhone (own port and certificate, same API) ----------
+require('./web').start(handler, { plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST });
+
 server.listen(PORT, '0.0.0.0', () => console.log(`messenger listening on ${PORT} (${PLAIN ? 'PLAIN HTTP - test only' : 'TLS'})`));
 for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { server.close(); process.exit(0); });
 module.exports = { ctx };
