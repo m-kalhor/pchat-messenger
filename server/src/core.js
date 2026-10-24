@@ -53,6 +53,11 @@ function cleanDisplay(s) {
   return String(s || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
 }
 
+/** Profile bio: up to 70 characters (like Telegram), one line breaks allowed at most as a space. */
+function cleanBio(s) {
+  return String(s || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
+}
+
 function createUser(username, display, catIds) {
   if (!NAME_RE.test(username) || username === 'all') throw new Error('invalid_username');
   if (q.user.get(username)) throw new Error('user_exists');
@@ -94,5 +99,5 @@ function createCategory(name) {
 
 module.exports = {
   NAME_RE, q, activeUser, groupsOf, membersOf, isMember, groupByKey, canDM, contacts, convoKey,
-  genPw, cleanDisplay, createUser, setUserCategories, resetPassword, deleteUser, createCategory,
+  genPw, cleanDisplay, cleanBio, createUser, setUserCategories, resetPassword, deleteUser, createCategory,
 };

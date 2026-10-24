@@ -45,12 +45,12 @@ function session(req) {
 }
 
 function stateDump(ctx) {
-  const users = db.prepare('SELECT username, display_name, disabled, created, avatar_ver FROM users ORDER BY username').all();
+  const users = db.prepare('SELECT username, display_name, bio, disabled, created, avatar_ver FROM users ORDER BY username').all();
   const uc = db.prepare('SELECT username, category_id FROM user_categories').all();
   const cats = db.prepare('SELECT c.id, c.name, c.gkey, (SELECT COUNT(*) FROM user_categories WHERE category_id=c.id) AS count FROM categories c ORDER BY c.id').all();
   return {
     users: users.map((u) => ({
-      username: u.username, display_name: u.display_name || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0,
+      username: u.username, display_name: u.display_name || '', bio: u.bio || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0,
       online: ctx.isOnline(u.username), categories: uc.filter((x) => x.username === u.username).map((x) => x.category_id),
     })),
     categories: cats,

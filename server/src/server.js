@@ -49,7 +49,10 @@ const q = {
   setOff: db.prepare('UPDATE uploads SET off=?, ts=? WHERE id=?'),
   delUp: db.prepare('DELETE FROM uploads WHERE id=?'),
   setName: db.prepare('UPDATE users SET display_name=? WHERE username=?'),
-  bumpAvatar: db.prepare('UPDATE users SET avatar_ver=avatar_ver+1 WHERE username=?'),
+  setBio: db.prepare('UPDATE users SET bio=? WHERE username=?'),
+  // avatar_ver > 0 = has a photo; removing it flips the sign so the next upload still gets a fresh version
+  bumpAvatar: db.prepare('UPDATE users SET avatar_ver=abs(avatar_ver)+1 WHERE username=?'),
+  dropAvatar: db.prepare('UPDATE users SET avatar_ver=-abs(avatar_ver) WHERE username=?'),
   setPin: db.prepare('INSERT INTO pins(convo,message_id,by,ts) VALUES(?,?,?,?) ON CONFLICT(convo) DO UPDATE SET message_id=excluded.message_id, by=excluded.by, ts=excluded.ts'),
   delPin: db.prepare('DELETE FROM pins WHERE convo=?'),
   pin: db.prepare('SELECT * FROM pins WHERE convo=?'),
@@ -133,7 +136,7 @@ function refreshAll() { for (const u of onlineUsers()) emit(u, 'refresh', {}); }
 function profileChanged(username) {
   const u = core.q.user.get(username);
   if (!u) return;
-  broadcastTo(audienceOf(username), 'profile', { username, display_name: u.display_name, avatar_ver: u.avatar_ver });
+  broadcastTo(audienceOf(username), 'profile', { username, display_name: u.display_name, avatar_ver: u.avatar_ver, bio: u.bio || null });
 }
 function kick(username) {
   const set = clients.get(username);
@@ -156,7 +159,7 @@ function resolveTarget(user, target) {
 function pinKey(user, tr) { return tr.type === 'group' ? tr.cat.gkey : core.convoKey(user, tr.peer); }
 
 function publicUser(u, extra) {
-  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, online: isOnline(u.username), avatar_ver: u.avatar_ver, ...extra };
+  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, online: isOnline(u.username), avatar_ver: u.avatar_ver, bio: u.bio || null, ...extra };
 }
 
 function replay(user, since) {
@@ -212,7 +215,7 @@ async function route(req, res) {
 
   if (p === '/api/me' && req.method === 'GET') {
     const u = core.q.user.get(user);
-    return send(res, 200, { username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver });
+    return send(res, 200, { username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null });
   }
 
   if (p === '/api/users' && req.method === 'GET') {
@@ -234,10 +237,11 @@ async function route(req, res) {
 
   if (p === '/api/profile' && req.method === 'POST') {
     const b = await readJson(req, 4096);
-    const name = core.cleanDisplay(b.display_name);
-    q.setName.run(name || null, user);
+    if (typeof b.display_name === 'string') q.setName.run(core.cleanDisplay(b.display_name) || null, user);
+    if (typeof b.bio === 'string') q.setBio.run(core.cleanBio(b.bio) || null, user);
     profileChanged(user);
-    return send(res, 200, { display_name: name || null });
+    const u = core.q.user.get(user);
+    return send(res, 200, { display_name: u.display_name || null, bio: u.bio || null });
   }
 
   if (p === '/api/avatar' && req.method === 'POST') {
@@ -249,6 +253,13 @@ async function route(req, res) {
     fs.writeFileSync(dest + '.tmp', clean);
     fs.renameSync(dest + '.tmp', dest);
     q.bumpAvatar.run(user);
+    profileChanged(user);
+    return send(res, 200, { avatar_ver: core.q.user.get(user).avatar_ver });
+  }
+
+  if (p === '/api/avatar' && req.method === 'DELETE') {
+    try { fs.unlinkSync(path.join(AVATARS_DIR, user + '.webp')); } catch { }
+    q.dropAvatar.run(user);
     profileChanged(user);
     return send(res, 200, { avatar_ver: core.q.user.get(user).avatar_ver });
   }

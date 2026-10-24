@@ -172,7 +172,7 @@ function users(box){
       x.addEventListener('change',function(){pendUser(u.username,'categories',ids());td.className=x.checked!==(u.categories.indexOf(c.id)>=0)?'chg':'';});
       return td;});
     return h('tr',null,
-      h('td',null,h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null),
+      h('td',{title:u.bio||''},h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null,u.bio?h('div',{class:'mut',style:'font-size:12px;white-space:normal;max-width:220px'},u.bio):null),
       h('td',null,name),cells,
       h('td',null,
         h('button',{class:'sec',onclick:guard(async function(){if(!confirm('رمز جدید برای '+u.username+' ساخته شود؟'))return;var j=await api('POST','/users/'+u.username+'/reset');prompt('رمز جدید '+u.username+':',j.password);await reload();})},'ریست رمز'),' ',

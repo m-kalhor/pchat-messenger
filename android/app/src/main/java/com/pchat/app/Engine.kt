@@ -301,10 +301,11 @@ object Engine {
                 val u = o.getString("username")
                 val dn = if (o.isNull("display_name")) null else o.getString("display_name")
                 val ver = o.optInt("avatar_ver", 0)
+                val bio = if (o.isNull("bio")) null else o.optString("bio", "").ifEmpty { null }
                 if (users.value.none { it.username == u }) {
                     try { refreshUsers() } catch (e: Exception) { }
                 } else {
-                    users.value = users.value.map { if (it.username == u) it.copy(displayName = dn, avatarVer = ver) else it }
+                    users.value = users.value.map { if (it.username == u) it.copy(displayName = dn, avatarVer = ver, bio = bio) else it }
                 }
                 tick.value++
             }
@@ -482,10 +483,19 @@ object Engine {
         }
     }
 
-    suspend fun saveDisplayName(name: String): String? = withContext(Dispatchers.IO) {
+    suspend fun saveProfile(name: String, bio: String): String? = withContext(Dispatchers.IO) {
         try {
-            Api.setDisplayName(name.trim())
+            Api.setProfile(name.trim(), bio.trim())
             refreshUsers()
+            null
+        } catch (e: Exception) { errText(e) }
+    }
+
+    suspend fun removeAvatar(): String? = withContext(Dispatchers.IO) {
+        try {
+            val ver = Api.deleteAvatar()
+            users.value = users.value.map { if (it.username == me) it.copy(avatarVer = ver) else it }
+            tick.value++
             null
         } catch (e: Exception) { errText(e) }
     }

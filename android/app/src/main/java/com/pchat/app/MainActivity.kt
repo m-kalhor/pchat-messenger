@@ -77,6 +77,7 @@ fun App(deepLink: MutableState<String?>) {
     val ctx = LocalContext.current
     val logged by Engine.loggedIn.collectAsState()
     var convo by remember { mutableStateOf<String?>(null) }
+    var settings by remember { mutableStateOf(false) }
     var askBattery by remember { mutableStateOf(false) }
 
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -117,10 +118,12 @@ fun App(deepLink: MutableState<String?>) {
             if (!pm.isIgnoringBatteryOptimizations(ctx.packageName) && !Engine.prefs.getBoolean("battery_asked", false)) askBattery = true
         } else {
             convo = null
+            settings = false
             ctx.stopService(Intent(ctx, MessengerService::class.java))
         }
     }
     BackHandler(enabled = convo != null && call.phase == CallPhase.IDLE) { convo = null }
+    BackHandler(enabled = settings && convo == null && call.phase == CallPhase.IDLE) { settings = false }
 
     if (!logged) {
         LoginScreen()
@@ -128,7 +131,8 @@ fun App(deepLink: MutableState<String?>) {
         CallScreen()
     } else {
         val c = convo
-        if (c == null) ChatListScreen(onOpen = { convo = it }, onLogout = { Engine.logout() })
+        if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })
+        else if (c == null) ChatListScreen(onOpen = { convo = it }, onSettings = { settings = true }, onLogout = { Engine.logout() })
         else ChatScreen(c, onBack = { convo = null })
     }
 

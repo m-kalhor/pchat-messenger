@@ -203,6 +203,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
         peer?.online == true -> "آنلاین"
         else -> "آفلاین"
     }
+    var showProfile by remember { mutableStateOf(false) }
     val canSend = isGroup || peer == null || peer.dm || allMsgs.any { !it.mine }
     val pinnedId = pins[convo]
     val pinnedMsg = remember(pinnedId, tick) { pinnedId?.let { Engine.db.get(it) } }
@@ -222,7 +223,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                             placeholder = { Text("جستجو در این گفتگو…") }, modifier = Modifier.fillMaxWidth()
                         )
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !isGroup) { showProfile = true }) {
                             Avatar(convo, false, 38)
                             Spacer(Modifier.width(10.dp))
                             Column {
@@ -374,6 +375,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     }
 
     viewer?.let { ImageViewer(it) { viewer = null } }
+    if (showProfile) ContactProfileDialog(convo) { showProfile = false }
     if (showKeys) KeysDialog(if (isGroup) (group?.members ?: users.map { it.username }).filter { it != Engine.me } else listOf(convo)) { showKeys = false }
 }
 

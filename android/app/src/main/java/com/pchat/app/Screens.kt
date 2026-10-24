@@ -146,14 +146,12 @@ fun LoginScreen() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
+fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: () -> Unit) {
     val tick by Engine.tick.collectAsState()
     val users by Engine.users.collectAsState()
     val connected by Engine.connected.collectAsState()
     val rows = remember(tick, users) { Engine.summaries() }
     var menu by remember { mutableStateOf(false) }
-    var showKeys by remember { mutableStateOf(false) }
-    var showProfile by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -167,8 +165,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("پروفایل من") }, onClick = { menu = false; showProfile = true })
-                        DropdownMenuItem(text = { Text("امنیت و اثرانگشت کلیدها") }, onClick = { menu = false; showKeys = true })
+                        DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
                         DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
                     }
                 }
@@ -207,8 +204,6 @@ fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
             }
         }
     }
-    if (showKeys) KeysDialog(users.map { it.username }.filter { it != Engine.me }) { showKeys = false }
-    if (showProfile) ProfileDialog { showProfile = false }
 }
 
 /** Shows key fingerprints so users can verify each other out-of-band (protects against a malicious server swapping keys). */
@@ -249,50 +244,3 @@ fun KeysDialog(contacts: List<String>, onClose: () -> Unit) {
     )
 }
 
-@Composable
-fun ProfileDialog(onClose: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    val users by Engine.users.collectAsState()
-    val self = users.firstOrNull { it.username == Engine.me }
-    var name by remember { mutableStateOf(self?.displayName ?: "") }
-    var busy by remember { mutableStateOf(false) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            busy = true; msg = null
-            scope.launch {
-                msg = Engine.saveAvatar(uri) ?: "عکس پروفایل به‌روز شد"
-                busy = false
-            }
-        }
-    }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("پروفایل من") },
-        text = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Box(Modifier.clickable(enabled = !busy) { pick.launch("image/*") }) { Avatar(Engine.me, false, 96) }
-                TextButton(onClick = { pick.launch("image/*") }, enabled = !busy) { Text("تغییر عکس") }
-                Spacer(Modifier.height(4.dp))
-                OutlinedTextField(
-                    value = name, onValueChange = { if (it.length <= 40) name = it }, singleLine = true,
-                    label = { Text("نام نمایشی") }, modifier = Modifier.fillMaxWidth()
-                )
-                Text("نام کاربری: ${Engine.me}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(top = 6.dp))
-                if (busy) { Spacer(Modifier.height(8.dp)); CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
-                msg?.let { Text(it, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = !busy, onClick = {
-                busy = true; msg = null
-                scope.launch {
-                    val e = Engine.saveDisplayName(name)
-                    busy = false
-                    if (e == null) onClose() else msg = e
-                }
-            }) { Text("ذخیره") }
-        },
-        dismissButton = { TextButton(onClick = onClose) { Text("بستن") } }
-    )
-}

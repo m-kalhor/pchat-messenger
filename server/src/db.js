@@ -41,6 +41,7 @@ const userCols = db.prepare('PRAGMA table_info(users)').all().map((r) => r.name)
 if (!userCols.includes('display_name')) db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
 if (!userCols.includes('avatar_ver')) db.exec('ALTER TABLE users ADD COLUMN avatar_ver INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('disabled')) db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('bio')) db.exec('ALTER TABLE users ADD COLUMN bio TEXT');
 
 function getSetting(key, def = null) {
   const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);

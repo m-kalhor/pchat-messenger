@@ -19,7 +19,7 @@ import javax.net.ssl.X509TrustManager
 
 data class UserInfo(
     val username: String, val pubkey: String?, val online: Boolean,
-    val displayName: String? = null, val avatarVer: Int = 0, val dm: Boolean = true
+    val displayName: String? = null, val avatarVer: Int = 0, val dm: Boolean = true, val bio: String? = null
 )
 data class GroupInfo(val key: String, val name: String, val members: List<String>)
 class TurnInfo(val urls: List<String>, val user: String, val cred: String, val expiresAt: Long)
@@ -31,7 +31,8 @@ fun parseUsers(raw: String): List<UserInfo> {
         val o = arr.getJSONObject(it)
         UserInfo(
             o.getString("username"), if (o.isNull("pubkey")) null else o.getString("pubkey"), o.getBoolean("online"),
-            if (o.isNull("display_name")) null else o.getString("display_name"), o.optInt("avatar_ver", 0), o.optBoolean("dm", true)
+            if (o.isNull("display_name")) null else o.getString("display_name"), o.optInt("avatar_ver", 0), o.optBoolean("dm", true),
+            if (o.isNull("bio")) null else o.optString("bio", "").ifEmpty { null }
         )
     }
 }
@@ -108,9 +109,12 @@ object Api {
     fun usersRaw(): String = exec(req("/api/users").get().build())
     fun groupsRaw(): String = exec(req("/api/groups").get().build())
 
-    fun setDisplayName(name: String) {
-        exec(req("/api/profile").post(JSONObject().put("display_name", name).toString().toRequestBody(JSON)).build())
+    fun setProfile(name: String, bio: String) {
+        exec(req("/api/profile").post(JSONObject().put("display_name", name).put("bio", bio).toString().toRequestBody(JSON)).build())
     }
+
+    /** Removes the profile photo. Returns the new (non-positive) avatar version. */
+    fun deleteAvatar(): Int = JSONObject(exec(req("/api/avatar").delete().build())).getInt("avatar_ver")
 
     /** body must be a WebP no larger than 512x512. Returns the new avatar version. */
     fun uploadAvatar(webp: ByteArray): Int =
