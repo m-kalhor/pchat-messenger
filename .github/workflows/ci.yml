@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-tests:
+    name: Server & crypto tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check shell scripts parse
+        run: for f in server/*.sh; do bash -n "$f"; done
+      - name: Run tests
+        run: npm test
+
+  android-build:
+    name: Android debug build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Find Gradle project
+        id: gradle
+        run: |
+          for d in . android; do
+            if [ -f "$d/gradlew" ]; then echo "dir=$d" >> "$GITHUB_OUTPUT"; exit 0; fi
+          done
+          echo "No Gradle wrapper committed yet (see android/SETUP.md); skipping the Android build."
+      - uses: actions/setup-java@v4
+        if: steps.gradle.outputs.dir
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        if: steps.gradle.outputs.dir
+      - name: assembleDebug
+        if: steps.gradle.outputs.dir
+        working-directory: ${{ steps.gradle.outputs.dir }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --stacktrace
+      - uses: actions/upload-artifact@v4
+        if: steps.gradle.outputs.dir
+        with:
+          name: app-debug
+          path: ${{ steps.gradle.outputs.dir }}/**/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn

@@ -6,3 +6,4 @@ build/
 .idea/
 *.zip
 .env
+/node_modules/
