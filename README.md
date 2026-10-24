@@ -52,6 +52,17 @@
 
 راهنمای قدم‌به‌قدم در [docs/TUTORIAL.md](docs/TUTORIAL.md) است.
 
+## تست‌ها
+تست‌ها با `node:test` و بدون هیچ وابستگی npm نوشته شده‌اند (Node.js 22 یا جدیدتر):
+```
+npm test
+```
+- `test/crypto.test.js`: مسیر رمزنگاری ECDH روی P-256، سپس HKDF و AES-256-GCM و رمزنگاری تکه‌ای فایل (نسخه‌ی Node از `Crypto.kt` در `test/helpers/pchat-crypto.js`)
+- `test/permissions.test.js`: ماتریس دید، پاسخ به کسی که اول پیام داده، گروه‌ها و کاربر غیرفعال
+- `test/uploads.test.js`: آپلود تکه‌ای و ادامه‌ی آن پس از قطع اتصال، دانلود با Range و سهمیه‌ی فضا
+
+تست‌ها همان کد سروری را اجرا می‌کنند که نصب می‌شود (`server/src/`). GitHub Actions این تست‌ها را روی هر PR اجرا می‌کند (`.github/workflows/ci.yml`) و ساخت اپ اندروید جداگانه در `.github/workflows/android.yml` انجام می‌شود.
+
 ## مخزن خصوصی
 این مخزن خصوصی است. کلید خصوصی یا رمزی داخل آن نیست؛ تنها گواهی عمومی سرور برای pin کردن در اپ قرار دارد.
 
