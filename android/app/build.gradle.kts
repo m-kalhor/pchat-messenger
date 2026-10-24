@@ -19,6 +19,10 @@ val serverHost = serverProp("pchat.serverHost")
 val serverPort = serverProp("pchat.serverPort").toIntOrNull()
     ?: error("pchat.serverPort must be a number")
 
+// One fixed signing key, so every new APK installs over the previous one. CI decodes it from the
+// SEPAN_KEYSTORE_B64 secret; without it (local builds) the usual per-machine debug key is used.
+val sepanKeystore = System.getenv("SEPAN_KEYSTORE")?.let { file(it) }?.takeIf { it.isFile }
+
 android {
     namespace = "com.pchat.app"
     compileSdk = 35
@@ -27,14 +31,26 @@ android {
         applicationId = "com.pchat.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.3.0"
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "SERVER_PORT", "$serverPort")
     }
 
+    signingConfigs {
+        if (sepanKeystore != null) create("sepan") {
+            storeFile = sepanKeystore
+            storePassword = System.getenv("SEPAN_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("SEPAN_KEY_ALIAS") ?: "sepan"
+            keyPassword = System.getenv("SEPAN_KEYSTORE_PASSWORD")
+        }
+    }
+
     buildTypes {
+        debug {
+            if (sepanKeystore != null) signingConfig = signingConfigs.getByName("sepan")
+        }
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")

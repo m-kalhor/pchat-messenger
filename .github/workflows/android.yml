@@ -21,6 +21,20 @@ jobs:
           distribution: temurin
           java-version: "17"
       - uses: gradle/actions/setup-gradle@v4
+      # fixed signing key (repo secrets), so a new APK installs over the old one without uninstalling
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.SEPAN_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SEPAN_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/sepan.jks"
+            echo "SEPAN_KEYSTORE=$RUNNER_TEMP/sepan.jks" >> "$GITHUB_ENV"
+            echo "SEPAN_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "Signing with the fixed Sepan key"
+          else
+            echo "::warning::SEPAN_KEYSTORE_B64 secret is not set: the APK is signed with a throwaway debug key and will not install over an older build"
+          fi
       - name: Build debug APK
         run: ./gradlew assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
