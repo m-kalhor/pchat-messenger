@@ -14,7 +14,7 @@ bash install.sh YOUR_IP          # سرور + گواهی + coturn برای تم�
 ```
 
 نکات:
-- `install.sh` یک گواهی ۱۰ ساله می‌سازد و در انتها نمایش می‌دهد. محتوای آن باید در `android/res/raw/server_cert.pem` باشد.
+- `install.sh` یک گواهی ۱۰ ساله می‌سازد و در انتها نمایش می‌دهد. محتوای آن باید در `android/app/src/main/res/raw/server_cert.pem` باشد.
 - برای ارتقا همان دستور را دوباره اجرا کنید. گواهی، کلید TURN و پایگاه داده حفظ می‌شوند و قبل از ارتقا یک نسخه‌ی پشتیبان از برنامه و پایگاه داده در `/root/messenger-backup-...` گذاشته می‌شود.
 - رمز پنل مدیریت فقط یک بار نمایش داده می‌شود. اگر گم شد: `msgadmin adminpw`.
 
@@ -56,17 +56,23 @@ msgadmin adminpw          # رمز جدید پنل مدیریت
 - **پشتیبان‌گیری:** زمان‌بندی با عبارت cron، تعداد نگهداری، «پشتیبان فوری» و دانلود فایل فشرده
 
 ## بخش ۴ — ساخت و نصب اپ اندروید
-1. در Android Studio یک پروژه‌ی جدید Empty Activity (Compose) با نام بسته‌ی `com.pchat.app` بسازید.
-2. فایل‌های `android/kotlin/*.kt` را در `app/src/main/java/com/pchat/app/` کپی کنید.
-3. `android/AndroidManifest.xml` را در `app/src/main/` جایگزین کنید.
-4. پوشه‌ی `android/res/` را در `app/src/main/res/` ادغام کنید (شامل `raw/server_cert.pem` و `xml/file_paths.xml`).
-5. در `app/build.gradle.kts` داخل بلوک `dependencies { }` اضافه کنید:
-   ```kotlin
-   implementation("com.squareup.okhttp3:okhttp:4.12.0")
-   implementation("io.getstream:stream-webrtc-android:1.3.10")
+پوشه‌ی `android/` یک پروژه‌ی کامل Gradle است و مستقیم ساخته می‌شود.
+
+1. آدرس سرور را در `android/gradle.properties` تنظیم کنید (یا بدون تغییر فایل، در `android/local.properties` بنویسید):
+   ```properties
+   pchat.serverHost=IP-سرور-شما
+   pchat.serverPort=8443
    ```
-6. در `Config.kt` مقدار `HOST` را برابر IP سرور خودتان بگذارید و مطمئن شوید `server_cert.pem` گواهی همان سرور است.
-7. Sync Now، سپس Build و Run (یا ساخت APK برای نصب روی گوشی‌ها).
+   یا موقع ساخت: `./gradlew assembleDebug -Ppchat.serverHost=1.2.3.4`
+2. مطمئن شوید `android/app/src/main/res/raw/server_cert.pem` گواهی همان سرور است.
+3. پوشه‌ی `android/` را در Android Studio باز کنید (File ← Open) و Run بزنید؛ یا در خط فرمان:
+   ```bash
+   cd android
+   ./gradlew assembleDebug
+   ```
+   فایل APK در `android/app/build/outputs/apk/debug/app-debug.apk` ساخته می‌شود.
+
+پیش‌نیاز: JDK 17 و Android SDK (Android Studio هر دو را دارد). هر تغییر در `android/` روی GitHub Actions هم ساخته می‌شود و APK آن در بخش Artifacts همان اجرا قابل دانلود است.
 
 ## بخش ۵ — استفاده از اپ
 - **ورود:** نام کاربری و رمزی که مدیر داده را وارد کنید.

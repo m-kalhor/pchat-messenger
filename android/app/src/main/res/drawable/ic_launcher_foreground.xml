@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Chat bubble with a padlock, drawn inside the 66dp adaptive-icon safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M40,32H68A10,10 0,0 1,78 42V60A10,10 0,0 1,68 70H48L37,79L38.5,69.9A10,10 0,0 1,30 60V42A10,10 0,0 1,40 32Z" />
+    <path
+        android:strokeColor="#1E88E5"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:pathData="M48.5,50V45.5A5.5,5.5 0,0 1,59.5 45.5V50" />
+    <path
+        android:fillColor="#1E88E5"
+        android:pathData="M47,49H61A2,2 0,0 1,63 51V61A2,2 0,0 1,61 63H47A2,2 0,0 1,45 61V51A2,2 0,0 1,47 49Z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,53.5A2,2 0,1 1,54 57.5A2,2 0,1 1,54 53.5ZM53.1,56.5H54.9L55.3,60H52.7Z" />
+</vector>
