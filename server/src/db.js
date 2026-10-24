@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS blocks (
   viewer TEXT NOT NULL, target TEXT NOT NULL, PRIMARY KEY (viewer, target));
 CREATE TABLE IF NOT EXISTS disconnects (
   a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (a, b));
+CREATE TABLE IF NOT EXISTS msg_changes (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, msg_id INTEGER NOT NULL, kind TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS msg_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, msg_id INTEGER NOT NULL, payload TEXT NOT NULL, ts INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_hist_msg ON msg_history(msg_id);
 CREATE TABLE IF NOT EXISTS uploads (
   id TEXT PRIMARY KEY, owner TEXT NOT NULL, size INTEGER NOT NULL, off INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);
 `);
@@ -49,6 +54,11 @@ if (!userCols.includes('avatar_ver')) db.exec('ALTER TABLE users ADD COLUMN avat
 if (!userCols.includes('disabled')) db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('bio')) db.exec('ALTER TABLE users ADD COLUMN bio TEXT');
 if (!userCols.includes('key_backup')) db.exec('ALTER TABLE users ADD COLUMN key_backup TEXT');
+if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT');
+const msgCols = db.prepare('PRAGMA table_info(messages)').all().map((r) => r.name);
+if (!msgCols.includes('edited')) db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER');
+if (!msgCols.includes('deleted')) db.exec('ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+db.exec('CREATE INDEX IF NOT EXISTS idx_msg_file ON messages(file_id)');
 
 function getSetting(key, def = null) {
   const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);

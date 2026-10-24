@@ -20,6 +20,7 @@ const MIN_FREE = +(process.env.MIN_FREE_MB || 1500) * 1024 * 1024;
 const CHUNK_MAX = 16 * 1024 * 1024;
 const FILE_TTL_DAYS = +(process.env.FILE_TTL_DAYS || 30);
 const MSG_TTL_DAYS = +(process.env.MSG_TTL_DAYS || 90);
+const EDIT_WINDOW = +(process.env.EDIT_WINDOW_HOURS || 48) * 3600e3;
 const SESSION_DAYS = 90;
 const PUBLIC_HOST = process.env.PUBLIC_HOST || '';
 const PLAIN = process.env.PLAIN_HTTP === '1';
@@ -42,6 +43,13 @@ const q = {
   setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
   addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts) VALUES(?,?,?,?,?,?)'),
   msg: db.prepare('SELECT * FROM messages WHERE id=?'),
+  editMsg: db.prepare('UPDATE messages SET payload=?, edited=? WHERE id=?'),
+  delMsg: db.prepare("UPDATE messages SET deleted=1, payload='', file_id=NULL WHERE id=?"),
+  addChange: db.prepare('INSERT INTO msg_changes(msg_id,kind,ts) VALUES(?,?,?)'),
+  maxChange: db.prepare('SELECT COALESCE(MAX(seq),0) AS s FROM msg_changes'),
+  addHist: db.prepare('INSERT INTO msg_history(msg_id,payload,ts) VALUES(?,?,?)'),
+  hist: db.prepare('SELECT payload, ts FROM msg_history WHERE msg_id=? ORDER BY id'),
+  fileMsgs: db.prepare('SELECT sender, target FROM messages WHERE file_id=? AND deleted=0'),
   addFile: db.prepare('INSERT INTO files(id,owner,size,ts) VALUES(?,?,?,?)'),
   file: db.prepare('SELECT * FROM files WHERE id=?'),
   totalFiles: db.prepare('SELECT COALESCE(SUM(size),0) AS t FROM files'),
@@ -126,7 +134,11 @@ function emit(user, event, data, id) {
 }
 const isOnline = (u) => !!clients.get(u) && clients.get(u).size > 0;
 const onlineUsers = () => [...clients.keys()].filter(isOnline);
-const msgJson = (m) => ({ id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts });
+const msgJson = (m) => ({ id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null });
+/** An edit or delete-for-everyone of message m, as clients receive it (seq orders all changes). */
+const changeJson = (seq, kind, m) => (kind === 'del'
+  ? { seq, kind, id: m.id, from: m.sender, target: m.target }
+  : { seq, kind, id: m.id, from: m.sender, target: m.target, payload: m.payload, edited: m.edited });
 setInterval(() => { for (const set of clients.values()) for (const r of set) r.write(': ping\n\n'); }, 15000);
 
 /** online people who are allowed to know about `username` (plus the user themself) */
@@ -184,8 +196,34 @@ function publicUser(u, extra) {
 
 function replay(user, since) {
   const gk = core.groupsOf(user).map((g) => g.gkey);
-  const sql = `SELECT * FROM messages WHERE id>? AND (target=? OR sender=?${gk.length ? ` OR target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY id LIMIT 2000`;
+  const sql = `SELECT * FROM messages WHERE id>? AND deleted=0 AND (target=? OR sender=?${gk.length ? ` OR target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY id LIMIT 2000`;
   return db.prepare(sql).all(since, user, user, ...gk);
+}
+
+/** Edits and deletions after change number `since` of messages the user can see (and had already received). */
+function replayChanges(user, since, msgSince) {
+  const gk = core.groupsOf(user).map((g) => g.gkey);
+  const sql = `SELECT c.seq AS seq, c.kind AS ckind, m.* FROM msg_changes c JOIN messages m ON m.id=c.msg_id
+    WHERE c.seq>? AND m.id<=? AND (m.target=? OR m.sender=?${gk.length ? ` OR m.target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY c.seq LIMIT 2000`;
+  return db.prepare(sql).all(since, msgSince, user, user, ...gk).map((r) => changeJson(r.seq, r.ckind, r));
+}
+
+/** Everyone who receives the live events of message m. */
+function msgAudience(m) {
+  if (m.target === 'all' || /^g:\d+$/.test(m.target)) {
+    const cat = core.groupByKey(m.target);
+    return cat ? core.membersOf(cat.id) : [m.sender];
+  }
+  return [m.target, m.sender];
+}
+
+/** A user may attach (forward) a file they uploaded or one that arrived in a conversation they are in. */
+function canUseFile(user, fileId) {
+  const f = q.file.get(fileId);
+  if (!f) return false;
+  if (f.owner === user) return true;
+  const groups = new Set(core.groupsOf(user).map((g) => g.gkey));
+  return q.fileMsgs.all(fileId).some((m) => m.sender === user || m.target === user || groups.has(m.target));
 }
 
 function pinsFor(user) {
@@ -321,7 +359,14 @@ async function route(req, res) {
     req.socket.setKeepAlive(true, 30000);
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
     res.write('retry: 2000\n\n');
+    // csince: last edit/delete the client has seen; -1 = none yet (it only learns the current number)
+    const csParam = url.searchParams.get('csince');
     for (const m of replay(user, since)) res.write(`id: ${m.id}\nevent: msg\ndata: ${JSON.stringify(msgJson(m))}\n\n`);
+    if (csParam != null) {
+      const cs = Number(csParam);
+      if (Number.isInteger(cs) && cs >= 0) for (const c of replayChanges(user, cs, since)) res.write(`event: change\ndata: ${JSON.stringify(c)}\n\n`);
+      res.write(`event: cseq\ndata: ${JSON.stringify({ seq: q.maxChange.get().s })}\n\n`);
+    }
     for (const pn of pinsFor(user)) res.write(`event: pin\ndata: ${JSON.stringify(pn)}\n\n`);
     let set = clients.get(user);
     const first = !set || !set.size;
@@ -353,8 +398,7 @@ async function route(req, res) {
     let fileId = null;
     if (b.fileId != null) {
       if (!/^[a-f0-9]{32}$/.test(String(b.fileId))) return send(res, 400, { error: 'bad_file' });
-      const f = q.file.get(b.fileId);
-      if (!f || f.owner !== user) return send(res, 400, { error: 'bad_file' });
+      if (!canUseFile(user, b.fileId)) return send(res, 400, { error: 'bad_file' });
       fileId = b.fileId;
     }
     const ts = now();
@@ -363,6 +407,36 @@ async function route(req, res) {
     if (tr.type === 'group') for (const u of core.membersOf(tr.cat.id)) emit(u, 'msg', msgJson(m), m.id);
     else { emit(target, 'msg', msgJson(m), m.id); emit(user, 'msg', msgJson(m), m.id); }
     return send(res, 200, { id: m.id, ts });
+  }
+
+  // ---- edit / delete for everyone / edit history (sender only) ----
+  if ((p === '/api/edit' || p === '/api/delete') && req.method === 'POST') {
+    const b = await readJson(req, 2 * 131072 + 2048);
+    const m = q.msg.get(Number(b.id));
+    if (!m || m.deleted || m.sender !== user || m.kind.startsWith('sig_')) return send(res, 404, { error: 'no_such_message' });
+    const tr = resolveTarget(user, m.target);
+    if (tr.error) return send(res, tr.code, { error: tr.error });
+    const t = now();
+    if (p === '/api/edit') {
+      if (typeof b.payload !== 'string' || !b.payload || b.payload.length > 131072) return send(res, 400, { error: 'bad_payload' });
+      if (b.prev != null && (typeof b.prev !== 'string' || b.prev.length > 131072)) return send(res, 400, { error: 'bad_payload' });
+      if (t - m.ts > EDIT_WINDOW) return send(res, 403, { error: 'edit_window_passed' });
+      q.editMsg.run(b.payload, t, m.id);
+      if (b.prev) q.addHist.run(m.id, b.prev, t);
+    } else {
+      q.delMsg.run(m.id);
+      db.prepare('DELETE FROM msg_history WHERE msg_id=?').run(m.id);
+    }
+    const kind = p === '/api/edit' ? 'edit' : 'del';
+    const seq = Number(q.addChange.run(m.id, kind, t).lastInsertRowid);
+    const ch = changeJson(seq, kind, q.msg.get(m.id));
+    for (const u of new Set(msgAudience(m))) emit(u, 'change', ch);
+    return send(res, 200, { ok: true, seq, edited: kind === 'edit' ? t : null });
+  }
+  if (p === '/api/history' && req.method === 'GET') {
+    const m = q.msg.get(Number(url.searchParams.get('id')));
+    if (!m || m.sender !== user) return send(res, 404, { error: 'no_such_message' });
+    return send(res, 200, { versions: q.hist.all(m.id) });
   }
 
   if (p === '/api/pin' && req.method === 'POST') {
@@ -551,6 +625,8 @@ function cleanup() {
     for (const f of db.prepare('SELECT id FROM files WHERE ts<?').all(fcut)) { try { fs.unlinkSync(path.join(FILES_DIR, f.id)); } catch { } }
     db.prepare('DELETE FROM files WHERE ts<?').run(fcut);
     db.prepare('DELETE FROM messages WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
+    db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
+    db.prepare('DELETE FROM msg_changes WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM sessions WHERE created<?').run(now() - SESSION_DAYS * DAY);
     for (const u of db.prepare('SELECT id FROM uploads WHERE ts<?').all(now() - DAY)) {
       try { fs.unlinkSync(path.join(UPLOADS_DIR, u.id + '.part')); } catch { }

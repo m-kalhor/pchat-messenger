@@ -18,6 +18,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.material3.AlertDialog
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -118,6 +120,7 @@ private fun openFile(ctx: Context, path: String, mime: String?) {
 @Composable
 fun ChatScreen(convo: String, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val ctxForToast = LocalContext.current
     val tick by Engine.tick.collectAsState()
     val users by Engine.users.collectAsState()
     val groups by Engine.groups.collectAsState()
@@ -144,6 +147,13 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     LaunchedEffect(inputPressed) { if (inputPressed) emojiOpen = false }
     BackHandler(enabled = emojiOpen) { emojiOpen = false }
     var replyTo by remember { mutableStateOf<Msg?>(null) }
+    var editing by remember(convo) { mutableStateOf<Msg?>(null) }
+    val selected = remember(convo) { mutableStateListOf<Long>() }
+    var forwarding by remember { mutableStateOf<List<Msg>?>(null) }
+    var info by remember { mutableStateOf<Msg?>(null) }
+    var deleteAll by remember { mutableStateOf<Msg?>(null) }
+    BackHandler(enabled = selected.isNotEmpty()) { selected.clear() }
+    BackHandler(enabled = editing != null) { editing = null; text = "" }
     var viewer by remember { mutableStateOf<String?>(null) }
     var showKeys by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -320,7 +330,13 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                                     onReply = { replyTo = it },
                                     onPin = { scope.launch { error = Engine.pinMessage(convo, if (pinnedId == it.id) null else it.id) } },
                                     onRetry = { Engine.retry(it) },
-                                    onDelete = { Engine.deleteLocal(it) }
+                                    onDelete = { Engine.deleteLocal(it) },
+                                    selecting = selected.isNotEmpty(), selected = it.id in selected,
+                                    onSelect = { if (it.id in selected) selected.remove(it.id) else if (it.id > 0 && it.status == 0) selected.add(it.id) },
+                                    onEdit = { editing = it; replyTo = null; text = it.text; field = TextFieldValue(it.text, TextRange(it.text.length)) },
+                                    onForward = { forwarding = listOf(it) },
+                                    onInfo = { info = it },
+                                    onDeleteAll = { deleteAll = it }
                                 )
                             } else {
                                 Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
@@ -350,12 +366,33 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     }
                 }
             }
+            if (selected.isNotEmpty()) {
+                Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = { selected.clear() }) { Icon(Icons.Default.Close, contentDescription = "لغو انتخاب") }
+                        Text("${selected.size} پیام انتخاب شد", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                        TextButton(onClick = { forwarding = allMsgs.filter { m -> m.id in selected } }) { Text("فوروارد") }
+                    }
+                }
+            }
             if (sending) {
                 Text("در حال آماده‌سازی فایل…", fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             }
             error?.let {
                 Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).clickable { error = null })
+            }
+            editing?.let { e ->
+                Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.width(3.dp).height(34.dp).background(MaterialTheme.colorScheme.primary))
+                        Column(Modifier.weight(1f).padding(start = 8.dp)) {
+                            Text("✏️ ویرایش پیام", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Text(e.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        IconButton(onClick = { editing = null; text = "" }) { Icon(Icons.Default.Close, contentDescription = "لغو ویرایش") }
+                    }
+                }
             }
             replyTo?.let { r ->
                 Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
@@ -401,9 +438,15 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                         enabled = text.isNotBlank(),
                         onClick = {
                             val t = text.trim()
-                            val r = replyTo
-                            text = ""; replyTo = null
-                            Engine.sendText(convo, t, r)
+                            val e = editing
+                            if (e != null) {
+                                editing = null; text = ""
+                                if (t != e.text) scope.launch { error = Engine.editMessage(e, t) }
+                            } else {
+                                val r = replyTo
+                                text = ""; replyTo = null
+                                Engine.sendText(convo, t, r)
+                            }
                         }
                     ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
                 }
@@ -420,6 +463,24 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     }
 
     viewer?.let { ImageViewer(it) { viewer = null } }
+    forwarding?.let { list ->
+        ForwardDialog(list.size, onClose = { forwarding = null }) { targets, hide ->
+            Engine.forward(list, targets, hide)
+            forwarding = null
+            selected.clear()
+            if (targets.size == 1 && targets[0] != convo) Toast.makeText(ctxForToast, "فوروارد شد به ${Engine.titleOf(targets[0])}", Toast.LENGTH_SHORT).show()
+        }
+    }
+    info?.let { MessageInfoDialog(it) { info = null } }
+    deleteAll?.let { m ->
+        AlertDialog(
+            onDismissRequest = { deleteAll = null },
+            title = { Text("حذف برای همه") },
+            text = { Text("این پیام برای همهٔ اعضای گفتگو حذف می‌شود و برنمی‌گردد.") },
+            confirmButton = { TextButton(onClick = { deleteAll = null; scope.launch { error = Engine.deleteForAll(m) } }) { Text("حذف", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deleteAll = null }) { Text("انصراف") } }
+        )
+    }
     if (showProfile) ContactProfileDialog(convo) { showProfile = false }
     if (showKeys) KeysDialog(if (isGroup) (group?.members ?: users.map { it.username }).filter { it != Engine.me } else listOf(convo)) { showKeys = false }
 }
@@ -435,7 +496,9 @@ private fun ProgressBar(p: Float, modifier: Modifier = Modifier) {
 @Composable
 fun Bubble(
     m: Msg, group: Boolean, progress: Float?, failure: String?, pinned: Boolean,
-    onImage: (String) -> Unit, onReply: () -> Unit, onPin: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit
+    onImage: (String) -> Unit, onReply: () -> Unit, onPin: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit,
+    selecting: Boolean = false, selected: Boolean = false, onSelect: () -> Unit = {}, onEdit: () -> Unit = {},
+    onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {}
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -455,7 +518,10 @@ fun Bubble(
     }
 
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+        Modifier.fillMaxWidth()
+            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
+            .then(if (selecting) Modifier.clickable(onClick = onSelect) else Modifier)
+            .padding(horizontal = 8.dp, vertical = 2.dp),
         horizontalArrangement = if (m.mine) Arrangement.End else Arrangement.Start
     ) {
         Box {
@@ -463,11 +529,20 @@ fun Bubble(
                 color = if (bigEmoji) Color.Transparent else bg,
                 shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = if (m.mine) 14.dp else 3.dp, bottomEnd = if (m.mine) 3.dp else 14.dp),
                 shadowElevation = if (bigEmoji) 0.dp else 1.dp,
-                modifier = Modifier.widthIn(max = 300.dp).combinedClickable(onClick = {}, onLongClick = { if (m.type != "call") menu = true })
+                modifier = Modifier.widthIn(max = 300.dp).combinedClickable(
+                    onClick = { if (selecting) onSelect() },
+                    onLongClick = { if (selecting) onSelect() else if (m.type != "call") menu = true }
+                )
             ) {
                 Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                     if (group && !m.mine) {
                         Text(Engine.nameOf(m.sender), color = U.colorFor(m.sender), fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                    }
+                    if (m.fwFrom != null) {
+                        Text(
+                            "فوروارد از " + (Engine.users.value.firstOrNull { it.username == m.fwFrom }?.displayName?.takeIf { it.isNotBlank() } ?: m.fwName?.takeIf { it.isNotBlank() } ?: m.fwFrom),
+                            color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold
+                        )
                     }
                     if (m.replyId != 0L) {
                         Row(Modifier.padding(vertical = 3.dp).height(IntrinsicSize.Min)) {
@@ -518,6 +593,10 @@ fun Bubble(
                     }
                     Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
                         if (pinned) Text("📌 ", fontSize = 11.sp)
+                        if (m.edited > 0) {
+                            val sameDay = U.dayKey(m.edited) == U.dayKey(m.ts)
+                            Text("ویرایش‌شده " + (if (sameDay) "" else U.day(m.edited) + " ") + U.time(m.edited) + " · ", color = sub, fontSize = 11.sp)
+                        }
                         Text(U.time(m.ts), color = sub, fontSize = 11.sp)
                         if (m.mine && m.type != "call") {
                             when (m.status) {
@@ -531,9 +610,17 @@ fun Bubble(
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 if (m.status == 0) DropdownMenuItem(text = { Text("پاسخ") }, onClick = { menu = false; onReply() })
+                if (Engine.canEdit(m)) DropdownMenuItem(text = { Text("ویرایش") }, onClick = { menu = false; onEdit() })
+                if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("فوروارد") }, onClick = { menu = false; onForward() })
+                if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
                 if (m.type == "text") DropdownMenuItem(text = { Text("کپی") }, onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) })
+                if (m.id > 0) DropdownMenuItem(text = { Text("اطلاعات پیام") }, onClick = { menu = false; onInfo() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text(if (pinned) "برداشتن پین" else "پین کردن") }, onClick = { menu = false; onPin() })
                 if (m.status == 2) DropdownMenuItem(text = { Text("تلاش دوباره") }, onClick = { menu = false; onRetry() })
+                if (m.mine && m.status == 0 && m.id > 0) DropdownMenuItem(
+                    text = { Text("حذف برای همه", color = MaterialTheme.colorScheme.error) },
+                    onClick = { menu = false; onDeleteAll() }
+                )
                 DropdownMenuItem(
                     text = { Text(if (m.status != 0) "لغو ارسال" else "حذف (فقط برای من)") },
                     onClick = { menu = false; onDelete() }

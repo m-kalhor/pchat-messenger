@@ -15,6 +15,7 @@ export const S = {
   users: [], groups: [], pins: {}, read: {}, typing: {},
   convos: new Map(),          // convo -> array of messages, oldest first
   lastId: 0,
+  cseq: -1,                   // last edit/delete number seen (-1 = none yet)
   conn: 'offline',            // offline | connecting | online
   requests: { incoming: [], outgoing: [] },
   progress: new Map(),        // message id -> 0..1 (upload / download)
@@ -73,6 +74,8 @@ export async function init() {
   if (!token || !S.identity || !S.me) { S.ready = true; return false; }
   api.setToken(token);
   S.lastId = (await store.kvGet('last_id')) || 0;
+  const cs = await store.kvGet('cseq');
+  S.cseq = typeof cs === 'number' ? cs : -1;
   S.users = (await store.kvGet('users')) || [];
   S.groups = (await store.kvGet('groups')) || [];
   S.read = (await store.kvGet('read')) || {};
@@ -202,7 +205,7 @@ function keyErr(e) {
 
 function resetState() {
   S.users = []; S.groups = []; S.pins = {}; S.read = {}; S.typing = {};
-  S.convos = new Map(); S.lastId = 0; S.progress.clear(); S.failures.clear();
+  S.convos = new Map(); S.lastId = 0; S.cseq = -1; S.progress.clear(); S.failures.clear();
 }
 
 export async function logout() {
@@ -266,7 +269,7 @@ export function startStream() {
       setConn('connecting');
       let opened = 0, replayed = 0;
       try {
-        await api.stream(S.lastId, ctl.signal, () => { setConn('online'); backoff = 1000; opened = lastData = Date.now(); flush(); }, (ev, data) => {
+        await api.stream(S.lastId, S.cseq, ctl.signal, () => { setConn('online'); backoff = 1000; opened = lastData = Date.now(); flush(); }, (ev, data) => {
           lastData = Date.now();
           if (ev !== 'ping') queueEvent(ev, data);
           // the server replays at most 2000 old messages per connection: reconnect for the rest
@@ -307,6 +310,8 @@ async function handleEvent(ev, data) {
   const o = JSON.parse(data);
   switch (ev) {
     case 'msg': return handleMsg(o);
+    case 'change': return handleChange(o);
+    case 'cseq': S.cseq = o.seq; return store.kvSet('cseq', S.cseq);
     case 'presence': {
       const u = user(o.user);
       if (!u || o.online) { try { await refreshUsers(); } catch { } }
@@ -354,7 +359,8 @@ async function handleMsg(o) {
     const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pub, o.payload)));
     const r = plain.r || null;
     m = {
-      id: o.id, convo, sender: o.from, mine, ts: o.ts, type: plain.t || 'text', text: plain.x || '',
+      id: o.id, convo, sender: o.from, mine, ts: o.ts, type: plain.t || 'text', text: plain.x || '', edited: o.edited || 0,
+      fwFrom: plain.f ? plain.f.u || null : null, fwName: plain.f ? plain.f.n || null : null,
       fileId: o.fileId || null, name: plain.n || null, mime: plain.m || null, size: plain.s || 0, fk: plain.fk || null,
       w: plain.w || 0, h: plain.h || 0, replyId: r ? r.id || 0 : 0, replyUser: r ? r.u || null : null, replyText: r ? r.x || null : null, status: 0,
     };
@@ -369,6 +375,97 @@ async function handleMsg(o) {
     if (mine || (S.openConvo === convo && document.visibilityState === 'visible')) markRead(convo);
     emit('msg', m);
   }
+}
+
+/** An edit or a delete-for-everyone of a message we may already have. */
+async function handleChange(o) {
+  const list = S.convos.get(isGroup(o.target) ? o.target : o.from === S.me ? o.target : o.from) || [];
+  const m = list.find((x) => x.id === o.id);
+  if (m && o.kind === 'del') {
+    removeLocal(m);
+    await store.delMsg(m.id);
+    for (const [c, id] of Object.entries(S.pins)) if (id === m.id) delete S.pins[c];
+    emit('msg', m);
+  } else if (m && o.kind === 'edit') {
+    try {
+      const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pubOf(o.from), o.payload)));
+      m.text = plain.x || '';
+      m.edited = o.edited || Date.now();
+      await store.putMsg(m);
+      emit('msg', m);
+    } catch { }
+  }
+  if (o.seq > S.cseq) { S.cseq = o.seq; await store.kvSet('cseq', S.cseq); }
+}
+
+// ---------------- edit / delete for everyone / forward ----------------
+export const EDIT_WINDOW = 48 * 3600e3;
+export const canEdit = (m) => m.mine && m.type === 'text' && m.id > 0 && m.status === 0 && Date.now() - m.ts < EDIT_WINDOW;
+const forwardJson = (m) => (m.fwFrom ? { f: { u: m.fwFrom, n: m.fwName || '' } } : {});
+function plainOf(m, text = m.text) {
+  const p = { t: m.type, x: text, ...replyJson(m), ...forwardJson(m) };
+  if (m.type !== 'text') Object.assign(p, { n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h });
+  return p;
+}
+
+/** Edits my text message; the old version stays on the server encrypted for me only. */
+export async function editMessage(m, text) {
+  try {
+    const payload = await encryptFor(m.convo, plainOf(m, text));
+    const prev = await C.encryptFor(S.identity, S.me, m.convo, {}, JSON.stringify(plainOf(m)));
+    const r = await api.editMessage(m.id, payload, prev);
+    m.text = text; m.edited = r.edited;
+    await store.putMsg(m);
+    emit('msg', m);
+    return null;
+  } catch (e) {
+    if (e instanceof api.HttpError && e.body && e.body.error === 'edit_window_passed') return 'فقط تا ۴۸ ساعت بعد از ارسال می‌شود پیام را ویرایش کرد';
+    return errText(e);
+  }
+}
+
+export async function deleteForAll(m) {
+  try { await api.deleteMessage(m.id); } catch (e) { return errText(e); }
+  removeLocal(m);
+  await store.delMsg(m.id);
+  emit('msg', m);
+  return null;
+}
+
+/** Earlier texts of my edited message, oldest first: [{ text, ts }] (ts = when it was replaced). */
+export async function editHistory(m) {
+  const out = [];
+  for (const v of (await api.messageHistory(m.id)).versions) {
+    try { out.push({ text: JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, S.me, m.convo, null, v.payload))).x || '', ts: v.ts }); } catch { }
+  }
+  return out;
+}
+
+/** Forwards messages to other chats; files are not uploaded again. hideSender sends a plain copy. */
+export async function forward(msgs, targets, hideSender) {
+  let n = 0;
+  for (const t of targets) {
+    for (const src of [...msgs].sort((a, b) => a.ts - b.ts)) {
+      if (src.status !== 0 || src.type === 'call' || src.id <= 0 || (src.type !== 'text' && !src.fileId)) continue;
+      const fw = hideSender ? null : src.fwFrom || src.sender;
+      const m = {
+        id: localId(), convo: t, sender: S.me, mine: true, ts: Date.now() + n++, type: src.type, text: src.text || '',
+        name: src.name || null, mime: src.mime || null, size: src.size || 0, fk: src.fk || null, w: src.w || 0, h: src.h || 0,
+        status: 1, replyId: 0, replyUser: null, replyText: null,
+        fwFrom: fw, fwName: fw ? src.fwName || nameOf(src.sender) : null,
+      };
+      addLocal(m);
+      if (m.type === 'text') await store.putMsg(m);
+      else {
+        Object.defineProperty(m, '_fileId', { value: src.fileId, enumerable: false, writable: true });
+        const blob = blobs.get(src.fileId);
+        if (blob) Object.defineProperty(m, '_file', { value: blob, enumerable: false, writable: true });
+        uploadFile(m);
+      }
+      emit('msg', m);
+    }
+  }
+  flush();
 }
 
 // ---------------- reading ----------------
@@ -440,7 +537,7 @@ export async function flush() {
     const pending = [...S.convos.values()].flat().filter((m) => m.status === 1 && m.type === 'text').sort((a, b) => a.ts - b.ts);
     for (const m of pending) {
       try {
-        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m) });
+        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m) });
         const r = await api.send(m.convo, payload);
         await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0 });
       } catch (e) {
@@ -551,10 +648,10 @@ async function uploadFile(m) {
       }
       m._fileId = fileId;
     }
-    const plain = { t: m.type, n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h, ...replyJson(m) };
+    const plain = { t: m.type, n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h, ...replyJson(m), ...forwardJson(m) };
     const r = await api.send(m.convo, await encryptFor(m.convo, plain), fileId);
     const real = { ...m, id: r.id, ts: r.ts, status: 0, fileId };
-    if (m.type === 'image' && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
+    if (file && m.type === 'image' && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
     const url = blobUrls.get(m.id);
     if (url) { blobUrls.delete(m.id); blobUrls.set(fileId, url); blobs.delete(m.id); blobs.set(fileId, file); }
     setProgress(m.id, null);

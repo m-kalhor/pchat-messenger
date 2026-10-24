@@ -108,6 +108,52 @@ function confirmBox(title, text, okLabel, danger = false) {
   });
 }
 
+const fmtFull = (ts) => new Date(ts).toLocaleString('fa-IR-u-ca-persian', { dateStyle: 'long', timeStyle: 'short' });
+
+/** Pick one or more chats to forward to, like Telegram; «پنهان کردن فرستنده» sends a plain copy. */
+function forwardSheet(msgs, done) {
+  const keys = E.summaries().map((x) => x.convo);
+  for (const u of S.users) if (u.dm && u.username !== S.me && !keys.includes(u.username)) keys.push(u.username);
+  const targets = keys.filter((c) => E.isGroup(c) || (E.user(c) && (E.user(c).dm || (S.convos.get(c) || []).length)));
+  const picked = new Set();
+  const list = h('div', { class: 'picklist' });
+  const q = h('input', { type: 'text', placeholder: 'جستجو…', oninput: () => render() });
+  const hide = h('input', { type: 'checkbox' });
+  const sendB = h('button', { class: 'btn', disabled: true, onclick: () => { v.remove(); E.forward(msgs, [...picked], hide.checked); toast('فوروارد شد'); if (done) done(); } }, 'ارسال');
+  function render() {
+    const t = q.value.trim().toLowerCase();
+    fill(list, targets.filter((c) => !t || E.titleOf(c).toLowerCase().includes(t) || c.includes(t)).map((c) => {
+      const cb = h('input', { type: 'checkbox', checked: picked.has(c), onchange: () => { if (cb.checked) picked.add(c); else picked.delete(c); sendB.disabled = !picked.size; } });
+      return h('label', { class: 'pick' }, cb, avatar(c, 'sm'), h('span', null, E.titleOf(c)));
+    }));
+  }
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, msgs.length === 1 ? 'فوروارد پیام' : 'فوروارد ' + faNum(msgs.length) + ' پیام'),
+      q, list,
+      h('label', { class: 'pick sw' }, h('span', { class: 'grow' }, h('div', null, 'پنهان کردن فرستنده'), h('small', null, 'پیام بدون «فوروارد از …» فرستاده می‌شود')), hide),
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'انصراف'), sendB)));
+  render();
+  document.body.append(v);
+}
+
+/** «اطلاعات پیام»: full send and edit date; for my own messages also the earlier versions (only I can see them). */
+function infoSheet(m) {
+  const hist = h('div', { class: 'hist' });
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'اطلاعات پیام'),
+      h('p', null, 'ارسال: ' + fmtFull(m.ts)),
+      m.edited ? h('p', null, 'آخرین ویرایش: ' + fmtFull(m.edited)) : null,
+      m.fwFrom ? h('p', null, 'فوروارد از: ' + (m.fwName || m.fwFrom)) : null,
+      m.mine && m.edited ? [h('b', null, 'نسخه‌های قبلی (فقط شما می‌بینید)'), hist] : null,
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'بستن'))));
+  document.body.append(v);
+  if (m.mine && m.edited) {
+    fill(hist, h('small', null, 'در حال دریافت…'));
+    E.editHistory(m).then((list) => fill(hist, list.length ? list.reverse().map((x) => h('div', { class: 'hv' }, h('div', { dir: 'auto' }, x.text), h('small', null, 'تا ' + fmtFull(x.ts))))
+      : h('small', null, 'نسخهٔ قبلی‌ای ذخیره نشده')), () => fill(hist, h('small', null, 'دریافت نشد')));
+  }
+}
+
 function viewer(url, m) {
   const v = h('div', { class: 'viewer' },
     h('div', { class: 'vbar' }, h('button', { class: 'icon', title: 'بستن', onclick: () => v.remove() }, '✕'),
@@ -398,7 +444,7 @@ function ChatScreen(convo) {
   if (!group && !E.user(convo) && !(S.convos.get(convo) || []).length) { setTimeout(() => go('#/'), 0); return { el: h('div') }; }
   S.openConvo = convo;
   E.markRead(convo);
-  let reply = null, limit = 120, search = '', forceBottom = true;
+  let reply = null, editing = null, selected = null, limit = 120, search = '', forceBottom = true;
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
   const callBtns = group ? [] : [
@@ -414,6 +460,13 @@ function ChatScreen(convo) {
   const ta = h('textarea', { rows: 1, placeholder: 'پیام', dir: 'auto' });
   const fileIn = h('input', { type: 'file', multiple: true, class: 'hidden' });
   const replyBar = h('div', { class: 'replybar hidden' });
+  const selCount = h('div', { class: 'grow' });
+  const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, '✕'), selCount,
+    h('button', { class: 'btn sm', onclick: () => {
+      const all = S.convos.get(convo) || [];
+      const msgsSel = all.filter((x) => selected.has(x.id));
+      if (msgsSel.length) forwardSheet(msgsSel, () => setSelecting(null));
+    } }, 'فوروارد'));
   const emojiPanel = h('div', { class: 'emojis hidden' });
   const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, '➤');
   const attachBtn = h('button', { class: 'icon', title: 'فایل یا عکس', onclick: () => fileIn.click() }, '📎');
@@ -426,7 +479,7 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, pinBar, msgs, jump,
-    h('div', { class: 'composer' }, replyBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn), emojiPanel, fileIn));
+    h('div', { class: 'composer' }, selBar, replyBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn), emojiPanel, fileIn));
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);
@@ -450,7 +503,26 @@ function ChatScreen(convo) {
     pinBar.onclick = () => scrollToMsg(id);
   }
 
+  function setSelecting(set) {
+    selected = set;
+    selBar.classList.toggle('hidden', !set);
+    if (set) selCount.textContent = faNum(set.size) + ' پیام انتخاب شد';
+    renderList(true);
+  }
+
+  function setEditing(m) {
+    editing = m;
+    if (m) reply = null;
+    replyBar.classList.toggle('hidden', !m);
+    if (m) {
+      fill(replyBar, h('div', { class: 'reply' }, h('div', { class: 'ru' }, '✎ ویرایش پیام'), h('div', { class: 'rx' }, E.preview(m))),
+        h('button', { class: 'icon', onclick: () => { setEditing(null); ta.value = ''; autosize(); } }, '✕'));
+      ta.value = m.text; autosize(); ta.focus();
+    }
+  }
+
   function setReply(m) {
+    if (editing && m) { editing = null; ta.value = ''; }
     reply = m;
     replyBar.classList.toggle('hidden', !m);
     if (m) {
@@ -500,15 +572,22 @@ function ChatScreen(convo) {
     const prog = S.progress.get(m.id);
     const b = h('div', { class: 'bubble' + (big ? ' emoji' : '') },
       group && !m.mine ? h('div', { class: 'who', style: { color: colorFor(m.sender) } }, E.nameOf(m.sender)) : null,
+      m.fwFrom ? h('div', { class: 'fw' }, 'فوروارد از ' + (m.fwFrom === S.me ? 'شما' : m.fwName || E.nameOf(m.fwFrom))) : null,
       m.replyText || m.replyId ? h('div', { class: 'reply', onclick: (e) => { e.stopPropagation(); if (m.replyId) scrollToMsg(m.replyId); } },
         h('div', { class: 'ru' }, m.replyUser === S.me ? 'شما' : E.nameOf(m.replyUser || '')), h('div', { class: 'rx' }, m.replyText || '')) : null,
       m.type === 'image' || m.type === 'file' ? mediaPart(m) : null,
       m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, highlight(m.text)) : null,
       m.mine && prog != null && m.status === 1 ? h('div', { class: 'bar-prog' }, h('i', { style: { width: Math.round(prog * 100) + '%' } })) : null,
       m.status === 2 ? h('div', { class: 'fail' }, '⚠️ ' + (S.failures.get(m.id) || 'ارسال نشد'), h('button', { onclick: (e) => { e.stopPropagation(); E.retry(m); } }, 'تلاش دوباره')) : null,
-      h('div', { class: 'meta' }, m.mine ? h('span', null, m.status === 1 ? '🕓' : m.status === 2 ? '⚠️' : '✓') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
+      h('div', { class: 'meta' }, m.mine ? h('span', null, m.status === 1 ? '🕓' : m.status === 2 ? '⚠️' : '✓') : null, m.edited ? h('span', { title: fmtFull(m.edited) }, 'ویرایش‌شده ' + (startOfDay(m.edited) === startOfDay(m.ts) ? '' : fmtDay(m.edited) + ' ') + fmtTime(m.edited) + ' ·') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
     b.dataset.id = m.id;
-    return h('div', { class: 'm ' + (m.mine ? 'me' : 'them'), onclick: () => menu(m) }, b);
+    const pickable = m.id > 0 && m.status === 0 && !m.locked;
+    return h('div', { class: 'm ' + (m.mine ? 'me' : 'them') + (selected && selected.has(m.id) ? ' sel' : ''), onclick: () => {
+      if (!selected) return menu(m);
+      if (!pickable) return;
+      if (selected.has(m.id)) selected.delete(m.id); else selected.add(m.id);
+      if (!selected.size) setSelecting(null); else setSelecting(selected);
+    } }, b);
   }
 
   function menu(m) {
@@ -516,10 +595,18 @@ function ChatScreen(convo) {
     const pinned = S.pins[convo] === m.id;
     sheet(null, [
       m.id > 0 && { label: 'پاسخ', run: () => setReply(m) },
+      E.canEdit(m) && { label: 'ویرایش', run: () => setEditing(m) },
+      m.id > 0 && m.status === 0 && { label: 'فوروارد', run: () => forwardSheet([m]) },
+      m.id > 0 && m.status === 0 && { label: 'انتخاب', run: () => setSelecting(new Set([m.id])) },
+      m.id > 0 && { label: 'اطلاعات پیام', run: () => infoSheet(m) },
       m.type === 'text' && { label: 'کپی', run: () => navigator.clipboard.writeText(m.text).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
       (m.type === 'image' || m.type === 'file') && E.mediaUrl(m) && { label: m.type === 'image' ? 'ذخیرهٔ عکس / اشتراک' : 'ذخیره در Files / اشتراک', run: () => saveMedia(m) },
       m.id > 0 && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
       m.status === 2 && { label: 'تلاش دوباره', run: () => E.retry(m) },
+      m.mine && m.id > 0 && m.status === 0 && { label: 'حذف برای همه', danger: true, run: async () => {
+        if (!(await confirmBox('حذف برای همه', 'این پیام برای همهٔ اعضای گفتگو پاک می‌شود.', 'حذف', true))) return;
+        const e = await E.deleteForAll(m); if (e) toast(e);
+      } },
       { label: 'حذف از این دستگاه', danger: true, run: () => E.deleteLocal(m) },
     ]);
   }
@@ -575,9 +662,15 @@ function ChatScreen(convo) {
   const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', () => { autosize(); if (ta.value.trim()) E.sendTyping(convo); });
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !isIOS && matchMedia('(pointer: fine)').matches) { e.preventDefault(); send(); } });
-  function send() {
+  async function send() {
     const text = ta.value.trim();
     if (!text) return;
+    if (editing) {
+      const m = editing;
+      setEditing(null); ta.value = ''; autosize();
+      if (text !== m.text) { const e = await E.editMessage(m, text); if (e) toast(e); }
+      return;
+    }
     E.sendText(convo, text, reply);
     ta.value = ''; autosize(); setReply(null);
     forceBottom = true;

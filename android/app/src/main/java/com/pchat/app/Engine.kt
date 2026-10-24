@@ -150,7 +150,7 @@ object Engine {
         dlDir().listFiles()?.forEach { it.delete() }
         avatarDir().listFiles()?.forEach { it.delete() }
         avatarMem.evictAll()
-        prefs.edit().putLong("last_id", 0).remove("users_raw").remove("groups_raw").apply()
+        prefs.edit().putLong("last_id", 0).putLong("cseq", -1).remove("users_raw").remove("groups_raw").apply()
         users.value = emptyList()
         groups.value = emptyList()
         incomingRequests.value = emptyList()
@@ -464,7 +464,7 @@ object Engine {
                 try { refreshGroups() } catch (e: Api.HttpError) { if (e.code == 401) throw e }
                 try { refreshRequests() } catch (e: Exception) { }
                 Api.stream(
-                    prefs.getLong("last_id", 0),
+                    prefs.getLong("last_id", 0), prefs.getLong("cseq", -1),
                     onOpen = {
                         connected.value = true
                         backoff = 1000L
@@ -487,6 +487,8 @@ object Engine {
         val o = JSONObject(data)
         when (ev) {
             "msg" -> handleMsg(o)
+            "change" -> handleChange(o)
+            "cseq" -> prefs.edit().putLong("cseq", o.getLong("seq")).apply()
             "presence" -> {
                 val u = o.getString("user")
                 val on = o.getBoolean("online")
@@ -543,6 +545,7 @@ object Engine {
             val pub = if (mine) null else (pubOf(from) ?: run { refreshUsers(); pubOf(from) })
             val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, target, pub, payload), Charsets.UTF_8))
             val r = plain.optJSONObject("r")
+            val f = plain.optJSONObject("f")
             Msg(
                 id, convo, from, mine, ts,
                 plain.optString("t", "text"), plain.optString("x", ""),
@@ -550,7 +553,9 @@ object Engine {
                 plain.optLong("s", 0), if (plain.has("fk")) plain.getString("fk") else null,
                 plain.optInt("w", 0), plain.optInt("h", 0),
                 r?.optLong("id", 0) ?: 0L, r?.optString("u"), r?.optString("x"),
-                null, mine || visible
+                null, mine || visible,
+                edited = o.optLong("edited", 0),
+                fwFrom = f?.optString("u")?.ifEmpty { null }, fwName = f?.optString("n")?.ifEmpty { null }
             )
         } catch (e: Exception) {
             Msg(id, convo, from, mine, ts, "text", LOCKED_TEXT,
@@ -560,6 +565,25 @@ object Engine {
         if (isNew && !msg.read) postNotification(msg)
         if (id > prefs.getLong("last_id", 0)) prefs.edit().putLong("last_id", id).apply()
         if (isNew) tick.value++
+    }
+
+    /** An edit or a delete-for-everyone of a message we may already have. */
+    private fun handleChange(o: JSONObject) {
+        val id = o.getLong("id")
+        when (o.getString("kind")) {
+            "del" -> { db.get(id)?.let { pins.value = pins.value.filterValues { v -> v != id } }; db.delete(id) }
+            "edit" -> if (db.get(id) != null) {
+                val from = o.getString("from")
+                val pub = if (from == me) null else pubOf(from)
+                try {
+                    val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, o.getString("target"), pub, o.getString("payload")), Charsets.UTF_8))
+                    db.setEdited(id, plain.optString("x", ""), o.optLong("edited", System.currentTimeMillis()))
+                } catch (e: Exception) { }
+            }
+        }
+        val seq = o.optLong("seq", 0)
+        if (seq > prefs.getLong("cseq", -1)) prefs.edit().putLong("cseq", seq).apply()
+        tick.value++
     }
 
     private fun postNotification(m: Msg) {
@@ -720,6 +744,87 @@ object Engine {
         } catch (e: Exception) { errText(e) }
     }
 
+    // ---------------- edit / delete for everyone / forward ----------------
+
+    const val EDIT_WINDOW_MS = 48 * 3600_000L
+
+    fun canEdit(m: Msg): Boolean =
+        m.mine && m.type == "text" && m.id > 0 && m.status == 0 && System.currentTimeMillis() - m.ts < EDIT_WINDOW_MS
+
+    /** The plaintext JSON a message was sent with (rebuilt from what we stored). */
+    private fun plainOf(m: Msg, text: String = m.text): JSONObject {
+        val p = JSONObject().put("t", m.type).put("x", text)
+        if (m.type != "text") p.put("n", m.fileName ?: "file").put("m", m.mime ?: "application/octet-stream")
+            .put("s", m.size).put("fk", m.fkey ?: "").put("w", m.w).put("h", m.h)
+        replyJson(p, m)
+        forwardJson(p, m)
+        return p
+    }
+
+    private fun forwardJson(plain: JSONObject, m: Msg) {
+        if (m.fwFrom != null) plain.put("f", JSONObject().put("u", m.fwFrom).put("n", m.fwName ?: ""))
+    }
+
+    /** Edits my text message; the old version is kept on the server encrypted for me only. */
+    suspend fun editMessage(m: Msg, newText: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val payload = encryptFor(m.convo, plainOf(m, newText).toString().toByteArray())
+            val id = identity!!
+            val prev = Crypto.encryptFor(id, me, m.convo, mapOf(me to id.pubB64), plainOf(m).toString().toByteArray())
+            val at = Api.edit(m.id, payload, prev)
+            db.setEdited(m.id, newText, at)
+            tick.value++
+            null
+        } catch (e: Api.HttpError) {
+            if (e.code == 403 && (e.message ?: "").contains("edit_window_passed")) "فقط تا ۴۸ ساعت بعد از ارسال می‌شود پیام را ویرایش کرد" else errText(e)
+        } catch (e: Exception) { errText(e) }
+    }
+
+    suspend fun deleteForAll(m: Msg): String? = withContext(Dispatchers.IO) {
+        try {
+            Api.deleteForAll(m.id)
+            db.delete(m.id)
+            tick.value++
+            null
+        } catch (e: Exception) { errText(e) }
+    }
+
+    /** Earlier texts of my edited message, oldest first, with the time each was replaced. */
+    suspend fun editHistory(m: Msg): List<Pair<String, Long>> = withContext(Dispatchers.IO) {
+        try {
+            Api.history(m.id).mapNotNull { (payload, ts) ->
+                try {
+                    val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, me, m.convo, null, payload), Charsets.UTF_8))
+                    plain.optString("x", "") to ts
+                } catch (e: Exception) { null }
+            }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    /**
+     * Forwards messages to other chats. Files are not uploaded again: the new message points to the same
+     * file and carries its key. With hideSender the copy looks like my own message.
+     */
+    fun forward(msgs: List<Msg>, targets: List<String>, hideSender: Boolean) {
+        val now = System.currentTimeMillis()
+        var n = 0
+        for (t in targets) for (m in msgs.sortedBy { it.ts }) {
+            if (m.status != 0 || m.type == "call" || m.id <= 0) continue
+            val origin = m.fwFrom ?: m.sender
+            val originName = m.fwName ?: nameOf(m.sender)
+            val fw = if (hideSender) null else origin
+            val copy = Msg(
+                -System.nanoTime(), t, me, true, now + n++, m.type, m.text, null, m.fileName, m.mime, m.size, m.fkey, m.w, m.h,
+                0L, null, null, m.localPath?.takeIf { File(it).exists() }, true, status = 1,
+                uploadId = m.fileId?.let { "f:$it" }, fwFrom = fw, fwName = if (fw != null) originName else null
+            )
+            if (m.type != "text" && m.fileId == null) continue
+            db.insert(copy)
+        }
+        tick.value++
+        flushAll()
+    }
+
     // ---------------- sending ----------------
 
     fun encryptFor(convo: String, plain: ByteArray): String {
@@ -849,6 +954,7 @@ object Engine {
     private fun sendQueuedText(m: Msg) {
         val plain = JSONObject().put("t", "text").put("x", m.text)
         replyJson(plain, m)
+        forwardJson(plain, m)
         val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plain.toString().toByteArray()), null)
         db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, read = true))
         db.delete(m.id)
@@ -871,9 +977,10 @@ object Engine {
     }
 
     private fun sendQueuedFile(m: Msg) {
-        val path = m.localPath ?: throw UserError("فایل محلی پیدا نشد")
-        val f = File(path)
-        if (!f.exists()) throw UserError("فایل محلی پیدا نشد")
+        // a forwarded file is already on the server ("f:" upload id), so it needs no local copy
+        val known = m.uploadId?.startsWith("f:") == true
+        val f = m.localPath?.let { File(it) }
+        if (!known && (f == null || !f.exists())) throw UserError("فایل محلی پیدا نشد")
         val fkey = m.fkey ?: throw UserError("کلید فایل پیدا نشد")
         val total = Crypto.cipherSize(m.size)
         val chunks = Crypto.chunkCount(m.size)
@@ -894,11 +1001,12 @@ object Engine {
                 off = 0
             }
             val up: String = upId
+            val src = f!!
             setProgress(m.id, off.toFloat() / total)
             val plainBuf = ByteArray(Crypto.FILE_CHUNK)
             val block = ByteArray(Crypto.CIPHER_CHUNK * 4)
             var resyncs = 0
-            RandomAccessFile(f, "r").use { raf ->
+            RandomAccessFile(src, "r").use { raf ->
                 while (fileId == null) {
                     var idx = (off / Crypto.CIPHER_CHUNK).toInt()
                     var pos = 0
@@ -933,11 +1041,15 @@ object Engine {
         val plain = JSONObject().put("t", m.type).put("n", m.fileName ?: "file").put("m", m.mime ?: "application/octet-stream")
             .put("s", m.size).put("fk", fkey).put("w", m.w).put("h", m.h)
         replyJson(plain, m)
+        forwardJson(plain, m)
         val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plain.toString().toByteArray()), fileId)
         val dest = File(mediaDir(), fileId!!)
-        if (!f.renameTo(dest)) { f.copyTo(dest, overwrite = true); f.delete() }
-        db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, fileId = fileId, localPath = dest.absolutePath, read = true))
-        db.setLocalPath(id, dest.absolutePath)
+        if (f != null && f.exists() && f.absolutePath != dest.absolutePath) {
+            if (known) { if (!dest.exists()) f.copyTo(dest) } else if (!f.renameTo(dest)) { f.copyTo(dest, overwrite = true); f.delete() }
+        }
+        val path = dest.takeIf { it.exists() }?.absolutePath
+        db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, fileId = fileId, localPath = path, read = true))
+        if (path != null) db.setLocalPath(id, path)
         db.delete(m.id)
         setProgress(m.id, null)
         tick.value++

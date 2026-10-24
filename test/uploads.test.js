@@ -106,12 +106,13 @@ test('encrypted file uploads in chunks, survives an interruption, and downloads 
 
   assert.equal((await S.api(bob, 'GET', '/api/file/' + id, undefined, { range: `bytes=${blob.length}-` })).status, 416);
 
-  // only the owner may attach it to a message
+  // the owner attaches it; others only once it reached them in a message (forwarding, no re-upload)
   const payload = C.b64(Buffer.from('meta'));
   assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', payload, fileId: id })).data.error, 'not_allowed');
-  assert.equal((await S.api(alice, 'POST', '/api/send', { target: 'bob', kind: 'file', payload, fileId: id })).status, 200);
   S.db.prepare("INSERT INTO visibility(viewer,target) VALUES('bob','alice')").run();
-  assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', payload, fileId: id })).data.error, 'bad_file');
+  assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', payload, fileId: id })).data.error, 'bad_file', 'not received yet');
+  assert.equal((await S.api(alice, 'POST', '/api/send', { target: 'bob', kind: 'file', payload, fileId: id })).status, 200);
+  assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', kind: 'file', payload, fileId: id })).status, 200, 'bob forwards what he received');
 });
 
 test('wrong offset gets 409 with the real offset so the client can resync', async (t) => {
