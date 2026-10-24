@@ -77,6 +77,17 @@ if (getSetting('migrated_v2') !== '1') {
   setSetting('migrated_v2', '1');
 }
 
+// 1.3: who-can-reach-whom is two-way. A one-way ⛔ closes the pair both ways; a one-way ✓ is opened
+// both ways (unless the pair is closed).
+if (getSetting('migrated_v13_links') !== '1') {
+  db.exec('BEGIN');
+  db.exec('INSERT OR IGNORE INTO blocks(viewer,target) SELECT target,viewer FROM blocks');
+  db.exec('DELETE FROM visibility WHERE EXISTS (SELECT 1 FROM blocks b WHERE b.viewer=visibility.viewer AND b.target=visibility.target)');
+  db.exec('INSERT OR IGNORE INTO visibility(viewer,target) SELECT target,viewer FROM visibility');
+  setSetting('migrated_v13_links', '1');
+  db.exec('COMMIT');
+}
+
 function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
   const h = crypto.scryptSync(pw, salt, 64);

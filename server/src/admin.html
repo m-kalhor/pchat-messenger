@@ -41,6 +41,21 @@ canvas{width:100%;height:150px;background:#0f1720;border-radius:8px;display:bloc
 .savebar.on{border-top-color:#e5a03a}
 .savebar .in{max-width:1200px;margin:0 auto;display:flex;gap:10px;align-items:center}
 .savebar .cnt{flex:1;color:var(--mut)}.savebar.on .cnt{color:#e5a03a}
+.two{display:grid;grid-template-columns:minmax(240px,1fr) 2fr;gap:14px;align-items:start}
+@media(max-width:760px){.two{grid-template-columns:1fr}}
+.ulist{max-height:65vh;overflow-y:auto;margin-top:8px}
+.urow{display:flex;align-items:center;gap:8px;padding:8px;border-radius:8px;cursor:pointer;border:1px solid transparent}
+.urow:hover{background:#0f1720}.urow.sel{background:#1d3550;border-color:var(--pri);outline:2px solid var(--pri)}
+.urow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.urow .nm small{color:var(--mut);margin-right:6px}
+.cnt2{color:var(--mut);font-size:12px;white-space:nowrap}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{background:#0f1720;color:var(--mut);border:0;padding:5px 10px;cursor:pointer;font-size:13px}
+.seg button+button{border-right:1px solid var(--line)}
+.seg button.on.c{background:var(--grn);color:#fff}.seg button.on.n{background:#2c3b4c;color:#fff}.seg button.on.b{background:var(--red);color:#fff}
+.filt button{background:none;border:1px solid var(--line);color:var(--mut);border-radius:14px;padding:3px 10px;cursor:pointer}
+.filt button.on{border-color:var(--pri);color:var(--text)}
+select{background:#0f1720;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px}
 .leg span{display:inline-block;margin-left:12px}.leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-left:4px}
 </style>
 </head>
@@ -74,19 +89,19 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'خانهٔ نامعتبر در ماتریس'};
+var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)'};
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
 function fmtDur(s){s=Math.floor(s);var d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return (d?d+' روز ':'')+hh+' ساعت '+m+' دقیقه';}
 function fmtDate(t){return t?new Date(t).toLocaleString('fa-IR'):'—';}
 
 // ---------------- unsaved changes (one "save all" button for every tab) ----------------
-var P={users:{},cats:{},vis:{},backup:null},bar=null;
+var P={users:{},cats:{},links:{},backup:null},bar=null;
 function sameList(a,b){a=a.slice().sort();b=b.slice().sort();return a.length===b.length&&a.every(function(x,i){return x===b[i];});}
 function userOf(n){return S.users.find(function(u){return u.username===n;});}
 function pendUser(n,key,val){
   var u=userOf(n),p=P.users[n]||{};
-  var orig=key==='categories'?u.categories:u.display_name;
+  var orig=u[key];
   if(key==='categories'?sameList(val,orig):val===orig)delete p[key];else p[key]=val;
   if(Object.keys(p).length)P.users[n]=p;else delete P.users[n];
   updateBar();
@@ -94,15 +109,20 @@ function pendUser(n,key,val){
 function curUser(n,key){var p=P.users[n];return p&&key in p?p[key]:userOf(n)[key];}
 function pendCat(id,name){var c=S.categories.find(function(x){return x.id===id;});if(name===c.name)delete P.cats[id];else P.cats[id]=name;updateBar();}
 var visSet={};
-// a matrix cell is true (can see), false (cannot) or 'block' (cannot, and no connection requests between the two)
-function origVis(k){return visSet[k]===undefined?false:visSet[k];}
-function isVis(v,t){var k=v+'>'+t;return k in P.vis?P.vis[k]:origVis(k);}
-function pendVis(v,t,on){var k=v+'>'+t;if(on===origVis(k))delete P.vis[k];else P.vis[k]=on;updateBar();}
-function dirty(){var n=Object.keys(P.cats).length+Object.keys(P.vis).length+(P.backup?1:0);for(var k in P.users)n+=Object.keys(P.users[k]).length;return n;}
+// a pair of users is connected (true: both can start a chat), not connected (false) or closed ('block':
+// no chat and no connection requests between the two). It is always the same both ways.
+function pairK(a,b){return a<b?a+'|'+b:b+'|'+a;}
+function origLink(a,b){
+  var x=visSet[a+'>'+b],y=visSet[b+'>'+a];
+  return x==='block'||y==='block'?'block':x===true||y===true;
+}
+function curLink(a,b){var k=pairK(a,b);return k in P.links?P.links[k]:origLink(a,b);}
+function setLink(a,b,st){if(a===b)return;var k=pairK(a,b);if(st===origLink(a,b))delete P.links[k];else P.links[k]=st;}
+function dirty(){var n=Object.keys(P.cats).length+Object.keys(P.links).length+(P.backup?1:0);for(var k in P.users)n+=Object.keys(P.users[k]).length;return n;}
 function prune(){ // drop pending edits of users/categories that were deleted meanwhile
   for(var n in P.users)if(!userOf(n))delete P.users[n];
   for(var id in P.cats)if(!S.categories.some(function(c){return String(c.id)===id;}))delete P.cats[id];
-  for(var k in P.vis){var a=k.split('>');if(!userOf(a[0])||!userOf(a[1]))delete P.vis[k];}
+  for(var k in P.links){var a=k.split('|');if(!userOf(a[0])||!userOf(a[1]))delete P.links[k];}
   visSet={};S.visibility.forEach(function(p){visSet[p[0]+'>'+p[1]]=true;});(S.blocks||[]).forEach(function(p){visSet[p[0]+'>'+p[1]]='block';});
 }
 function updateBar(){
@@ -111,10 +131,10 @@ function updateBar(){
   bar.save.disabled=!n;bar.undo.disabled=!n;bar.el.className='savebar'+(n?' on':'');
 }
 async function saveAll(){
-  var body={users:P.users,categories:P.cats,visibility:Object.keys(P.vis).map(function(k){var a=k.split('>');return [a[0],a[1],P.vis[k]];})};
+  var body={users:P.users,categories:P.cats,links:Object.keys(P.links).map(function(k){var a=k.split('|');return [a[0],a[1],P.links[k]];})};
   if(P.backup)body.backup=P.backup;
   bar.save.disabled=true;bar.save.textContent='در حال ذخیره…';
-  try{await api('POST','/save',body);P={users:{},cats:{},vis:{},backup:null};await reload();}
+  try{await api('POST','/save',body);P={users:{},cats:{},links:{},backup:null};await reload();}
   catch(e){alert(msg(e));}
   finally{bar.save.textContent='ذخیرهٔ همهٔ تغییرات';updateBar();}
 }
@@ -138,16 +158,16 @@ async function reload(){S=await api('GET','/state');prune();render();}
 
 function render(){
   clearInterval(timer);
-  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['matrix','ماتریس دیده‌شدن'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
+  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
   var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
   var box=h('main');
   var cnt=h('span',{class:'cnt'}),save=h('button',{class:'grn',onclick:saveAll},'ذخیرهٔ همهٔ تغییرات');
-  var undo=h('button',{class:'sec',onclick:function(){if(!confirm('همهٔ تغییرات ذخیره‌نشده لغو شود؟'))return;P={users:{},cats:{},vis:{},backup:null};render();}},'لغو تغییرات');
+  var undo=h('button',{class:'sec',onclick:function(){if(!confirm('همهٔ تغییرات ذخیره‌نشده لغو شود؟'))return;P={users:{},cats:{},links:{},backup:null};render();}},'لغو تغییرات');
   bar={el:h('div',{class:'savebar'},h('div',{class:'in'},cnt,undo,save)),cnt:cnt,save:save,undo:undo};
   app.replaceChildren(
-    h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},vis:{},backup:null};showLogin();}},'خروج')),
+    h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},links:{},backup:null};showLogin();}},'خروج')),
     nav,box,bar.el);
-  ({users:users,cats:cats,matrix:matrix,mon:monitor,bak:backups,acct:account})[tab](box);
+  ({users:users,cats:cats,links:links,mon:monitor,bak:backups,acct:account})[tab](box);
   updateBar();
 }
 function guard(fn){return async function(){try{await fn();}catch(e){alert(msg(e));}};}
@@ -163,11 +183,14 @@ function users(box){
       var j=await api('POST','/users',{username:un.value.trim(),display_name:dn.value,categories:ids});
       prompt('رمز کاربر '+un.value.trim()+' (فقط همین یک‌بار نمایش داده می‌شود):',j.password);
       await reload();})},'ایجاد'))));
-  var head=h('tr',null,h('th',null,'کاربر'),h('th',null,'نام نمایشی'),S.categories.map(function(c){return h('th',null,c.name);}),h('th',null,''));
+  var head=h('tr',null,h('th',null,'کاربر'),h('th',null,'نام نمایشی'),h('th',null,'موبایل'),S.categories.map(function(c){return h('th',null,c.name);}),h('th',null,''));
   var rows=S.users.map(function(u){
     var name=h('input',{value:curUser(u.username,'display_name'),placeholder:'—'});
     if(P.users[u.username]&&'display_name' in P.users[u.username])name.classList.add('chg');
     name.addEventListener('input',function(){pendUser(u.username,'display_name',name.value);name.classList.toggle('chg',name.value!==u.display_name);});
+    var ph=h('input',{value:curUser(u.username,'phone'),placeholder:'—',style:'direction:ltr;min-width:130px',inputmode:'tel'});
+    if(P.users[u.username]&&'phone' in P.users[u.username])ph.classList.add('chg');
+    ph.addEventListener('input',function(){pendUser(u.username,'phone',ph.value.trim());ph.classList.toggle('chg',ph.value.trim()!==u.phone);});
     var boxes={},cur=curUser(u.username,'categories');
     function ids(){return S.categories.filter(function(c){return boxes[c.id].checked;}).map(function(c){return c.id;});}
     var cells=S.categories.map(function(c){
@@ -177,14 +200,14 @@ function users(box){
       return td;});
     return h('tr',null,
       h('td',{title:u.bio||''},h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null,u.bio?h('div',{class:'mut',style:'font-size:12px;white-space:normal;max-width:220px'},u.bio):null),
-      h('td',null,name),cells,
+      h('td',null,name),h('td',null,ph),cells,
       h('td',null,
         h('button',{class:'sec',onclick:guard(async function(){if(!confirm('رمز جدید برای '+u.username+' ساخته شود؟'))return;var j=await api('POST','/users/'+u.username+'/reset');prompt('رمز جدید '+u.username+':',j.password);await reload();})},'ریست رمز'),' ',
         h('button',{class:u.disabled?'grn':'sec',onclick:guard(async function(){await api('POST','/users/'+u.username+'/update',{disabled:!u.disabled});await reload();})},u.disabled?'فعال‌سازی':'غیرفعال'),' ',
         h('button',{class:'red',onclick:guard(async function(){if(!confirm('کاربر '+u.username+' حذف شود؟'))return;await api('POST','/users/'+u.username+'/delete');await reload();})},'حذف')));
   });
   box.appendChild(h('div',{class:'card'},h('h3',null,'کاربران ('+S.users.length+')'),
-    h('div',{class:'mut',style:'margin-bottom:8px'},'نام نمایشی و عضویت در دسته‌ها با دکمهٔ «ذخیرهٔ همهٔ تغییرات» پایین صفحه ثبت می‌شود. ریست رمز، غیرفعال‌سازی و حذف همان لحظه انجام می‌شوند.'),
+    h('div',{class:'mut',style:'margin-bottom:8px'},'نام نمایشی، موبایل (برای ورود با پیامک در نسخه‌های بعد) و عضویت در دسته‌ها با دکمهٔ «ذخیرهٔ همهٔ تغییرات» پایین صفحه ثبت می‌شود. ریست رمز، غیرفعال‌سازی و حذف همان لحظه انجام می‌شوند.'),
     h('table',null,head,rows)));
 }
 
@@ -204,36 +227,82 @@ function cats(box){
   box.appendChild(h('div',{class:'card'},h('table',null,h('tr',null,h('th',null,'نام'),h('th',null,'اعضا'),h('th',null,'لیست اعضا'),h('th',null,'')),rows)));
 }
 
-// ---------------- visibility matrix ----------------
-var both=false;
-function matrix(box){
+// ---------------- who can reach whom (always both ways) ----------------
+var selUser=null,linkFilter='all';
+function links(box){
   var names=S.users.map(function(u){return u.username;});
-  var cellOf={};
-  function paint(v,t){var c=cellOf[v+'>'+t];if(!c)return;var st=isVis(v,t);
-    c.x.textContent=st===true?'✓':st==='block'?'⛔':'';c.x.className='cell'+(st===true?' on':st==='block'?' blk':'');
-    c.x.title=st===true?'می‌بیند':st==='block'?'بسته: نه دیده می‌شود و نه درخواست اتصال ممکن است':'نمی‌بیند';
-    c.td.className=(v+'>'+t) in P.vis?'chg':'';}
-  function setCell(v,t,on){pendVis(v,t,on);paint(v,t);if(both){pendVis(t,v,on);paint(t,v);}}
-  function setAll(on,rowOf){names.forEach(function(v){if(rowOf&&v!==rowOf)return;names.forEach(function(t){if(t!==v){pendVis(v,t,on);paint(v,t);}});});}
-  var bx=h('input',{type:'checkbox',checked:both});bx.addEventListener('change',function(){both=bx.checked;});
-  box.appendChild(h('div',{class:'card'},h('h3',null,'هر سطر (کاربر) چه کسانی را می‌بیند و می‌تواند به آن‌ها پیام خصوصی بدهد'),
-    h('div',{class:'mut',style:'margin-bottom:10px'},'با هر کلیک روی خانه: خالی ← ✓ ← ⛔ ← خالی. ✓ = می‌تواند گفتگو را شروع کند. ⛔ = بسته: نه می‌بیند و نه این دو نفر می‌توانند برای هم درخواست اتصال بفرستند. خانهٔ خالی یعنی نمی‌بیند، ولی کاربران می‌توانند با درخواست اتصال و تأیید طرف مقابل به هم وصل شوند. اگر کسی اول پیام بدهد، طرف مقابل می‌تواند جواب بدهد. تغییرات با «ذخیرهٔ همهٔ تغییرات» ثبت می‌شوند.'),
+  function dn(n){var u=userOf(n);return u&&u.display_name?u.display_name:'';}
+  function stats(n){var c=0,b=0;names.forEach(function(t){if(t===n)return;var st=curLink(n,t);if(st===true)c++;else if(st==='block')b++;});return {c:c,b:b};}
+  function touched(n){for(var k in P.links){var a=k.split('|');if(a[0]===n||a[1]===n)return true;}return false;}
+  function changed(){updateBar();renderLeft();renderRight();}
+  function catOpts(){return S.categories.map(function(c){return h('option',{value:c.id},c.name+' ('+c.count+')');});}
+  function membersOf(id){id=Number(id);return names.filter(function(n){return curUser(n,'categories').indexOf(id)>=0;});}
+
+  // whole-team actions
+  var gcat=h('select',null,catOpts());
+  box.appendChild(h('div',{class:'card'},h('h3',null,'چه کسانی می‌توانند با هم گفتگو کنند'),
+    h('div',{class:'mut',style:'margin-bottom:10px'},'ارتباط همیشه دوطرفه است. «وصل» = هر دو می‌توانند گفتگو را شروع کنند. «بسته» ⛔ = نه گفتگو و نه درخواست اتصال بین این دو. بدون ارتباط = هم را نمی‌بینند، ولی می‌توانند درخواست اتصال بفرستند و اگر یکی پیام بدهد دیگری می‌تواند جواب بدهد. تغییرات با «ذخیرهٔ همهٔ تغییرات» ثبت می‌شوند.'),
     h('div',{class:'row'},
-      h('label',{class:'chip'},bx,'دوطرفه (A↔B با یک کلیک)'),
-      h('button',{class:'sec',onclick:function(){setAll(true);}},'همه همدیگر را ببینند'),
-      h('button',{class:'sec',onclick:function(){setAll(false);}},'هیچ‌کس هیچ‌کس را نبیند'))));
-  var head=h('tr',null,h('th',null,'می‌بیند ↓ / دیده می‌شود →'),h('th',null,''),names.map(function(n){return h('th',null,n);}));
-  var rows=names.map(function(v){
-    return h('tr',null,h('th',null,v),
-      h('td',null,h('button',{class:'sec',title:'این کاربر همه را ببیند',onclick:function(){setAll(true,v);}},'همه'),' ',h('button',{class:'sec',title:'این کاربر هیچ‌کس را نبیند',onclick:function(){setAll(false,v);}},'هیچ')),
-      names.map(function(t){
-        if(t===v)return h('td',{class:'mut'},'—');
-        var x=h('button',{type:'button',class:'cell'}),td=h('td',null,x);cellOf[v+'>'+t]={x:x,td:td};
-        x.addEventListener('click',function(){var st=isVis(v,t);setCell(v,t,st===false?true:st===true?'block':false);});
-        return td;}));
-  });
-  box.appendChild(h('div',{class:'card'},h('table',null,head,rows)));
-  names.forEach(function(v){names.forEach(function(t){paint(v,t);});});
+      h('button',{class:'sec',onclick:function(){names.forEach(function(a){names.forEach(function(b){if(a<b&&curLink(a,b)!=='block')setLink(a,b,true);});});changed();}},'همه با همه وصل شوند (جز بسته‌ها)'),
+      h('button',{class:'sec',onclick:function(){if(!confirm('همهٔ ارتباط‌ها (جز بسته‌ها) قطع شود؟'))return;names.forEach(function(a){names.forEach(function(b){if(a<b&&curLink(a,b)===true)setLink(a,b,false);});});changed();}},'قطع همهٔ ارتباط‌ها'),
+      S.categories.length?[h('span',{class:'mut'},'  اعضای دستهٔ'),gcat,h('button',{class:'sec',onclick:function(){var m=membersOf(gcat.value);m.forEach(function(a){m.forEach(function(b){if(a<b&&curLink(a,b)!=='block')setLink(a,b,true);});});changed();}},'به هم وصل شوند')]:null)));
+
+  // users list
+  var q=h('input',{type:'text',placeholder:'جستجوی کاربر…',style:'width:100%'});
+  var list=h('div',{class:'ulist'});
+  q.addEventListener('input',renderLeft);
+  function renderLeft(){
+    var t=q.value.trim().toLowerCase();
+    list.replaceChildren.apply(list,names.filter(function(n){return !t||n.indexOf(t)>=0||dn(n).toLowerCase().indexOf(t)>=0;}).map(function(n){
+      var st=stats(n),u=userOf(n);
+      return h('div',{class:'urow'+(n===selUser?' sel':'')+(touched(n)?' chg':''),onclick:function(){selUser=n;renderLeft();renderRight();if(innerWidth<=760)right.scrollIntoView({behavior:'smooth'});}},
+        h('span',{class:'dot'+(u.online?' on':'')}),h('span',{class:'nm'},n,dn(n)?h('small',null,dn(n)):null),
+        h('span',{class:'cnt2'},st.c+' وصل'+(st.b?' · '+st.b+' ⛔':'')));
+    }));
+  }
+
+  // one user's connections
+  var right=h('div',{class:'card'});
+  var rq=h('input',{type:'text',placeholder:'جستجو در کاربران…',style:'flex:1'});
+  rq.addEventListener('input',function(){renderRows();});
+  var rows=h('div',{class:'ulist'});
+  function renderRight(){
+    if(!selUser||!userOf(selUser)){right.replaceChildren(h('div',{class:'mut'},'یک کاربر را از فهرست انتخاب کنید تا ارتباط‌هایش را ببینید و تغییر دهید.'));return;}
+    var me=selUser,st=stats(me);
+    var cat=h('select',null,catOpts()),src=h('select',null,names.filter(function(n){return n!==me;}).map(function(n){return h('option',{value:n},n+(dn(n)?' ('+dn(n)+')':''));}));
+    function bulk(fn){names.forEach(function(t){if(t!==me)fn(t);});changed();}
+    var filt=h('div',{class:'filt row'},[['all','همه'],['c','وصل ('+st.c+')'],['b','بسته ('+st.b+')'],['n','بدون ارتباط']].map(function(f){
+      return h('button',{class:f[0]===linkFilter?'on':'',onclick:function(){linkFilter=f[0];renderRight();}},f[1]);}));
+    right.replaceChildren(
+      h('h3',null,me+(dn(me)?' — '+dn(me):'')),
+      h('div',{class:'row'},
+        h('button',{class:'sec',onclick:function(){bulk(function(t){if(curLink(me,t)!=='block')setLink(me,t,true);});}},'وصل به همه'),
+        h('button',{class:'sec',onclick:function(){bulk(function(t){if(curLink(me,t)===true)setLink(me,t,false);});}},'قطع از همه'),
+        S.categories.length?[h('span',{class:'mut'},'وصل به اعضای'),cat,h('button',{class:'sec',onclick:function(){var m=membersOf(cat.value);bulk(function(t){if(m.indexOf(t)>=0&&curLink(me,t)!=='block')setLink(me,t,true);});}},'افزودن')]:null),
+      names.length>2?h('div',{class:'row'},h('span',{class:'mut'},'ارتباط‌های'),src,h('button',{class:'sec',title:'ارتباط‌های این کاربر دقیقاً مثل کاربر انتخاب‌شده می‌شود',onclick:function(){var o=src.value;if(!confirm('ارتباط‌های '+me+' مثل '+o+' شود؟'))return;bulk(function(t){if(t!==o)setLink(me,t,curLink(o,t));});}},'برای این کاربر کپی شود')):null,
+      filt,h('div',{class:'row'},rq),rows);
+    renderRows();
+  }
+  function renderRows(){
+    var me=selUser;if(!me)return;
+    var t=rq.value.trim().toLowerCase(),order={'true':0,'block':1,'false':2};
+    var others=names.filter(function(n){
+      if(n===me)return false;
+      var st=curLink(me,n);
+      if(linkFilter==='c'&&st!==true||linkFilter==='b'&&st!=='block'||linkFilter==='n'&&st!==false)return false;
+      return !t||n.indexOf(t)>=0||dn(n).toLowerCase().indexOf(t)>=0;
+    }).sort(function(a,b){return order[String(curLink(me,a))]-order[String(curLink(me,b))]||(a<b?-1:1);});
+    rows.replaceChildren(others.length?h('table',null,others.map(function(n){
+      var st=curLink(me,n),k=pairK(me,n);
+      function b(val,cls,label,title){return h('button',{class:cls+(st===val?' on':''),title:title,onclick:function(){setLink(me,n,val);changed();}},label);}
+      return h('tr',{class:k in P.links?'chg':''},h('td',null,h('span',{class:'dot'+(userOf(n).online?' on':'')}),n,dn(n)?h('span',{class:'mut'},'  '+dn(n)):null),
+        h('td',{style:'text-align:left'},h('span',{class:'seg'},b(true,'c','✓ وصل','هر دو می‌توانند گفتگو را شروع کنند'),b(false,'n','—','بدون ارتباط'),b('block','b','⛔ بسته','نه گفتگو و نه درخواست اتصال'))));
+    })):h('div',{class:'mut'},'کاربری نیست'));
+  }
+
+  box.appendChild(h('div',{class:'two'},h('div',{class:'card'},h('h3',null,'کاربران ('+names.length+')'),q,list),right));
+  if(selUser&&!userOf(selUser))selUser=null;
+  renderLeft();renderRight();
 }
 
 // ---------------- monitoring ----------------

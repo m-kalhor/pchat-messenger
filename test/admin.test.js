@@ -71,6 +71,28 @@ test('a failing save changes nothing', async () => {
   assert.equal((await adm('POST', '/save', { backup: { enabled: true, cron: 'nope', keep: 3 } })).status, 400);
 });
 
+test('links are saved both ways and a mobile number can be set', async () => {
+  const r = await adm('POST', '/save', {
+    users: { ann: { phone: '۰۹۱۲ 345-6789' }, ben: { phone: '+989121112233' } },
+    links: [['ann', 'cid', true], ['ben', 'cid', 'block']],
+  });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const st = (await adm('GET', '/state')).data;
+  const has = (list, v, t) => list.some((p) => p[0] === v && p[1] === t);
+  assert.ok(has(st.visibility, 'ann', 'cid') && has(st.visibility, 'cid', 'ann'));
+  assert.ok(has(st.blocks, 'ben', 'cid') && has(st.blocks, 'cid', 'ben'));
+  assert.ok(!has(st.visibility, 'ben', 'cid') && !has(st.visibility, 'cid', 'ben'));
+  assert.equal(st.users.find((u) => u.username === 'ann').phone, '09123456789');
+  assert.equal(st.users.find((u) => u.username === 'ben').phone, '+989121112233');
+
+  assert.equal((await adm('POST', '/save', { users: { cid: { phone: '12ab' } } })).data.error, 'bad_phone');
+  assert.equal((await adm('POST', '/save', { links: [['ann', 'ann', true]] })).data.error, 'bad_pair');
+  await adm('POST', '/save', { users: { ann: { phone: '' } }, links: [['ann', 'cid', false]] });
+  const st2 = (await adm('GET', '/state')).data;
+  assert.equal(st2.users.find((u) => u.username === 'ann').phone, '');
+  assert.ok(!has(st2.visibility, 'ann', 'cid') && !has(st2.visibility, 'cid', 'ann'));
+});
+
 test('account change needs the current password and logs other sessions out', async () => {
   const mine = { cookie, csrf };
   await login('admin', 'first-pass-1'); // a second browser

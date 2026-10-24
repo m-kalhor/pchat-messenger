@@ -15,6 +15,8 @@ const fails = new Map();
 let gfail = { n: 0, t: 0 }; // global failed-login counter (all IPs)
 const SESSION_MS = 12 * 3600 * 1000;
 const NAME = /^[a-z0-9_]{2,20}$/;
+/** Mobile number for the future SMS login: optional +, 7 to 15 digits (spaces, dashes and brackets are dropped). */
+const PHONE = /^\+?[0-9]{7,15}$/;
 const ADMIN_NAME = /^[a-z0-9_.\-]{3,32}$/;
 const adminUser = () => getSetting('admin_user', 'admin');
 
@@ -45,12 +47,12 @@ function session(req) {
 }
 
 function stateDump(ctx) {
-  const users = db.prepare('SELECT username, display_name, bio, disabled, created, avatar_ver FROM users ORDER BY username').all();
+  const users = db.prepare('SELECT username, display_name, bio, phone, disabled, created, avatar_ver FROM users ORDER BY username').all();
   const uc = db.prepare('SELECT username, category_id FROM user_categories').all();
   const cats = db.prepare('SELECT c.id, c.name, c.gkey, (SELECT COUNT(*) FROM user_categories WHERE category_id=c.id) AS count FROM categories c ORDER BY c.id').all();
   return {
     users: users.map((u) => ({
-      username: u.username, display_name: u.display_name || '', bio: u.bio || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0,
+      username: u.username, display_name: u.display_name || '', bio: u.bio || '', phone: u.phone || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0,
       online: ctx.isOnline(u.username), categories: uc.filter((x) => x.username === u.username).map((x) => x.category_id),
     })),
     categories: cats,
@@ -131,12 +133,17 @@ async function route(ctx, req, res, secure) {
     return json(res, 200, { ok: true, username: user });
   }
 
-  // one "save all changes" for users, categories, the visibility matrix and the backup schedule
+  // one "save all changes" for users, categories, who-can-reach-whom and the backup schedule.
+  // links: [a, b, state] for the pair in both directions; visibility: [viewer, target, state] one way (older panels)
   if (sub === '/save' && req.method === 'POST') {
     const b = await readJson(req, 1048576);
     const users = b.users && typeof b.users === 'object' ? b.users : {};
     const cats = b.categories && typeof b.categories === 'object' ? b.categories : {};
-    const vis = Array.isArray(b.visibility) ? b.visibility : [];
+    const vis = Array.isArray(b.visibility) ? b.visibility.slice() : [];
+    if (Array.isArray(b.links)) for (const l of b.links) { if (!Array.isArray(l)) return json(res, 400, { error: 'bad_pair' }); vis.push([l[0], l[1], l[2]], [l[1], l[0], l[2]]); }
+    for (const u of Object.values(users)) {
+      if (u && typeof u.phone === 'string') { u.phone = u.phone.replace(/[\s\-()]/g, '').replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x6f0).replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x660); if (u.phone && !PHONE.test(u.phone)) return json(res, 400, { error: 'bad_phone' }); }
+    }
     for (const name of Object.keys(users)) if (!core.q.user.get(name)) return json(res, 400, { error: 'no_such_user', detail: name });
     for (const [id, name] of Object.entries(cats)) if (!/^\d+$/.test(id) || !core.cleanDisplay(name)) return json(res, 400, { error: 'bad_name', detail: id });
     for (const p of vis) {
@@ -147,6 +154,7 @@ async function route(ctx, req, res, secure) {
       catch (e) { return json(res, 400, { error: e.message }); }
     }
     const setName = db.prepare('UPDATE users SET display_name=? WHERE username=?');
+    const setPhone = db.prepare('UPDATE users SET phone=? WHERE username=?');
     const renameCat = db.prepare('UPDATE categories SET name=? WHERE id=?');
     const visOn = db.prepare('INSERT OR IGNORE INTO visibility(viewer,target) VALUES(?,?)');
     const visOff = db.prepare('DELETE FROM visibility WHERE viewer=? AND target=?');
@@ -156,6 +164,7 @@ async function route(ctx, req, res, secure) {
     try {
       for (const [name, u] of Object.entries(users)) {
         if (typeof u.display_name === 'string') setName.run(core.cleanDisplay(u.display_name) || null, name);
+        if (typeof u.phone === 'string') setPhone.run(u.phone || null, name);
         if (Array.isArray(u.categories)) core.setUserCategories(name, u.categories);
       }
       for (const [id, name] of Object.entries(cats)) renameCat.run(core.cleanDisplay(name), Number(id));
