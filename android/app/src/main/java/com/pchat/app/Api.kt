@@ -21,6 +21,7 @@ data class UserInfo(
     val username: String, val pubkey: String?, val online: Boolean,
     val displayName: String? = null, val avatarVer: Int = 0, val dm: Boolean = true, val bio: String? = null
 )
+data class ContactRequest(val username: String, val displayName: String?, val status: String, val ts: Long)
 data class GroupInfo(val key: String, val name: String, val members: List<String>)
 class TurnInfo(val urls: List<String>, val user: String, val cred: String, val expiresAt: Long)
 class PatchResult(val offset: Long, val done: Boolean, val fileId: String?)
@@ -104,6 +105,25 @@ object Api {
         val r = Request.Builder().url(Config.BASE + "/api/logout").header("Authorization", "Bearer $t")
             .post("{}".toRequestBody(JSON)).build()
         exec(r)
+    }
+
+    /** incoming = people asking me; outgoing = my own requests (status pending/declined). */
+    fun contactRequests(): Pair<List<ContactRequest>, List<ContactRequest>> {
+        val o = JSONObject(exec(req("/api/contacts/requests").get().build()))
+        fun list(k: String) = o.getJSONArray(k).let { a ->
+            (0 until a.length()).map { i ->
+                val r = a.getJSONObject(i)
+                ContactRequest(r.getString("username"), if (r.isNull("display_name")) null else r.optString("display_name", "").ifEmpty { null },
+                    r.optString("status", "pending"), r.optLong("ts"))
+            }
+        }
+        return list("incoming") to list("outgoing")
+    }
+
+    /** what = request | respond | cancel | remove. Returns the server's result ("sent", "connected" or "ok"). */
+    fun contactAction(what: String, username: String, accept: Boolean = false): String {
+        val body = JSONObject().put("username", username).put("accept", accept).toString()
+        return JSONObject(exec(req("/api/contacts/$what").post(body.toRequestBody(JSON)).build())).optString("result", "ok")
     }
 
     fun usersRaw(): String = exec(req("/api/users").get().build())

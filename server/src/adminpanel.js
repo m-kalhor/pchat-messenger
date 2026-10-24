@@ -55,6 +55,7 @@ function stateDump(ctx) {
     })),
     categories: cats,
     visibility: db.prepare('SELECT viewer, target FROM visibility').all().map((r) => [r.viewer, r.target]),
+    blocks: db.prepare('SELECT viewer, target FROM blocks').all().map((r) => [r.viewer, r.target]),
   };
 }
 
@@ -149,6 +150,8 @@ async function route(ctx, req, res, secure) {
     const renameCat = db.prepare('UPDATE categories SET name=? WHERE id=?');
     const visOn = db.prepare('INSERT OR IGNORE INTO visibility(viewer,target) VALUES(?,?)');
     const visOff = db.prepare('DELETE FROM visibility WHERE viewer=? AND target=?');
+    const blockOn = db.prepare('INSERT OR IGNORE INTO blocks(viewer,target) VALUES(?,?)');
+    const blockOff = db.prepare('DELETE FROM blocks WHERE viewer=? AND target=?');
     db.exec('BEGIN');
     try {
       for (const [name, u] of Object.entries(users)) {
@@ -156,7 +159,11 @@ async function route(ctx, req, res, secure) {
         if (Array.isArray(u.categories)) core.setUserCategories(name, u.categories);
       }
       for (const [id, name] of Object.entries(cats)) renameCat.run(core.cleanDisplay(name), Number(id));
-      for (const [v, t, on] of vis) (on ? visOn : visOff).run(v, t);
+      // a cell is true (can see), false (cannot) or 'block' (cannot, and no connection requests either way)
+      for (const [v, t, on] of vis) {
+        (on === true ? visOn : visOff).run(v, t);
+        (on === 'block' ? blockOn : blockOff).run(v, t);
+      }
       db.exec('COMMIT');
     } catch (e) {
       db.exec('ROLLBACK');
@@ -230,6 +237,7 @@ async function route(ctx, req, res, secure) {
   if (sub === '/visibility/set' && req.method === 'POST') {
     const b = await readJson(req);
     if (!NAME.test(b.viewer || '') || !NAME.test(b.target || '') || b.viewer === b.target) return json(res, 400, { error: 'bad_pair' });
+    db.prepare('DELETE FROM blocks WHERE viewer=? AND target=?').run(b.viewer, b.target);
     if (b.on) db.prepare('INSERT OR IGNORE INTO visibility(viewer,target) VALUES(?,?)').run(b.viewer, b.target);
     else db.prepare('DELETE FROM visibility WHERE viewer=? AND target=?').run(b.viewer, b.target);
     ctx.refreshAll();
@@ -238,6 +246,7 @@ async function route(ctx, req, res, secure) {
   if (sub === '/visibility/preset' && req.method === 'POST') {
     const b = await readJson(req);
     db.exec('DELETE FROM visibility');
+    db.exec('DELETE FROM blocks');
     if (b.preset === 'all') db.exec('INSERT INTO visibility(viewer,target) SELECT a.username,b.username FROM users a, users b WHERE a.username<>b.username');
     ctx.refreshAll();
     return json(res, 200, { ok: true });

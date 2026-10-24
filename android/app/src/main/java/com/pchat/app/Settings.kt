@@ -175,7 +175,11 @@ fun SettingRow(title: String, subtitle: String?, color: Color = Color.Unspecifie
 fun ContactProfileDialog(user: String, onClose: () -> Unit) {
     val users by Engine.users.collectAsState()
     val u = users.firstOrNull { it.username == user }
+    val scope = rememberCoroutineScope()
     var showPhoto by remember { mutableStateOf(false) }
+    var confirmCut by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var msg by remember { mutableStateOf<String?>(null) }
     AlertDialog(
         onDismissRequest = onClose,
         confirmButton = { TextButton(onClick = onClose) { Text("بستن") } },
@@ -190,6 +194,22 @@ fun ContactProfileDialog(user: String, onClose: () -> Unit) {
                     Spacer(Modifier.height(14.dp))
                     Text(bio, fontSize = 15.sp, textAlign = TextAlign.Center)
                     Text("بایو", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                }
+                if (u?.dm == true) {
+                    Spacer(Modifier.height(14.dp))
+                    if (confirmCut) {
+                        Text("اتصال با ${Engine.nameOf(user)} قطع شود؟ دیگر نمی‌توانید به هم پیام خصوصی بدهید، مگر با درخواست اتصال تازه.", fontSize = 13.sp, textAlign = TextAlign.Center)
+                        Row {
+                            TextButton(enabled = !busy, onClick = {
+                                busy = true
+                                scope.launch { val (err, _) = Engine.contactAction("remove", user); busy = false; if (err == null) onClose() else msg = err }
+                            }) { Text("بله، قطع شود", color = MaterialTheme.colorScheme.error) }
+                            TextButton(onClick = { confirmCut = false }) { Text("انصراف") }
+                        }
+                    } else {
+                        TextButton(onClick = { confirmCut = true }) { Text("قطع اتصال", color = MaterialTheme.colorScheme.error) }
+                    }
+                    msg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error) }
                 }
             }
         }

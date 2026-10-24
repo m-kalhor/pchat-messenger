@@ -55,6 +55,8 @@ object Engine {
     val tick = MutableStateFlow(0L)
     val users = MutableStateFlow<List<UserInfo>>(emptyList())
     val groups = MutableStateFlow<List<GroupInfo>>(emptyList())
+    val incomingRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
+    val outgoingRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
     /** conversation key -> pinned message id */
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -121,6 +123,8 @@ object Engine {
         prefs.edit().putLong("last_id", 0).remove("users_raw").remove("groups_raw").apply()
         users.value = emptyList()
         groups.value = emptyList()
+        incomingRequests.value = emptyList()
+        outgoingRequests.value = emptyList()
         pins.value = emptyMap()
         progress.value = emptyMap()
         failures.value = emptyMap()
@@ -216,7 +220,60 @@ object Engine {
         scope.launch {
             try { refreshUsers() } catch (e: Exception) { }
             try { refreshGroups() } catch (e: Exception) { }
+            try { refreshRequests() } catch (e: Exception) { }
         }
+    }
+
+    fun refreshRequests() {
+        val (inc, out) = Api.contactRequests()
+        val known = incomingRequests.value.map { it.username }.toSet()
+        incomingRequests.value = inc
+        outgoingRequests.value = out
+        for (r in inc) if (r.username !in known && !prefs.getBoolean("req_seen_${r.username}_${r.ts}", false)) {
+            prefs.edit().putBoolean("req_seen_${r.username}_${r.ts}", true).apply()
+            postRequestNotification(r)
+        }
+    }
+
+    private fun contactErr(e: Exception): String {
+        val code = (e as? Api.HttpError)?.let { try { JSONObject(it.message ?: "").optString("error") } catch (x: Exception) { "" } } ?: ""
+        return when (code) {
+            "no_such_user" -> "کاربری با این نام کاربری پیدا نشد"
+            "bad_username" -> "نام کاربری نامعتبر است"
+            "already_connected" -> "شما از قبل به این کاربر متصل هستید"
+            "declined_recently" -> "این کاربر درخواست قبلی شما را رد کرده؛ فردا دوباره امتحان کنید"
+            "not_allowed" -> "مدیر ارتباط شما با این کاربر را بسته است"
+            "no_request" -> "این درخواست دیگر وجود ندارد"
+            else -> errText(e)
+        }
+    }
+
+    /** Sends / answers / withdraws a connection request, or removes a connection. Returns (error, result). */
+    suspend fun contactAction(what: String, username: String, accept: Boolean = false): Pair<String?, String?> = withContext(Dispatchers.IO) {
+        try {
+            val r = Api.contactAction(what, username.trim().lowercase(), accept)
+            try { refreshRequests() } catch (e: Exception) { }
+            try { refreshUsers() } catch (e: Exception) { }
+            null to r
+        } catch (e: Exception) { contactErr(e) to null }
+    }
+
+    private fun postRequestNotification(r: ContactRequest) {
+        if (appVisible) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val i = Intent(app, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+        val pi = PendingIntent.getActivity(app, 7702, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val who = r.displayName?.let { "$it (${r.username})" } ?: r.username
+        val n = NotificationCompat.Builder(app, CH_MSG)
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle("درخواست اتصال")
+            .setContentText("$who می‌خواهد با شما در ارتباط باشد")
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        NotificationManagerCompat.from(app).notify(("req:" + r.username).hashCode(), n)
     }
 
     private fun pubOf(u: String): String? =
@@ -265,6 +322,7 @@ object Engine {
             try {
                 refreshUsers()
                 try { refreshGroups() } catch (e: Api.HttpError) { if (e.code == 401) throw e }
+                try { refreshRequests() } catch (e: Exception) { }
                 Api.stream(
                     prefs.getLong("last_id", 0),
                     onOpen = {
@@ -313,6 +371,7 @@ object Engine {
                 try { refreshUsers() } catch (e: Exception) { }
                 try { refreshGroups() } catch (e: Exception) { }
             }
+            "contacts" -> try { refreshRequests() } catch (e: Exception) { }
             "pin" -> {
                 val convo = o.getString("convo")
                 if (o.isNull("messageId")) pins.value = pins.value - convo

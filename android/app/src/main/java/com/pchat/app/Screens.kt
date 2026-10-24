@@ -152,6 +152,9 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     val connected by Engine.connected.collectAsState()
     val rows = remember(tick, users) { Engine.summaries() }
     var menu by remember { mutableStateOf(false) }
+    var addContact by remember { mutableStateOf(false) }
+    var showRequests by remember { mutableStateOf(false) }
+    val incoming by Engine.incomingRequests.collectAsState()
 
     Scaffold(
         topBar = {
@@ -165,6 +168,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                        DropdownMenuItem(text = { Text("افزودن مخاطب") }, onClick = { menu = false; addContact = true })
+                        DropdownMenuItem(text = { Text("درخواست‌های اتصال" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
                         DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
                         DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
                     }
@@ -173,6 +178,18 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
         }
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+            if (incoming.isNotEmpty()) item(key = "requests") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showRequests = true }.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("👋", fontSize = 22.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("${incoming.size} درخواست اتصال تازه", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text("مشاهده", color = MaterialTheme.colorScheme.primary)
+                }
+            }
             items(rows, key = { it.convo }) { r ->
               Column {
                 val online = users.firstOrNull { it.username == r.convo }?.online ?: false
@@ -204,6 +221,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
             }
         }
     }
+    if (addContact) AddContactDialog { addContact = false }
+    if (showRequests) RequestsDialog { showRequests = false }
 }
 
 /** Shows key fingerprints so users can verify each other out-of-band (protects against a malicious server swapping keys). */
@@ -243,4 +262,3 @@ fun KeysDialog(contacts: List<String>, onClose: () -> Unit) {
         }
     )
 }
-

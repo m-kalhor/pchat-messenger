@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { db, DATA_DIR, hashPassword, checkPassword } = require('./db');
 const core = require('./core');
+const contacts = require('./contacts');
 const { sanitizeWebp } = require('./webp');
 const stats = require('./stats');
 const backup = require('./backup');
@@ -343,6 +344,28 @@ async function route(req, res) {
     if (tr.type === 'group') for (const u of core.membersOf(tr.cat.id)) emit(u, 'pin', { convo: key, messageId: mid, by: user });
     else { emit(tr.peer, 'pin', { convo: user, messageId: mid, by: user }); emit(user, 'pin', { convo: tr.peer, messageId: mid, by: user }); }
     return send(res, 200, { ok: true });
+  }
+
+  // ---- connection requests between users (fill the visibility matrix without the admin) ----
+  if (p === '/api/contacts/requests' && req.method === 'GET') return send(res, 200, contacts.lists(user));
+  const cm = /^\/api\/contacts\/(request|respond|cancel|remove)$/.exec(p);
+  if (cm && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    const other = String(b.username || '').trim().toLowerCase();
+    try {
+      let result = 'ok';
+      if (cm[1] === 'request') result = contacts.request(user, other);
+      else if (cm[1] === 'respond') contacts.respond(user, other, !!b.accept);
+      else if (cm[1] === 'cancel') contacts.cancel(user, other);
+      else contacts.remove(user, other);
+      emit(other, 'contacts', {});
+      emit(user, 'contacts', {});
+      if (result === 'connected' || (cm[1] === 'respond' && b.accept) || cm[1] === 'remove') { emit(other, 'refresh', {}); emit(user, 'refresh', {}); }
+      return send(res, 200, { result });
+    } catch (e) {
+      const code = e.message === 'no_such_user' || e.message === 'no_request' ? 404 : e.message === 'not_allowed' ? 403 : 400;
+      return send(res, code, { error: e.message });
+    }
   }
 
   if (p === '/api/turn' && req.method === 'GET') {
