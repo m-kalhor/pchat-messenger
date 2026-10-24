@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>پنل مدیریت پیام‌رسان</title>
+<style>
+:root{--bg:#0f1720;--card:#17212b;--line:#243140;--text:#e8eef5;--mut:#8aa0b5;--pri:#3390ec;--red:#e5484d;--grn:#30a46c}
+*{box-sizing:border-box}
+body{margin:0;font-family:Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px}
+header{display:flex;align-items:center;gap:12px;padding:12px 18px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+header h1{font-size:17px;margin:0;flex:1}
+nav{display:flex;gap:6px;flex-wrap:wrap;padding:12px 18px}
+nav button{background:var(--card);color:var(--text);border:1px solid var(--line);padding:8px 14px;border-radius:8px;cursor:pointer}
+nav button.on{background:var(--pri);border-color:var(--pri)}
+main{padding:0 18px 40px;max-width:1200px;margin:0 auto}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px;margin-bottom:14px;overflow-x:auto}
+h3{margin:0 0 10px;font-size:15px}
+input[type=text],input[type=password],input[type=number],input:not([type]){background:#0f1720;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:7px 9px;min-width:120px}
+button{font-family:inherit}
+button.pri,button.red,button.grn,button.sec{border:0;color:#fff;padding:7px 12px;border-radius:8px;cursor:pointer}
+button.pri{background:var(--pri)} button.red{background:var(--red)} button.grn{background:var(--grn)} button.sec{background:#2c3b4c}
+button:disabled{opacity:.5;cursor:default}
+table{border-collapse:collapse;width:100%}
+th,td{padding:7px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap}
+th{color:var(--mut);font-weight:normal}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+.chip{background:#0f1720;border:1px solid var(--line);border-radius:14px;padding:3px 9px;display:inline-flex;gap:4px;align-items:center;margin:2px}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#556;margin-left:6px}.dot.on{background:var(--grn)}
+.mut{color:var(--mut)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
+canvas{width:100%;height:150px;background:#0f1720;border-radius:8px;display:block}
+.kv{display:flex;gap:18px;flex-wrap:wrap;margin-bottom:10px}.kv div{background:#0f1720;border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+.kv b{display:block;font-size:16px;margin-top:2px}
+#login{max-width:340px;margin:12vh auto;text-align:center}
+.err{color:#ff8b8b;min-height:20px;margin-top:8px}
+.leg span{display:inline-block;margin-left:12px}.leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-left:4px}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function(){
+var csrf=null,S=null,tab='users',timer=null;
+var app=document.getElementById('app');
+
+function h(tag,attrs){
+  var e=document.createElement(tag);
+  if(attrs)for(var k in attrs){var v=attrs[k];
+    if(k==='class')e.className=v;
+    else if(k.slice(0,2)==='on')e.addEventListener(k.slice(2),v);
+    else if(k==='value')e.value=v;
+    else if(k==='checked')e.checked=!!v;
+    else if(k==='disabled')e.disabled=!!v;
+    else e.setAttribute(k,v);}
+  for(var i=2;i<arguments.length;i++){add(e,arguments[i]);}
+  return e;
+}
+function add(e,c){
+  if(c==null||c===false)return;
+  if(Array.isArray(c)){c.forEach(function(x){add(e,x);});return;}
+  e.appendChild((typeof c==='string'||typeof c==='number')?document.createTextNode(String(c)):c);
+}
+async function api(method,path,body){
+  var r=await fetch('/admin/api'+path,{method:method,credentials:'same-origin',headers:{'Content-Type':'application/json','X-CSRF':csrf||''},body:body?JSON.stringify(body):undefined});
+  var j={};try{j=await r.json();}catch(e){}
+  if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
+  return j;
+}
+var ERR={bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است'};
+function msg(e){return ERR[e.message]||e.message;}
+function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
+function fmtDur(s){s=Math.floor(s);var d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return (d?d+' روز ':'')+hh+' ساعت '+m+' دقیقه';}
+function fmtDate(t){return t?new Date(t).toLocaleString('fa-IR'):'—';}
+
+function showLogin(){
+  clearInterval(timer);
+  var pw=h('input',{type:'password',placeholder:'رمز ادمین'}),er=h('div',{class:'err'});
+  var go=async function(){er.textContent='';try{var j=await api('POST','/login',{password:pw.value});csrf=j.csrf;start();}catch(e){er.textContent=msg(e);}};
+  pw.addEventListener('keydown',function(ev){if(ev.key==='Enter')go();});
+  app.replaceChildren(h('div',{id:'login',class:'card'},h('h3',null,'ورود به پنل مدیریت'),pw,h('div',{style:'height:10px'}),h('button',{class:'pri',onclick:go},'ورود'),er));
+}
+async function start(){
+  try{S=await api('GET','/state');}catch(e){return;}
+  render();
+}
+async function reload(){S=await api('GET','/state');render();}
+
+function render(){
+  clearInterval(timer);
+  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['matrix','ماتریس دیده‌شدن'],['mon','منابع سرور'],['bak','پشتیبان‌گیری']];
+  var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
+  var box=h('main');
+  app.replaceChildren(
+    h('header',null,h('h1',null,'پنل مدیریت پیام‌رسان'),h('button',{class:'sec',onclick:async function(){try{await api('POST','/logout');}catch(e){}csrf=null;showLogin();}},'خروج')),
+    nav,box);
+  ({users:users,cats:cats,matrix:matrix,mon:monitor,bak:backups})[tab](box);
+}
+function guard(fn){return async function(){try{await fn();}catch(e){alert(msg(e));}};}
+
+// ---------------- users ----------------
+function users(box){
+  var un=h('input',{placeholder:'نام کاربری (a-z ، 0-9 ، _)'}),dn=h('input',{placeholder:'نام نمایشی (اختیاری)'});
+  var chk={},cb=h('span');
+  S.categories.forEach(function(c){var x=h('input',{type:'checkbox'});chk[c.id]=x;cb.appendChild(h('label',{class:'chip'},x,c.name));});
+  box.appendChild(h('div',{class:'card'},h('h3',null,'افزودن کاربر'),h('div',{class:'row'},un,dn,cb,
+    h('button',{class:'pri',onclick:guard(async function(){
+      var ids=S.categories.filter(function(c){return chk[c.id].checked;}).map(function(c){return c.id;});
+      var j=await api('POST','/users',{username:un.value.trim(),display_name:dn.value,categories:ids});
+      prompt('رمز کاربر '+un.value.trim()+' (فقط همین یک‌بار نمایش داده می‌شود):',j.password);
+      await reload();})},'ایجاد'))));
+  var head=h('tr',null,h('th',null,'کاربر'),h('th',null,'نام نمایشی'),S.categories.map(function(c){return h('th',null,c.name);}),h('th',null,''));
+  var rows=S.users.map(function(u){
+    var name=h('input',{value:u.display_name,placeholder:'—'});
+    var boxes={};
+    var cells=S.categories.map(function(c){var x=h('input',{type:'checkbox',checked:u.categories.indexOf(c.id)>=0});boxes[c.id]=x;return h('td',null,x);});
+    function ids(){return S.categories.filter(function(c){return boxes[c.id].checked;}).map(function(c){return c.id;});}
+    return h('tr',null,
+      h('td',null,h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null),
+      h('td',null,name),cells,
+      h('td',null,
+        h('button',{class:'pri',onclick:guard(async function(){await api('POST','/users/'+u.username+'/update',{display_name:name.value,categories:ids()});await reload();})},'ذخیره'),' ',
+        h('button',{class:'sec',onclick:guard(async function(){if(!confirm('رمز جدید برای '+u.username+' ساخته شود؟'))return;var j=await api('POST','/users/'+u.username+'/reset');prompt('رمز جدید '+u.username+':',j.password);await reload();})},'ریست رمز'),' ',
+        h('button',{class:u.disabled?'grn':'sec',onclick:guard(async function(){await api('POST','/users/'+u.username+'/update',{disabled:!u.disabled});await reload();})},u.disabled?'فعال‌سازی':'غیرفعال'),' ',
+        h('button',{class:'red',onclick:guard(async function(){if(!confirm('کاربر '+u.username+' حذف شود؟'))return;await api('POST','/users/'+u.username+'/delete');await reload();})},'حذف')));
+  });
+  box.appendChild(h('div',{class:'card'},h('h3',null,'کاربران ('+S.users.length+')'),h('table',null,head,rows)));
+}
+
+// ---------------- categories ----------------
+function cats(box){
+  var nm=h('input',{placeholder:'نام دسته جدید'});
+  box.appendChild(h('div',{class:'card'},h('h3',null,'هر دسته یک گروه چت است؛ فقط اعضای دسته آن گروه را می‌بینند'),h('div',{class:'row'},nm,
+    h('button',{class:'pri',onclick:guard(async function(){await api('POST','/categories',{name:nm.value});await reload();})},'افزودن دسته'))));
+  var rows=S.categories.map(function(c){
+    var r=h('input',{value:c.name});
+    var members=S.users.filter(function(u){return u.categories.indexOf(c.id)>=0;}).map(function(u){return u.username;}).join('، ');
+    return h('tr',null,h('td',null,r),h('td',null,c.count),h('td',{class:'mut',style:'white-space:normal'},members||'—'),
+      h('td',null,h('button',{class:'pri',onclick:guard(async function(){await api('POST','/categories/'+c.id+'/rename',{name:r.value});await reload();})},'تغییر نام'),' ',
+        h('button',{class:'red',onclick:guard(async function(){if(!confirm('دسته «'+c.name+'» حذف شود؟ گروه آن برای همه بسته می‌شود.'))return;await api('POST','/categories/'+c.id+'/delete');await reload();})},'حذف')));
+  });
+  box.appendChild(h('div',{class:'card'},h('table',null,h('tr',null,h('th',null,'نام'),h('th',null,'اعضا'),h('th',null,'لیست اعضا'),h('th',null,'')),rows)));
+}
+
+// ---------------- visibility matrix ----------------
+function matrix(box){
+  var set={};S.visibility.forEach(function(p){set[p[0]+'>'+p[1]]=1;});
+  box.appendChild(h('div',{class:'card'},h('h3',null,'هر سطر (کاربر) چه کسانی را می‌بیند و می‌تواند به آن‌ها پیام خصوصی بدهد'),
+    h('div',{class:'mut',style:'margin-bottom:10px'},'تیک = می‌تواند گفتگو را شروع کند. اگر کسی اول به او پیام بدهد، می‌تواند جواب بدهد. اعضای یک گروه همدیگر را در همان گروه می‌بینند.'),
+    h('div',{class:'row'},
+      h('button',{class:'sec',onclick:guard(async function(){if(!confirm('همه همدیگر را ببینند؟'))return;await api('POST','/visibility/preset',{preset:'all'});await reload();})},'همه همدیگر را ببینند'),
+      h('button',{class:'sec',onclick:guard(async function(){if(!confirm('همه تیک‌ها پاک شود؟'))return;await api('POST','/visibility/preset',{preset:'none'});await reload();})},'هیچ‌کس هیچ‌کس را نبیند'))));
+  var names=S.users.map(function(u){return u.username;});
+  var head=h('tr',null,h('th',null,'می‌بیند ↓ / دیده می‌شود →'),names.map(function(n){return h('th',null,n);}));
+  var rows=names.map(function(v){
+    return h('tr',null,h('th',null,v),names.map(function(t){
+      if(t===v)return h('td',{class:'mut'},'—');
+      var x=h('input',{type:'checkbox',checked:!!set[v+'>'+t]});
+      x.addEventListener('change',guard(async function(){await api('POST','/visibility/set',{viewer:v,target:t,on:x.checked});}));
+      return h('td',null,x);}));
+  });
+  box.appendChild(h('div',{class:'card'},h('table',null,head,rows)));
+}
+
+// ---------------- monitoring ----------------
+function chart(cv,series,max,fmt){
+  var dpr=window.devicePixelRatio||1,w=cv.clientWidth,hh=cv.clientHeight;
+  cv.width=w*dpr;cv.height=hh*dpr;
+  var g=cv.getContext('2d');g.scale(dpr,dpr);g.clearRect(0,0,w,hh);
+  g.strokeStyle='#243140';g.lineWidth=1;
+  for(var i=0;i<=4;i++){var y=Math.round((hh-1)*i/4)+.5;g.beginPath();g.moveTo(0,y);g.lineTo(w,y);g.stroke();}
+  var n=series[0].data.length;
+  series.forEach(function(s){
+    g.strokeStyle=s.color;g.lineWidth=2;g.beginPath();
+    s.data.forEach(function(v,i){var x=n<2?0:i*(w/(n-1));var y=hh-2-(Math.min(v,max)/max)*(hh-4);if(i===0)g.moveTo(x,y);else g.lineTo(x,y);});
+    g.stroke();});
+  g.fillStyle='#8aa0b5';g.font='11px sans-serif';g.fillText(fmt(max),4,12);g.fillText('0',4,hh-4);
+}
+function monitor(box){
+  var kv=h('div',{class:'kv'});
+  function cv(title,legend){var c=h('canvas');return {c:c,el:h('div',{class:'card'},h('h3',null,title),c,h('div',{class:'leg mut',style:'margin-top:6px'},legend))};}
+  var cpu=cv('پردازنده (CPU %)',[h('span',null,h('i',{style:'background:#3390ec'}),'مصرف CPU')]);
+  var mem=cv('حافظه (RAM)',[h('span',null,h('i',{style:'background:#30a46c'}),'مصرف‌شده')]);
+  var net=cv('پهنای باند شبکه',[h('span',null,h('i',{style:'background:#30a46c'}),'ورودی'),h('span',null,h('i',{style:'background:#e5a03a'}),'خروجی')]);
+  var dsk=cv('ورودی/خروجی دیسک',[h('span',null,h('i',{style:'background:#3390ec'}),'خواندن'),h('span',null,h('i',{style:'background:#e5484d'}),'نوشتن')]);
+  box.appendChild(h('div',{class:'card'},kv));
+  box.appendChild(h('div',{class:'grid'},cpu.el,mem.el,net.el,dsk.el));
+  async function tick(){
+    var d;try{d=await api('GET','/stats');}catch(e){return;}
+    var s=d.samples,i=d.info,L=s[s.length-1]||{cpu:0,memUsed:0,memTotal:1,rx:0,tx:0,dr:0,dw:0,load:0};
+    kv.replaceChildren(
+      h('div',null,'CPU',h('b',null,L.cpu.toFixed(1)+'٪ ('+i.cores+' هسته)')),
+      h('div',null,'RAM',h('b',null,fmtB(L.memUsed)+' / '+fmtB(L.memTotal)+' ('+(100*L.memUsed/L.memTotal).toFixed(0)+'٪)')),
+      h('div',null,'دیسک',h('b',null,fmtB(i.diskTotal-i.diskFree)+' / '+fmtB(i.diskTotal)+' (آزاد '+fmtB(i.diskFree)+')')),
+      h('div',null,'شبکه ↓ / ↑',h('b',null,fmtB(L.rx)+'/s  ·  '+fmtB(L.tx)+'/s')),
+      h('div',null,'دیسک خواندن / نوشتن',h('b',null,fmtB(L.dr)+'/s  ·  '+fmtB(L.dw)+'/s')),
+      h('div',null,'آنلاین / کل کاربران',h('b',null,i.online+' / '+i.users)),
+      h('div',null,'حجم فایل‌های پیام‌رسان',h('b',null,fmtB(i.filesBytes)+' ('+i.filesCount+' فایل)')),
+      h('div',null,'حجم دیتابیس',h('b',null,fmtB(i.dbBytes))),
+      h('div',null,'حافظه برنامه',h('b',null,fmtB(i.nodeRss))),
+      h('div',null,'زمان روشن بودن سرور',h('b',null,fmtDur(i.uptime))));
+    if(!s.length)return;
+    chart(cpu.c,[{data:s.map(function(x){return x.cpu;}),color:'#3390ec'}],100,function(v){return v+'%';});
+    chart(mem.c,[{data:s.map(function(x){return 100*x.memUsed/x.memTotal;}),color:'#30a46c'}],100,function(v){return v+'%';});
+    var nm=Math.max(10240,Math.max.apply(null,s.map(function(x){return Math.max(x.rx,x.tx);}))*1.2);
+    chart(net.c,[{data:s.map(function(x){return x.rx;}),color:'#30a46c'},{data:s.map(function(x){return x.tx;}),color:'#e5a03a'}],nm,function(v){return fmtB(v)+'/s';});
+    var dm=Math.max(10240,Math.max.apply(null,s.map(function(x){return Math.max(x.dr,x.dw);}))*1.2);
+    chart(dsk.c,[{data:s.map(function(x){return x.dr;}),color:'#3390ec'},{data:s.map(function(x){return x.dw;}),color:'#e5484d'}],dm,function(v){return fmtB(v)+'/s';});
+  }
+  tick();timer=setInterval(tick,2000);
+}
+
+// ---------------- backups ----------------
+async function backups(box){
+  var B;try{B=await api('GET','/backup');}catch(e){return;}
+  var en=h('input',{type:'checkbox',checked:B.config.enabled}),cr=h('input',{value:B.config.cron,style:'direction:ltr;width:180px'}),kp=h('input',{type:'number',value:B.config.keep,style:'width:80px'});
+  box.appendChild(h('div',{class:'card'},h('h3',null,'پشتیبان‌گیری زمان‌بندی‌شده از دیتابیس'),
+    h('div',{class:'row'},h('label',null,en,' فعال'),h('span',null,'زمان‌بندی (cron):'),cr,h('span',null,'نگه‌داری آخرین'),kp,h('span',null,'نسخه'),
+      h('button',{class:'pri',onclick:guard(async function(){await api('POST','/backup/config',{enabled:en.checked,cron:cr.value,keep:Number(kp.value)});await render();})},'ذخیره')),
+    h('div',{class:'mut'},'نمونه: «0 3 * * *» هر شب ساعت ۳ ، «*/30 * * * *» هر نیم‌ساعت ، «0 */6 * * *» هر ۶ ساعت (به ساعت سرور)'),
+    h('div',{style:'margin-top:8px'},'اجرای بعدی: ',B.next?fmtDate(B.next):'—','   ·   آخرین پشتیبان: ',fmtDate(B.last))));
+  var run=h('button',{class:'grn',onclick:guard(async function(){run.disabled=true;run.textContent='در حال تهیه…';try{await api('POST','/backup/run');}finally{await render();}})},'همین الان پشتیبان بگیر');
+  var trs=B.list.map(function(b){
+    var del=h('button',{class:'red',onclick:guard(async function(){if(!confirm('حذف شود؟'))return;await api('POST','/backup/delete',{name:b.name});await render();})},'حذف');
+    var dl=h('a',{href:'/admin/api/backup/download/'+b.name,style:'color:#6cb4ff'},'دانلود');
+    return h('tr',null,h('td',{style:'direction:ltr;text-align:left'},b.name),h('td',null,fmtB(b.size)),h('td',null,fmtDate(b.mtime)),h('td',null,dl,'  ',del));
+  });
+  var table=h('table',null,h('tr',null,h('th',null,'فایل'),h('th',null,'حجم'),h('th',null,'تاریخ'),h('th',null,'')),trs);
+  box.appendChild(h('div',{class:'card'},
+    h('div',{class:'row'},h('h3',{style:'margin:0;flex:1'},'پشتیبان‌ها ('+B.list.length+')'),run),
+    table,
+    h('div',{class:'mut',style:'margin-top:8px'},'پشتیبان فقط دیتابیس را دارد (پیام‌ها رمزشده‌اند). فایل‌های ضمیمه شامل نمی‌شوند.')));
+}
+
+(async function init(){try{var j=await api('GET','/session');csrf=j.csrf;start();}catch(e){showLogin();}})();
+})();
+</script>
+</body>
+</html>
