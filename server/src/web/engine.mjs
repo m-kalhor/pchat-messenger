@@ -11,9 +11,11 @@ const td = new TextDecoder();
 
 export const S = {
   me: '', identity: null, ready: false,
+  keyStep: null, keyBackup: null, // see checkKey()
   users: [], groups: [], pins: {}, read: {}, typing: {},
   convos: new Map(),          // convo -> array of messages, oldest first
   lastId: 0,
+  cseq: -1,                   // last edit/delete number seen (-1 = none yet)
   conn: 'offline',            // offline | connecting | online
   requests: { incoming: [], outgoing: [] },
   progress: new Map(),        // message id -> 0..1 (upload / download)
@@ -72,6 +74,8 @@ export async function init() {
   if (!token || !S.identity || !S.me) { S.ready = true; return false; }
   api.setToken(token);
   S.lastId = (await store.kvGet('last_id')) || 0;
+  const cs = await store.kvGet('cseq');
+  S.cseq = typeof cs === 'number' ? cs : -1;
   S.users = (await store.kvGet('users')) || [];
   S.groups = (await store.kvGet('groups')) || [];
   S.read = (await store.kvGet('read')) || {};
@@ -79,44 +83,27 @@ export async function init() {
   for (const list of S.convos.values()) list.sort(byOrder);
   for (const m of [...S.convos.values()].flat()) if (m.status === 1 && m.type !== 'text') { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
   S.ready = true;
-  startStream();
+  let step = null;
+  try { step = await checkKey(); } catch { }
+  if (step !== 'choose') startStream();
   refreshAll();
   return true;
 }
 
 /**
- * Logs in and sets up the account's key. The key is kept on the server as a backup encrypted with
- * the account password, so every login, on any device, uses the same key and old messages stay
- * readable (same flow as the Android app):
- *  - a backup exists: open it with the password and use that key;
- *  - it cannot be opened (the admin reset the password): keep using this device's key if it is
- *    the same one, otherwise ask, because a new key cannot read the old messages;
- *  - no backup yet: back up this device's key (asking first if another device registered a
- *    different key without a backup, i.e. an older Android version).
- * Returns { ok: true } or { conflict: 'reset' | 'device' }; call again with force = true to go ahead.
+ * Logs in. The account's key lives on the server as a backup locked with the user's key password
+ * (v2) or, for accounts from 1.1-1.2, with the login password (v1), so every device uses the same key
+ * and old messages stay readable. After the login checkKey() decides whether the user must first
+ * restore the key, make a new one or set a key password (S.keyStep); the key screen handles that.
  */
-export async function login(username, password, force = false) {
+export async function login(username, password) {
   username = username.trim().toLowerCase();
   let id = S.identity || (await C.newIdentity());
   const r = await api.login(username, password);
   api.setToken(r.token);
-  const giveUp = async (conflict) => { try { await api.logout(); } catch { } api.setToken(null); return { conflict }; };
-  const backup = async () => {
-    const kb = await C.exportBackup(id, r.username, password);
-    try { await api.saveKeyBackup(kb, password); } catch (e) {
-      if (!(e instanceof api.HttpError && e.status === 404)) throw e;
-      await api.setPubkey(id.pubB64); // server without key backups
-    }
-  };
-  if (r.key_backup) {
-    try { id = await C.importBackup(r.key_backup, r.username, password); } catch {
-      if (r.key_backup.pub !== id.pubB64 && !force) return giveUp('reset');
-      await backup();
-    }
-  } else {
-    const self = (await api.users()).find((u) => u.username === r.username);
-    if (self && self.pubkey && self.pubkey !== id.pubB64 && !force) return giveUp('device');
-    await backup();
+  // a v1 backup opens with the login password: take that key silently (then only a key password is missing)
+  if (r.key_backup && r.key_backup.v === 1 && r.key_backup.pub !== id.pubB64) {
+    try { id = await C.importBackup(r.key_backup, r.username, password); } catch { }
   }
   S.identity = id;
   await store.kvSet('identity', id);
@@ -124,17 +111,101 @@ export async function login(username, password, force = false) {
   S.me = r.username;
   await store.kvSet('me', S.me);
   await store.kvSet('token', r.token);
+  loginPass = password;
   S.users = (await api.users()).map((u) => (u.username === S.me ? { ...u, pubkey: id.pubB64 } : u));
   await store.kvSet('users', S.users);
+  try { await checkKey(r.key_backup); } catch { }
+  emit('login');
+  if (S.keyStep !== 'choose') startStream();
+  refreshAll();
+  return { ok: true };
+}
+
+// ---------------- identity key: restore / new / key password ----------------
+let loginPass = null; // kept in memory only, so the key step right after login needs no second password
+export const needsAccountPassword = () => !loginPass;
+
+/**
+ * S.keyStep: 'choose' = this device's key is not the account's key (restore it with the key password,
+ * or make a new one); 'setpass' = the key is right but has no key password yet (mandatory);
+ * null = all good. `kb` is the server's backup when the caller already has it.
+ */
+export async function checkKey(kb) {
+  if (kb === undefined) kb = (await api.getKeyBackup()).key_backup;
+  const self = (await api.users()).find((u) => u.username === S.me);
+  const serverPub = self ? self.pubkey : null;
+  const mine = S.identity.pubB64;
+  let step = null;
+  if (kb && kb.pub !== mine) step = 'choose';
+  else if (!kb && serverPub && serverPub !== mine) step = 'choose';
+  else if (!kb || kb.v !== 2) step = 'setpass';
+  S.keyBackup = kb || null;
+  if (step !== S.keyStep) { S.keyStep = step; emit('key'); }
+  if (step === 'choose') stopStream();
+  return step;
+}
+
+async function uploadBackup(id, keyPassword, accountPassword) {
+  const kb = await C.exportBackup(id, S.me, keyPassword);
+  await api.saveKeyBackup(kb, accountPassword || loginPass);
+  if (accountPassword) loginPass = accountPassword;
+  S.keyBackup = kb;
+}
+
+/** Messages that arrived while the wrong key was in use are fetched and opened again. */
+async function retryLocked() {
+  let from = 0;
+  for (const list of S.convos.values()) {
+    for (const m of [...list]) if (m.locked && m.id > 0) { if (!from || m.id < from) from = m.id; removeLocal(m); await store.delMsg(m.id); }
+  }
+  if (from && from - 1 < S.lastId) { S.lastId = from - 1; await store.kvSet('last_id', S.lastId); }
+}
+
+async function keyDone(id) {
+  S.identity = id;
+  await store.kvSet('identity', id);
+  S.users = S.users.map((u) => (u.username === S.me ? { ...u, pubkey: id.pubB64 } : u));
+  await retryLocked();
+  S.keyStep = null;
+  emit('key');
+  emit('msg', null);
   startStream();
   refreshAll();
-  emit('login');
-  return { ok: true };
+}
+
+/** Restores the account key from the server backup. Returns an error text or null. */
+export async function restoreKey(secret) {
+  const kb = S.keyBackup;
+  if (!kb) return 'پشتیبانی از کلید روی سرور نیست';
+  let id;
+  try { id = await C.importBackup(kb, S.me, secret); } catch { return kb.v === 1 ? 'رمز درست نیست (برای این حساب رمز ورود قبلی را بزنید)' : 'رمز کلید درست نیست'; }
+  await keyDone(id);
+  if (kb.v !== 2) { S.keyStep = 'setpass'; emit('key'); }
+  return null;
+}
+
+/** Replaces the account key with a new one (old messages cannot be opened with it). */
+export async function newKey(keyPassword, accountPassword) {
+  const id = await C.newIdentity();
+  try { await uploadBackup(id, keyPassword, accountPassword); } catch (e) { return keyErr(e); }
+  await keyDone(id);
+  return null;
+}
+
+/** Locks this device's key with a (new) key password. */
+export async function setKeyPassword(keyPassword, accountPassword) {
+  try { await uploadBackup(S.identity, keyPassword, accountPassword); } catch (e) { return keyErr(e); }
+  if (S.keyStep === 'setpass') { S.keyStep = null; emit('key'); }
+  return null;
+}
+function keyErr(e) {
+  if (e instanceof api.HttpError && e.status === 403) { loginPass = null; return 'رمز ورود حساب اشتباه است'; }
+  return errText(e);
 }
 
 function resetState() {
   S.users = []; S.groups = []; S.pins = {}; S.read = {}; S.typing = {};
-  S.convos = new Map(); S.lastId = 0; S.progress.clear(); S.failures.clear();
+  S.convos = new Map(); S.lastId = 0; S.cseq = -1; S.progress.clear(); S.failures.clear();
 }
 
 export async function logout() {
@@ -148,6 +219,7 @@ async function endSession(reason) {
   await store.kvDel('me');
   await store.wipeAccountData();
   S.me = '';
+  S.keyStep = null; S.keyBackup = null; loginPass = null;
   resetState();
   emit('logout', reason || null);
 }
@@ -157,10 +229,10 @@ export async function refreshUsers() {
   const list = await api.users();
   S.users = list.map((u) => (u.username === S.me ? { ...u, pubkey: S.identity.pubB64 } : u));
   const self = list.find((u) => u.username === S.me);
-  if (self && self.pubkey && self.pubkey !== S.identity.pubB64) {
-    // the account logged in on another device (its Android phone), which replaced our key
-    await endSession('این حساب روی دستگاه دیگری وارد شد؛ برای استفاده در اینجا دوباره وارد شوید');
-    return;
+  if (self && self.pubkey && self.pubkey !== S.identity.pubB64 && S.keyStep !== 'choose') {
+    // another device made a new key for this account: stop until the user restores it here
+    await checkKey();
+    if (S.keyStep === 'choose') return;
   }
   await store.kvSet('users', S.users);
   emit('users');
@@ -197,7 +269,7 @@ export function startStream() {
       setConn('connecting');
       let opened = 0, replayed = 0;
       try {
-        await api.stream(S.lastId, ctl.signal, () => { setConn('online'); backoff = 1000; opened = lastData = Date.now(); flush(); }, (ev, data) => {
+        await api.stream(S.lastId, S.cseq, ctl.signal, () => { setConn('online'); backoff = 1000; opened = lastData = Date.now(); flush(); }, (ev, data) => {
           lastData = Date.now();
           if (ev !== 'ping') queueEvent(ev, data);
           // the server replays at most 2000 old messages per connection: reconnect for the rest
@@ -238,6 +310,8 @@ async function handleEvent(ev, data) {
   const o = JSON.parse(data);
   switch (ev) {
     case 'msg': return handleMsg(o);
+    case 'change': return handleChange(o);
+    case 'cseq': S.cseq = o.seq; return store.kvSet('cseq', S.cseq);
     case 'presence': {
       const u = user(o.user);
       if (!u || o.online) { try { await refreshUsers(); } catch { } }
@@ -285,7 +359,8 @@ async function handleMsg(o) {
     const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pub, o.payload)));
     const r = plain.r || null;
     m = {
-      id: o.id, convo, sender: o.from, mine, ts: o.ts, type: plain.t || 'text', text: plain.x || '',
+      id: o.id, convo, sender: o.from, mine, ts: o.ts, type: plain.t || 'text', text: plain.x || '', edited: o.edited || 0,
+      fwFrom: plain.f ? plain.f.u || null : null, fwName: plain.f ? plain.f.n || null : null,
       fileId: o.fileId || null, name: plain.n || null, mime: plain.m || null, size: plain.s || 0, fk: plain.fk || null,
       w: plain.w || 0, h: plain.h || 0, replyId: r ? r.id || 0 : 0, replyUser: r ? r.u || null : null, replyText: r ? r.x || null : null, status: 0,
     };
@@ -300,6 +375,97 @@ async function handleMsg(o) {
     if (mine || (S.openConvo === convo && document.visibilityState === 'visible')) markRead(convo);
     emit('msg', m);
   }
+}
+
+/** An edit or a delete-for-everyone of a message we may already have. */
+async function handleChange(o) {
+  const list = S.convos.get(isGroup(o.target) ? o.target : o.from === S.me ? o.target : o.from) || [];
+  const m = list.find((x) => x.id === o.id);
+  if (m && o.kind === 'del') {
+    removeLocal(m);
+    await store.delMsg(m.id);
+    for (const [c, id] of Object.entries(S.pins)) if (id === m.id) delete S.pins[c];
+    emit('msg', m);
+  } else if (m && o.kind === 'edit') {
+    try {
+      const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pubOf(o.from), o.payload)));
+      m.text = plain.x || '';
+      m.edited = o.edited || Date.now();
+      await store.putMsg(m);
+      emit('msg', m);
+    } catch { }
+  }
+  if (o.seq > S.cseq) { S.cseq = o.seq; await store.kvSet('cseq', S.cseq); }
+}
+
+// ---------------- edit / delete for everyone / forward ----------------
+export const EDIT_WINDOW = 48 * 3600e3;
+export const canEdit = (m) => m.mine && m.type === 'text' && m.id > 0 && m.status === 0 && Date.now() - m.ts < EDIT_WINDOW;
+const forwardJson = (m) => (m.fwFrom ? { f: { u: m.fwFrom, n: m.fwName || '' } } : {});
+function plainOf(m, text = m.text) {
+  const p = { t: m.type, x: text, ...replyJson(m), ...forwardJson(m) };
+  if (m.type !== 'text') Object.assign(p, { n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h });
+  return p;
+}
+
+/** Edits my text message; the old version stays on the server encrypted for me only. */
+export async function editMessage(m, text) {
+  try {
+    const payload = await encryptFor(m.convo, plainOf(m, text));
+    const prev = await C.encryptFor(S.identity, S.me, m.convo, {}, JSON.stringify(plainOf(m)));
+    const r = await api.editMessage(m.id, payload, prev);
+    m.text = text; m.edited = r.edited;
+    await store.putMsg(m);
+    emit('msg', m);
+    return null;
+  } catch (e) {
+    if (e instanceof api.HttpError && e.body && e.body.error === 'edit_window_passed') return 'فقط تا ۴۸ ساعت بعد از ارسال می‌شود پیام را ویرایش کرد';
+    return errText(e);
+  }
+}
+
+export async function deleteForAll(m) {
+  try { await api.deleteMessage(m.id); } catch (e) { return errText(e); }
+  removeLocal(m);
+  await store.delMsg(m.id);
+  emit('msg', m);
+  return null;
+}
+
+/** Earlier texts of my edited message, oldest first: [{ text, ts }] (ts = when it was replaced). */
+export async function editHistory(m) {
+  const out = [];
+  for (const v of (await api.messageHistory(m.id)).versions) {
+    try { out.push({ text: JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, S.me, m.convo, null, v.payload))).x || '', ts: v.ts }); } catch { }
+  }
+  return out;
+}
+
+/** Forwards messages to other chats; files are not uploaded again. hideSender sends a plain copy. */
+export async function forward(msgs, targets, hideSender) {
+  let n = 0;
+  for (const t of targets) {
+    for (const src of [...msgs].sort((a, b) => a.ts - b.ts)) {
+      if (src.status !== 0 || src.type === 'call' || src.id <= 0 || (src.type !== 'text' && !src.fileId)) continue;
+      const fw = hideSender ? null : src.fwFrom || src.sender;
+      const m = {
+        id: localId(), convo: t, sender: S.me, mine: true, ts: Date.now() + n++, type: src.type, text: src.text || '',
+        name: src.name || null, mime: src.mime || null, size: src.size || 0, fk: src.fk || null, w: src.w || 0, h: src.h || 0,
+        status: 1, replyId: 0, replyUser: null, replyText: null,
+        fwFrom: fw, fwName: fw ? src.fwName || nameOf(src.sender) : null,
+      };
+      addLocal(m);
+      if (m.type === 'text') await store.putMsg(m);
+      else {
+        Object.defineProperty(m, '_fileId', { value: src.fileId, enumerable: false, writable: true });
+        const blob = blobs.get(src.fileId);
+        if (blob) Object.defineProperty(m, '_file', { value: blob, enumerable: false, writable: true });
+        uploadFile(m);
+      }
+      emit('msg', m);
+    }
+  }
+  flush();
 }
 
 // ---------------- reading ----------------
@@ -371,7 +537,7 @@ export async function flush() {
     const pending = [...S.convos.values()].flat().filter((m) => m.status === 1 && m.type === 'text').sort((a, b) => a.ts - b.ts);
     for (const m of pending) {
       try {
-        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m) });
+        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m) });
         const r = await api.send(m.convo, payload);
         await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0 });
       } catch (e) {
@@ -482,10 +648,10 @@ async function uploadFile(m) {
       }
       m._fileId = fileId;
     }
-    const plain = { t: m.type, n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h, ...replyJson(m) };
+    const plain = { t: m.type, n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h, ...replyJson(m), ...forwardJson(m) };
     const r = await api.send(m.convo, await encryptFor(m.convo, plain), fileId);
     const real = { ...m, id: r.id, ts: r.ts, status: 0, fileId };
-    if (m.type === 'image' && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
+    if (file && m.type === 'image' && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
     const url = blobUrls.get(m.id);
     if (url) { blobUrls.delete(m.id); blobUrls.set(fileId, url); blobs.delete(m.id); blobs.set(fileId, file); }
     setProgress(m.id, null);

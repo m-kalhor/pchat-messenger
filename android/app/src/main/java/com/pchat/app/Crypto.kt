@@ -91,9 +91,10 @@ object Crypto {
             .putString("priv", b64(enc)).putString("pub", id.pubB64).commit()
     }
 
-    // ---------------- key backup v1 (same format as the web client and test/helpers/pchat-crypto.js) ----------------
-    // KEK = PBKDF2-HMAC-SHA256(password, salt, iter, 256 bits)
-    // ct  = AES-256-GCM(KEK, iv, PKCS#8 private key, aad "sepan-keybackup-v1|" + username), tag appended
+    // ---------------- key backup (same format as the web client and test/helpers/pchat-crypto.js) ----------------
+    // KEK = PBKDF2-HMAC-SHA256(secret, salt, iter, 256 bits)
+    // ct  = AES-256-GCM(KEK, iv, PKCS#8 private key, aad "sepan-keybackup-v<v>|" + username), tag appended
+    // v1 (1.1-1.2) was locked with the login password; v2 (since 1.3.0) with a separate key password.
     private const val BACKUP_ITER = 310000
 
     private fun backupKek(password: String, salt: ByteArray, iter: Int): SecretKey {
@@ -102,23 +103,25 @@ object Crypto {
         return SecretKeySpec(raw, "AES")
     }
 
-    fun exportBackup(my: Identity, username: String, password: String): JSONObject {
+    fun exportBackup(my: Identity, username: String, keyPassword: String): JSONObject {
         val salt = randomBytes(16)
         val iv = randomBytes(12)
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.ENCRYPT_MODE, backupKek(password, salt, BACKUP_ITER), GCMParameterSpec(128, iv))
-        c.updateAAD(("sepan-keybackup-v1|$username").toByteArray())
+        c.init(Cipher.ENCRYPT_MODE, backupKek(keyPassword, salt, BACKUP_ITER), GCMParameterSpec(128, iv))
+        c.updateAAD(("sepan-keybackup-v2|$username").toByteArray())
         val ct = c.doFinal(my.priv.encoded)
-        return JSONObject().put("v", 1).put("kdf", "pbkdf2-sha256").put("iter", BACKUP_ITER)
+        return JSONObject().put("v", 2).put("kdf", "pbkdf2-sha256").put("iter", BACKUP_ITER)
             .put("salt", b64(salt)).put("iv", b64(iv)).put("ct", b64(ct)).put("pub", my.pubB64)
     }
 
-    /** Throws when the password is wrong (GCM tag check fails). */
-    fun importBackup(kb: JSONObject, username: String, password: String): Identity {
+    /** Opens a v1 (login password) or v2 (key password) backup. Throws when the secret is wrong (GCM tag check fails). */
+    fun importBackup(kb: JSONObject, username: String, secret: String): Identity {
+        val v = kb.optInt("v", 1)
+        require(v == 1 || v == 2) { "unknown backup format" }
         val c = Cipher.getInstance("AES/GCM/NoPadding")
-        c.init(Cipher.DECRYPT_MODE, backupKek(password, unb64(kb.getString("salt")), kb.getInt("iter")),
+        c.init(Cipher.DECRYPT_MODE, backupKek(secret, unb64(kb.getString("salt")), kb.getInt("iter")),
             GCMParameterSpec(128, unb64(kb.getString("iv"))))
-        c.updateAAD(("sepan-keybackup-v1|$username").toByteArray())
+        c.updateAAD(("sepan-keybackup-v$v|$username").toByteArray())
         val der = c.doFinal(unb64(kb.getString("ct")))
         return Identity(KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(der)), kb.getString("pub"))
     }

@@ -20,6 +20,9 @@ import java.util.Locale
 
 object U {
     fun time(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+    /** Full Persian (Solar Hijri) date and time, e.g. «۲ آبان ۱۴۰۵، ۱۴:۲۲». */
+    fun fullDate(ts: Long): String =
+        android.icu.text.SimpleDateFormat("d MMMM yyyy، HH:mm", android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date(ts))
     fun day(ts: Long): String = SimpleDateFormat("d MMMM yyyy", Locale.getDefault()).format(Date(ts))
 
     fun dayKey(ts: Long): Long {

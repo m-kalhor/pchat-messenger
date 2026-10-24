@@ -13,12 +13,16 @@ data class Msg(
     val replyId: Long, val replyUser: String?, val replyText: String?,
     val localPath: String?, val read: Boolean,
     /** 0 = delivered to server, 1 = queued / sending, 2 = failed permanently */
-    val status: Int = 0, val uploadId: String? = null
+    val status: Int = 0, val uploadId: String? = null,
+    /** when the sender last edited it (0 = never) */
+    val edited: Long = 0,
+    /** forwarded: the original sender's username and display name */
+    val fwFrom: String? = null, val fwName: String? = null
 )
 
 data class ConvoSummary(val convo: String, val last: Msg?, val unread: Int)
 
-private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id"
+private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name"
 
 private fun Cursor.toMsg() = Msg(
     id = getLong(0), convo = getString(1), sender = getString(2), mine = getInt(3) == 1, ts = getLong(4),
@@ -26,17 +30,18 @@ private fun Cursor.toMsg() = Msg(
     size = getLong(10), fkey = getString(11), w = getInt(12), h = getInt(13),
     replyId = getLong(14), replyUser = getString(15), replyText = getString(16),
     localPath = getString(17), read = getInt(18) == 1,
-    status = getInt(19), uploadId = getString(20)
+    status = getInt(19), uploadId = getString(20),
+    edited = getLong(21), fwFrom = getString(22), fwName = getString(23)
 )
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 2) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 3) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE messages(id INTEGER PRIMARY KEY, convo TEXT NOT NULL, sender TEXT NOT NULL, " +
                 "mine INTEGER NOT NULL, ts INTEGER NOT NULL, type TEXT NOT NULL, text TEXT, file_id TEXT, " +
                 "file_name TEXT, mime TEXT, size INTEGER, fkey TEXT, w INTEGER, h INTEGER, reply_id INTEGER, " +
                 "reply_user TEXT, reply_text TEXT, local_path TEXT, read INTEGER NOT NULL DEFAULT 0, " +
-                "status INTEGER NOT NULL DEFAULT 0, upload_id TEXT)"
+                "status INTEGER NOT NULL DEFAULT 0, upload_id TEXT, edited INTEGER NOT NULL DEFAULT 0, fw_from TEXT, fw_name TEXT)"
         )
         db.execSQL("CREATE INDEX idx_convo ON messages(convo, id)")
         db.execSQL("CREATE TABLE contacts(username TEXT PRIMARY KEY, pubkey TEXT, key_changed INTEGER NOT NULL DEFAULT 0)")
@@ -46,6 +51,11 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 2) {
         if (oldVersion < 2) {
             db.execSQL("ALTER TABLE messages ADD COLUMN status INTEGER NOT NULL DEFAULT 0")
             db.execSQL("ALTER TABLE messages ADD COLUMN upload_id TEXT")
+        }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE messages ADD COLUMN edited INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE messages ADD COLUMN fw_from TEXT")
+            db.execSQL("ALTER TABLE messages ADD COLUMN fw_name TEXT")
         }
     }
 
@@ -58,6 +68,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 2) {
             put("w", m.w); put("h", m.h); put("reply_id", m.replyId); put("reply_user", m.replyUser)
             put("reply_text", m.replyText); put("local_path", m.localPath); put("read", if (m.read) 1 else 0)
             put("status", m.status); put("upload_id", m.uploadId)
+            put("edited", m.edited); put("fw_from", m.fwFrom); put("fw_name", m.fwName)
         }
         return writableDatabase.insertWithOnConflict("messages", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }
@@ -101,6 +112,19 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 2) {
     /** Forget where delivered messages' files are stored (after the files were deleted to free space). */
     fun clearLocalPaths() {
         writableDatabase.execSQL("UPDATE messages SET local_path=NULL WHERE status=0")
+    }
+
+    /** An edit arrived (or was made here): new text and edit time, everything else stays. */
+    fun setEdited(id: Long, text: String, edited: Long) {
+        writableDatabase.execSQL("UPDATE messages SET text=?, edited=? WHERE id=?", arrayOf<Any>(text, edited, id))
+    }
+
+    /** Deletes messages stored as unreadable; returns the smallest server id among them (0 if none). */
+    fun deleteLocked(text: String): Long {
+        var min = 0L
+        readableDatabase.rawQuery("SELECT MIN(id) FROM messages WHERE text=? AND id>0", arrayOf(text)).use { c -> if (c.moveToFirst() && !c.isNull(0)) min = c.getLong(0) }
+        writableDatabase.execSQL("DELETE FROM messages WHERE text=? AND id>0", arrayOf<Any>(text))
+        return min
     }
 
     fun delete(id: Long) {

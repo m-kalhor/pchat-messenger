@@ -48,7 +48,7 @@ export const clearMedia = () => tx('media', 'readwrite', (s) => { s.clear(); });
 export async function wipeAccountData() {
   await tx('msgs', 'readwrite', (s) => { s.clear(); });
   await clearMedia();
-  for (const k of ['last_id', 'users', 'groups', 'pins', 'read']) await kvDel(k);
+  for (const k of ['last_id', 'cseq', 'users', 'groups', 'pins', 'read']) await kvDel(k);
 }
 
 /** Asks the browser not to evict our data (keys + history) under storage pressure. */

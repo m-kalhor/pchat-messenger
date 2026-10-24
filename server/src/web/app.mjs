@@ -6,7 +6,7 @@ import { fingerprint } from './crypto.mjs';
 import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -108,6 +108,52 @@ function confirmBox(title, text, okLabel, danger = false) {
   });
 }
 
+const fmtFull = (ts) => new Date(ts).toLocaleString('fa-IR-u-ca-persian', { dateStyle: 'long', timeStyle: 'short' });
+
+/** Pick one or more chats to forward to, like Telegram; «پنهان کردن فرستنده» sends a plain copy. */
+function forwardSheet(msgs, done) {
+  const keys = E.summaries().map((x) => x.convo);
+  for (const u of S.users) if (u.dm && u.username !== S.me && !keys.includes(u.username)) keys.push(u.username);
+  const targets = keys.filter((c) => E.isGroup(c) || (E.user(c) && (E.user(c).dm || (S.convos.get(c) || []).length)));
+  const picked = new Set();
+  const list = h('div', { class: 'picklist' });
+  const q = h('input', { type: 'text', placeholder: 'جستجو…', oninput: () => render() });
+  const hide = h('input', { type: 'checkbox' });
+  const sendB = h('button', { class: 'btn', disabled: true, onclick: () => { v.remove(); E.forward(msgs, [...picked], hide.checked); toast('فوروارد شد'); if (done) done(); } }, 'ارسال');
+  function render() {
+    const t = q.value.trim().toLowerCase();
+    fill(list, targets.filter((c) => !t || E.titleOf(c).toLowerCase().includes(t) || c.includes(t)).map((c) => {
+      const cb = h('input', { type: 'checkbox', checked: picked.has(c), onchange: () => { if (cb.checked) picked.add(c); else picked.delete(c); sendB.disabled = !picked.size; } });
+      return h('label', { class: 'pick' }, cb, avatar(c, 'sm'), h('span', null, E.titleOf(c)));
+    }));
+  }
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, msgs.length === 1 ? 'فوروارد پیام' : 'فوروارد ' + faNum(msgs.length) + ' پیام'),
+      q, list,
+      h('label', { class: 'pick sw' }, h('span', { class: 'grow' }, h('div', null, 'پنهان کردن فرستنده'), h('small', null, 'پیام بدون «فوروارد از …» فرستاده می‌شود')), hide),
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'انصراف'), sendB)));
+  render();
+  document.body.append(v);
+}
+
+/** «اطلاعات پیام»: full send and edit date; for my own messages also the earlier versions (only I can see them). */
+function infoSheet(m) {
+  const hist = h('div', { class: 'hist' });
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'اطلاعات پیام'),
+      h('p', null, 'ارسال: ' + fmtFull(m.ts)),
+      m.edited ? h('p', null, 'آخرین ویرایش: ' + fmtFull(m.edited)) : null,
+      m.fwFrom ? h('p', null, 'فوروارد از: ' + (m.fwName || m.fwFrom)) : null,
+      m.mine && m.edited ? [h('b', null, 'نسخه‌های قبلی (فقط شما می‌بینید)'), hist] : null,
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'بستن'))));
+  document.body.append(v);
+  if (m.mine && m.edited) {
+    fill(hist, h('small', null, 'در حال دریافت…'));
+    E.editHistory(m).then((list) => fill(hist, list.length ? list.reverse().map((x) => h('div', { class: 'hv' }, h('div', { dir: 'auto' }, x.text), h('small', null, 'تا ' + fmtFull(x.ts))))
+      : h('small', null, 'نسخهٔ قبلی‌ای ذخیره نشده')), () => fill(hist, h('small', null, 'دریافت نشد')));
+  }
+}
+
 function viewer(url, m) {
   const v = h('div', { class: 'viewer' },
     h('div', { class: 'vbar' }, h('button', { class: 'icon', title: 'بستن', onclick: () => v.remove() }, '✕'),
@@ -153,6 +199,8 @@ function route() {
   S.openConvo = null;
   const hash = decodeURIComponent(location.hash.slice(1) || '/');
   if (!S.me) view = LoginScreen();
+  else if (S.keyStep) view = KeyScreen(S.keyStep);
+  else if (hash === '/keypass') view = KeyScreen('change');
   else if (hash.startsWith('/c/')) view = ChatScreen(hash.slice(3));
   else if (hash.startsWith('/p/')) view = ProfileScreen(hash.slice(3));
   else if (hash === '/new') view = ContactsScreen();
@@ -174,6 +222,7 @@ let logoutReason = null;
 E.on((kind, data) => {
   if (kind === 'login') { go('#/'); route(); return; }
   if (kind === 'logout') { logoutReason = data; route(); return; }
+  if (kind === 'key') { route(); return; }
   if (kind === 'msg' && data && !data.mine && data.id > 0 && Date.now() - data.ts < 60000 && S.openConvo !== data.convo) {
     const group = E.isGroup(data.convo);
     toast((group ? E.groupName(data.convo) + ' · ' + E.nameOf(data.sender) : E.nameOf(data.sender)) + ': ' + E.preview(data).slice(0, 60), () => go('#/c/' + encodeURIComponent(data.convo)));
@@ -205,21 +254,11 @@ function LoginScreen() {
   const err = h('div', { class: 'err' }, logoutReason || '');
   logoutReason = null;
   const btn = h('button', { class: 'btn', type: 'submit' }, 'ورود');
-  async function submit(e, force = false) {
+  async function submit(e) {
     if (e) e.preventDefault();
     if (!user.value.trim() || !pass.value) { err.textContent = 'نام کاربری و رمز عبور را وارد کنید'; return; }
     btn.disabled = true; err.textContent = '';
-    try {
-      const r = await E.login(user.value, pass.value, force);
-      if (r.conflict) {
-        const ok = r.conflict === 'reset'
-          ? await confirmBox('کلید قبلی باز نشد', 'رمز عبور این حساب عوض شده و پشتیبان کلید با رمز تازه باز نمی‌شود. اگر ادامه دهید یک کلید تازه ساخته می‌شود و پیام‌های قبلی دیگر خوانده نمی‌شوند. ادامه می‌دهید؟', 'ادامه با کلید تازه', true)
-          : await confirmBox('این حساب روی دستگاه دیگری فعال است',
-            'این حساب روی دستگاه دیگری (احتمالاً نسخهٔ قدیمی اندروید) کلید دیگری دارد. اگر اینجا وارد شوید، آن دستگاه پیام‌های تازه را باز نمی‌کند تا اپ آن به‌روز و دوباره وارد شود. ادامه می‌دهید؟',
-            'ورود در اینجا', true);
-        if (ok) return submit(null, true);
-      }
-    } catch (ex) { err.textContent = E.errText(ex); }
+    try { await E.login(user.value, pass.value); } catch (ex) { err.textContent = E.errText(ex); }
     btn.disabled = false;
   }
   const el = h('div', { class: 'scroll' }, h('div', { class: 'login' },
@@ -229,6 +268,73 @@ function LoginScreen() {
     h('form', { class: 'form', onsubmit: submit }, user, pass, err, btn),
     isIOS && !standalone() ? h('div', { class: 'hint' }, 'بعد از ورود، از دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' گزینهٔ ', h('b', null, '«افزودن به صفحهٔ اصلی»'), ' را بزنید تا سپن مثل یک برنامه باز شود.') : null));
   return { el, mounted: () => user.focus() };
+}
+
+// ---------------- identity key: restore / new key / key password ----------------
+/**
+ * mode 'choose': this device does not have the account's key (restore it with the key password or make
+ * a new one); 'setpass': the key has no key password yet (mandatory); 'change': from Settings.
+ */
+function KeyScreen(mode) {
+  const kb = S.keyBackup;
+  const pwField = (ph, ac) => h('input', { type: 'password', placeholder: ph, autocomplete: ac || 'new-password', class: 'ltr' });
+  const acct = () => (E.needsAccountPassword() || mode === 'change' ? pwField('رمز ورود حساب', 'current-password') : null);
+  const busy = async (btn, err, fn) => {
+    btn.disabled = true; err.className = 'err'; err.textContent = '';
+    try { const e = await fn(); if (e) err.textContent = e; } catch (ex) { err.textContent = E.errText(ex); }
+    btn.disabled = false;
+  };
+  const checkNew = (a, b) => (a.value.length < 6 ? 'رمز کلید باید دست‌کم ۶ نویسه باشد' : a.value !== b.value ? 'رمز کلید و تکرار آن یکی نیستند' : null);
+
+  // set (or change) the key password of the key on this device
+  const setForm = (title, intro, submitLabel, makeNew) => {
+    const p1 = pwField('رمز کلید تازه'), p2 = pwField('تکرار رمز کلید'), ap = acct();
+    const err = h('div', { class: 'err' });
+    const btn = h('button', { class: 'btn' + (makeNew ? ' danger' : ''), type: 'submit' }, submitLabel);
+    return h('form', { class: 'form', onsubmit: (e) => {
+      e.preventDefault();
+      busy(btn, err, async () => {
+        const bad = checkNew(p1, p2) || (ap && !ap.value ? 'رمز ورود حساب را وارد کنید' : null);
+        if (bad) return bad;
+        if (makeNew && !(await confirmBox('ساخت کلید تازه', 'با کلید تازه، پیام‌های قبلی روی دستگاه‌هایی که آن‌ها را ندارند باز نمی‌شوند و دستگاه‌های دیگر شما باید دوباره کلید را بازگردانند. ادامه می‌دهید؟', 'ساخت کلید تازه', true))) return null;
+        const e2 = makeNew ? await E.newKey(p1.value, ap && ap.value) : await E.setKeyPassword(p1.value, ap && ap.value);
+        if (!e2 && mode === 'change') { toast('رمز کلید عوض شد'); go('#/settings'); }
+        return e2;
+      });
+    } }, h('h3', null, title), h('p', { class: 'hint' }, intro), p1, p2, ap, err, btn);
+  };
+
+  let body;
+  if (mode === 'choose') {
+    const restore = kb ? (() => {
+      const kp = pwField(kb.v === 2 ? 'رمز کلید' : 'رمز ورود قبلی حساب', 'current-password');
+      const err = h('div', { class: 'err' });
+      const btn = h('button', { class: 'btn', type: 'submit' }, 'بازگرداندن کلید قبلی');
+      return h('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); busy(btn, err, () => (kp.value ? E.restoreKey(kp.value) : 'رمز را وارد کنید')); } },
+        h('h3', null, 'بازگرداندن کلید قبلی (پیشنهادی)'),
+        h('p', { class: 'hint' }, kb.v === 2
+          ? 'رمز کلیدی را که برای حسابتان گذاشته‌اید وارد کنید. پیام‌های قبلی خوانا می‌مانند و مخاطبان تغییری نمی‌بینند.'
+          : 'این حساب هنوز رمز کلید ندارد و کلیدش با رمز ورود قبلی قفل است. همان رمز قبلی را وارد کنید.'),
+        kp, err, btn);
+    })() : h('p', { class: 'hint' }, 'برای کلید این حساب پشتیبانی روی سرور نیست، پس فقط ساخت کلید تازه ممکن است.');
+    body = [
+      h('p', null, 'کلید رمزنگاری این دستگاه با کلید حساب شما یکی نیست. تا یکی از دو راه زیر را انتخاب نکنید، پیامی فرستاده یا باز نمی‌شود.'),
+      restore,
+      h('div', { class: 'section' }, 'یا'),
+      setForm('ساخت کلید تازه', 'پیام‌های قبلی با کلید تازه باز نمی‌شوند و کنار نام شما برای مخاطبان «کلید عوض شد» می‌آید. اگر رمز کلید را فراموش کرده‌اید، همین راه را بزنید.', 'ساخت کلید تازه', true),
+    ];
+  } else if (mode === 'setpass') {
+    body = [setForm('رمز کلید بگذارید', 'کلید رمزنگاری شما با این رمز قفل می‌شود و روی سرور می‌ماند تا روی هر دستگاه بازگردد. این رمز جدا از رمز ورود است، فقط شما آن را می‌دانید و مدیر هم نمی‌تواند عوضش کند. اگر فراموشش کنید، پیام‌های قدیمی روی دستگاه تازه باز نمی‌شوند.', 'ذخیرهٔ رمز کلید', false)];
+  } else {
+    body = [setForm('تغییر رمز کلید', 'کلید همان می‌ماند؛ فقط رمزی که پشتیبانش با آن قفل است عوض می‌شود.', 'ذخیرهٔ رمز کلید تازه', false)];
+  }
+  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
+    h('div', { class: 'bar' },
+      mode === 'change' ? h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/settings') }, '→') : null,
+      h('h1', null, 'کلید رمزنگاری'),
+      mode !== 'change' ? h('button', { class: 'btn sm flat', onclick: () => E.logout() }, 'خروج') : null),
+    h('div', { class: 'scroll' }, h('div', { class: 'keybox' }, body)));
+  return { el };
 }
 
 // ---------------- chat list ----------------
@@ -338,7 +444,7 @@ function ChatScreen(convo) {
   if (!group && !E.user(convo) && !(S.convos.get(convo) || []).length) { setTimeout(() => go('#/'), 0); return { el: h('div') }; }
   S.openConvo = convo;
   E.markRead(convo);
-  let reply = null, limit = 120, search = '', forceBottom = true;
+  let reply = null, editing = null, selected = null, limit = 120, search = '', forceBottom = true;
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
   const callBtns = group ? [] : [
@@ -354,6 +460,13 @@ function ChatScreen(convo) {
   const ta = h('textarea', { rows: 1, placeholder: 'پیام', dir: 'auto' });
   const fileIn = h('input', { type: 'file', multiple: true, class: 'hidden' });
   const replyBar = h('div', { class: 'replybar hidden' });
+  const selCount = h('div', { class: 'grow' });
+  const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, '✕'), selCount,
+    h('button', { class: 'btn sm', onclick: () => {
+      const all = S.convos.get(convo) || [];
+      const msgsSel = all.filter((x) => selected.has(x.id));
+      if (msgsSel.length) forwardSheet(msgsSel, () => setSelecting(null));
+    } }, 'فوروارد'));
   const emojiPanel = h('div', { class: 'emojis hidden' });
   const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, '➤');
   const attachBtn = h('button', { class: 'icon', title: 'فایل یا عکس', onclick: () => fileIn.click() }, '📎');
@@ -366,7 +479,7 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, pinBar, msgs, jump,
-    h('div', { class: 'composer' }, replyBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn), emojiPanel, fileIn));
+    h('div', { class: 'composer' }, selBar, replyBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn), emojiPanel, fileIn));
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);
@@ -390,7 +503,26 @@ function ChatScreen(convo) {
     pinBar.onclick = () => scrollToMsg(id);
   }
 
+  function setSelecting(set) {
+    selected = set;
+    selBar.classList.toggle('hidden', !set);
+    if (set) selCount.textContent = faNum(set.size) + ' پیام انتخاب شد';
+    renderList(true);
+  }
+
+  function setEditing(m) {
+    editing = m;
+    if (m) reply = null;
+    replyBar.classList.toggle('hidden', !m);
+    if (m) {
+      fill(replyBar, h('div', { class: 'reply' }, h('div', { class: 'ru' }, '✎ ویرایش پیام'), h('div', { class: 'rx' }, E.preview(m))),
+        h('button', { class: 'icon', onclick: () => { setEditing(null); ta.value = ''; autosize(); } }, '✕'));
+      ta.value = m.text; autosize(); ta.focus();
+    }
+  }
+
   function setReply(m) {
+    if (editing && m) { editing = null; ta.value = ''; }
     reply = m;
     replyBar.classList.toggle('hidden', !m);
     if (m) {
@@ -440,15 +572,22 @@ function ChatScreen(convo) {
     const prog = S.progress.get(m.id);
     const b = h('div', { class: 'bubble' + (big ? ' emoji' : '') },
       group && !m.mine ? h('div', { class: 'who', style: { color: colorFor(m.sender) } }, E.nameOf(m.sender)) : null,
+      m.fwFrom ? h('div', { class: 'fw' }, 'فوروارد از ' + (m.fwFrom === S.me ? 'شما' : m.fwName || E.nameOf(m.fwFrom))) : null,
       m.replyText || m.replyId ? h('div', { class: 'reply', onclick: (e) => { e.stopPropagation(); if (m.replyId) scrollToMsg(m.replyId); } },
         h('div', { class: 'ru' }, m.replyUser === S.me ? 'شما' : E.nameOf(m.replyUser || '')), h('div', { class: 'rx' }, m.replyText || '')) : null,
       m.type === 'image' || m.type === 'file' ? mediaPart(m) : null,
       m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, highlight(m.text)) : null,
       m.mine && prog != null && m.status === 1 ? h('div', { class: 'bar-prog' }, h('i', { style: { width: Math.round(prog * 100) + '%' } })) : null,
       m.status === 2 ? h('div', { class: 'fail' }, '⚠️ ' + (S.failures.get(m.id) || 'ارسال نشد'), h('button', { onclick: (e) => { e.stopPropagation(); E.retry(m); } }, 'تلاش دوباره')) : null,
-      h('div', { class: 'meta' }, m.mine ? h('span', null, m.status === 1 ? '🕓' : m.status === 2 ? '⚠️' : '✓') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
+      h('div', { class: 'meta' }, m.mine ? h('span', null, m.status === 1 ? '🕓' : m.status === 2 ? '⚠️' : '✓') : null, m.edited ? h('span', { title: fmtFull(m.edited) }, 'ویرایش‌شده ' + (startOfDay(m.edited) === startOfDay(m.ts) ? '' : fmtDay(m.edited) + ' ') + fmtTime(m.edited) + ' ·') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
     b.dataset.id = m.id;
-    return h('div', { class: 'm ' + (m.mine ? 'me' : 'them'), onclick: () => menu(m) }, b);
+    const pickable = m.id > 0 && m.status === 0 && !m.locked;
+    return h('div', { class: 'm ' + (m.mine ? 'me' : 'them') + (selected && selected.has(m.id) ? ' sel' : ''), onclick: () => {
+      if (!selected) return menu(m);
+      if (!pickable) return;
+      if (selected.has(m.id)) selected.delete(m.id); else selected.add(m.id);
+      if (!selected.size) setSelecting(null); else setSelecting(selected);
+    } }, b);
   }
 
   function menu(m) {
@@ -456,10 +595,18 @@ function ChatScreen(convo) {
     const pinned = S.pins[convo] === m.id;
     sheet(null, [
       m.id > 0 && { label: 'پاسخ', run: () => setReply(m) },
+      E.canEdit(m) && { label: 'ویرایش', run: () => setEditing(m) },
+      m.id > 0 && m.status === 0 && { label: 'فوروارد', run: () => forwardSheet([m]) },
+      m.id > 0 && m.status === 0 && { label: 'انتخاب', run: () => setSelecting(new Set([m.id])) },
+      m.id > 0 && { label: 'اطلاعات پیام', run: () => infoSheet(m) },
       m.type === 'text' && { label: 'کپی', run: () => navigator.clipboard.writeText(m.text).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
       (m.type === 'image' || m.type === 'file') && E.mediaUrl(m) && { label: m.type === 'image' ? 'ذخیرهٔ عکس / اشتراک' : 'ذخیره در Files / اشتراک', run: () => saveMedia(m) },
       m.id > 0 && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
       m.status === 2 && { label: 'تلاش دوباره', run: () => E.retry(m) },
+      m.mine && m.id > 0 && m.status === 0 && { label: 'حذف برای همه', danger: true, run: async () => {
+        if (!(await confirmBox('حذف برای همه', 'این پیام برای همهٔ اعضای گفتگو پاک می‌شود.', 'حذف', true))) return;
+        const e = await E.deleteForAll(m); if (e) toast(e);
+      } },
       { label: 'حذف از این دستگاه', danger: true, run: () => E.deleteLocal(m) },
     ]);
   }
@@ -515,9 +662,15 @@ function ChatScreen(convo) {
   const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
   ta.addEventListener('input', () => { autosize(); if (ta.value.trim()) E.sendTyping(convo); });
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !isIOS && matchMedia('(pointer: fine)').matches) { e.preventDefault(); send(); } });
-  function send() {
+  async function send() {
     const text = ta.value.trim();
     if (!text) return;
+    if (editing) {
+      const m = editing;
+      setEditing(null); ta.value = ''; autosize();
+      if (text !== m.text) { const e = await E.editMessage(m, text); if (e) toast(e); }
+      return;
+    }
     E.sendText(convo, text, reply);
     ta.value = ''; autosize(); setReply(null);
     forceBottom = true;
@@ -669,6 +822,7 @@ function SettingsScreen() {
       setting('دانلود خودکار عکس‌ها', 'عکس‌های تا ۲۵ مگابایت', toggle('autoImages', true)),
       setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن')),
       h('div', { class: 'section' }, 'امنیت'),
+      setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
       h('div', { class: 'hint' }, 'کد امنیتی شما:', h('br'), myFp),
       h('div', { class: 'hint' }, 'اثر انگشت گواهی ریشهٔ سپن (SHA-256):', h('br'), caFp, h('br'), h('a', { href: '/setup' }, 'راهنمای نصب گواهی روی آیفون')),
       h('div', { class: 'section' }, 'دربارهٔ سپن'),

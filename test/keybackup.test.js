@@ -62,7 +62,23 @@ test('malformed backups are refused', async () => {
   const t = (await login(p3)).data.token;
   assert.equal((await S.api(t, 'POST', '/api/keybackup', { key_backup: C.exportBackup(C.newIdentity(), 'sara', p3), password: 'nope' })).data.error, 'bad_password',
     'a session token alone cannot replace the key');
-  for (const bad of [null, { v: 2 }, { v: 1, kdf: 'pbkdf2-sha256', iter: 10, salt: 'x', iv: 'x', ct: 'x', pub: 'x' }]) {
+  for (const bad of [null, { v: 2 }, { v: 3, kdf: 'pbkdf2-sha256' }, { v: 1, kdf: 'pbkdf2-sha256', iter: 10, salt: 'x', iv: 'x', ct: 'x', pub: 'x' }]) {
     assert.equal((await S.api(t, 'POST', '/api/keybackup', { key_backup: bad, password: p3 })).data.error, 'bad_key_backup');
   }
+});
+
+test('v2 backup is locked with a separate key password that survives a login password reset', async () => {
+  const pwA = S.core.resetPassword('sara');
+  const phone = C.newIdentity();
+  const t = (await login(pwA, phone.pubB64)).data.token;
+  const kb = C.exportBackup(phone, 'sara', 'my key secret', 100000, 2);
+  assert.equal((await S.api(t, 'POST', '/api/keybackup', { key_backup: kb, password: pwA })).status, 200, 'saving still needs the login password');
+  assert.equal(S.core.q.user.get('sara').pubkey, phone.pubB64);
+
+  const pwB = S.core.resetPassword('sara');
+  const r = await login(pwB, C.newIdentity().pubB64);
+  assert.equal(r.data.key_backup.v, 2);
+  assert.throws(() => C.importBackup(r.data.key_backup, 'sara', pwB), 'the login password does not open a v2 backup');
+  assert.equal(C.importBackup(r.data.key_backup, 'sara', 'my key secret').pubB64, phone.pubB64);
+  assert.throws(() => C.importBackup({ ...r.data.key_backup, v: 1 }, 'sara', 'my key secret'), 'the version is bound into the backup');
 });

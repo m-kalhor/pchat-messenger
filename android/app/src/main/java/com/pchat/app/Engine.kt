@@ -40,6 +40,10 @@ import java.io.RandomAccessFile
 
 class UserError(msg: String) : Exception(msg)
 
+enum class KeyStep { CHOOSE, SET_PASSWORD }
+
+const val LOCKED_TEXT = "🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)"
+
 object Engine {
     const val CH_MSG = "msgs"
     const val CH_SVC = "svc"
@@ -61,8 +65,14 @@ object Engine {
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     val loggedIn = MutableStateFlow(false)
-    /** null = unknown yet, true = the server holds a backup of this device's identity key, false = it does not */
+    /** null = unknown yet, true = the server holds a key-password backup of this device's identity key, false = it does not */
     val keyBackedUp = MutableStateFlow<Boolean?>(null)
+    /** What the user must settle about the identity key before chatting (see checkKey), null = nothing. */
+    val keyStep = MutableStateFlow<KeyStep?>(null)
+    /** The server's key backup while keyStep is CHOOSE (null when the server has none). */
+    @Volatile var keyBackup: JSONObject? = null
+    /** The login password, in memory only, so the key step right after logging in needs no second password. */
+    @Volatile private var loginPass: String? = null
     val connected = MutableStateFlow(false)
     /** message id -> 0..1 for running uploads/downloads */
     val progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
@@ -140,7 +150,7 @@ object Engine {
         dlDir().listFiles()?.forEach { it.delete() }
         avatarDir().listFiles()?.forEach { it.delete() }
         avatarMem.evictAll()
-        prefs.edit().putLong("last_id", 0).remove("users_raw").remove("groups_raw").apply()
+        prefs.edit().putLong("last_id", 0).putLong("cseq", -1).remove("users_raw").remove("groups_raw").apply()
         users.value = emptyList()
         groups.value = emptyList()
         incomingRequests.value = emptyList()
@@ -149,6 +159,9 @@ object Engine {
         progress.value = emptyMap()
         failures.value = emptyMap()
         keyBackedUp.value = null
+        keyStep.value = null
+        keyBackup = null
+        loginPass = null
         tick.value++
     }
 
@@ -182,13 +195,20 @@ object Engine {
             val u = user.trim().lowercase()
             val prevMe = prefs.getString("me", null)
             // another account on this phone must not reuse the previous account's key
-            val local = if (prevMe != null && prevMe != u) Crypto.generateIdentity() else identity!!
+            var local = if (prevMe != null && prevMe != u) Crypto.generateIdentity() else identity!!
             val r = Api.login(u, pass, local.pubB64)
             val t = r.getString("token")
             if (prevMe != u) wipeLocal()
             prefs.edit().putString("token", t).putString("me", u).apply()
             Api.token = t
-            useIdentity(syncKeyBackup(u, pass, r.optJSONObject("key_backup"), local))
+            val kb = r.optJSONObject("key_backup")
+            // a v1 backup (1.1-1.2) opens with the login password: take that key silently, only the key password is missing then
+            if (kb != null && kb.optInt("v", 1) == 1 && kb.optString("pub") != local.pubB64) {
+                try { local = Crypto.importBackup(kb, u, pass) } catch (e: Exception) { }
+            }
+            useIdentity(local)
+            loginPass = pass
+            try { checkKey(kb) } catch (e: Exception) { }
             loggedIn.value = true
             null
         } catch (e: Api.HttpError) {
@@ -207,42 +227,82 @@ object Engine {
         identity = id
     }
 
+    // ---------------- identity key: restore / new key / key password ----------------
+
     /**
-     * One identity key per account, kept on the server encrypted with the login password (the server cannot read it).
-     * A new device (or a reinstall) restores the key, so old messages stay readable after logging in again.
-     * Returns the identity to use; upload failures never fail the login.
+     * One identity key per account, kept on the server locked with the user's key password (v2) or, for
+     * accounts from 1.1-1.2, the login password (v1), so every device uses the same key and old messages
+     * stay readable. Decides what the user must do first:
+     * CHOOSE = this phone's key is not the account's key (restore it, or make a new one);
+     * SET_PASSWORD = the key is right but has no key password yet (mandatory); null = all good.
+     * Pass the backup when the caller already has it (login), otherwise it is fetched.
      */
-    private fun syncKeyBackup(u: String, pass: String, kb: JSONObject?, local: Identity): Identity {
-        if (kb != null) {
-            try {
-                val restored = Crypto.importBackup(kb, u, pass)
-                keyBackedUp.value = true
-                return restored
-            } catch (e: Exception) {
-                // the backup was made with an older password (reset by the admin): fall through and back up again.
-                // when it holds a different key that key cannot be recovered, so this device's key replaces it.
-            }
+    fun checkKey(kbIn: JSONObject? = null, fetch: Boolean = kbIn == null): KeyStep? {
+        val kb = if (fetch) Api.keyBackup() else kbIn
+        val mine = identity!!.pubB64
+        val serverPub = parseUsers(Api.usersRaw()).firstOrNull { it.username == me }?.pubkey
+        val step = when {
+            kb != null && kb.optString("pub") != mine -> KeyStep.CHOOSE
+            kb == null && serverPub != null && serverPub != mine -> KeyStep.CHOOSE
+            kb == null || kb.optInt("v", 1) != 2 -> KeyStep.SET_PASSWORD
+            else -> null
         }
-        keyBackedUp.value = try { Api.uploadKeyBackup(Crypto.exportBackup(local, u, pass), pass); true } catch (e: Exception) { false }
-        return local
+        keyBackup = kb
+        keyBackedUp.value = step == null
+        keyStep.value = step
+        if (step == KeyStep.CHOOSE) Api.cancelStream()
+        return step
     }
 
-    /** For accounts logged in before key backup existed: Settings asks for the password once. Returns an error or null. */
-    suspend fun enableKeyBackup(pass: String): String? = withContext(Dispatchers.IO) {
-        val u = me
-        try {
-            val kb = Api.keyBackup()
-            val id = if (kb != null) try { Crypto.importBackup(kb, u, pass) } catch (e: Exception) { null } else null
-            // the account's key is in the backup (e.g. restored on another phone): use it here too
-            if (id != null) { useIdentity(id); keyBackedUp.value = true; refreshDirectory(); return@withContext null }
-            Api.uploadKeyBackup(Crypto.exportBackup(identity!!, u, pass), pass)
-            keyBackedUp.value = true
-            null
-        } catch (e: Api.HttpError) {
-            if (e.code == 403) "رمز عبور اشتباه است" else if (e.code == 429) "تلاش‌های زیاد؛ کمی صبر کنید" else "خطای سرور (${e.code})"
-        } catch (e: Exception) {
-            "اتصال به سرور برقرار نشد"
+    /** true when the key screen must ask for the login password (it is not in memory any more). */
+    fun needsAccountPassword(): Boolean = loginPass == null
+
+    private fun uploadBackup(id: Identity, keyPass: String, accountPass: String?) {
+        val ap = accountPass ?: loginPass ?: throw UserError("رمز ورود حساب را وارد کنید")
+        Api.uploadKeyBackup(Crypto.exportBackup(id, me, keyPass), ap)
+        loginPass = ap
+    }
+
+    private fun keyErr(e: Exception): String =
+        if (e is Api.HttpError && e.code == 403) { loginPass = null; "رمز ورود حساب اشتباه است" } else errText(e)
+
+    /** The key changed (restored or new): re-open messages that arrived while the wrong key was in use. */
+    private fun keyDone(id: Identity) {
+        useIdentity(id)
+        val from = db.deleteLocked(LOCKED_TEXT)
+        if (from > 0 && from - 1 < prefs.getLong("last_id", 0)) prefs.edit().putLong("last_id", from - 1).apply()
+        keyStep.value = null
+        keyBackedUp.value = true
+        tick.value++
+        Api.cancelStream()
+        wakeUp()
+    }
+
+    /** Restores the account key from the server backup with the key password. Returns an error or null. */
+    suspend fun restoreKey(secret: String): String? = withContext(Dispatchers.IO) {
+        val kb = keyBackup ?: return@withContext "پشتیبانی از کلید روی سرور نیست"
+        val id = try { Crypto.importBackup(kb, me, secret) } catch (e: Exception) {
+            return@withContext if (kb.optInt("v", 1) == 1) "رمز درست نیست (برای این حساب رمز ورود قبلی را بزنید)" else "رمز کلید درست نیست"
         }
+        keyDone(id)
+        if (kb.optInt("v", 1) != 2) { keyStep.value = KeyStep.SET_PASSWORD; keyBackedUp.value = false }
+        null
+    }
+
+    /** Replaces the account key with a new one (old messages cannot be opened with it). */
+    suspend fun newKey(keyPass: String, accountPass: String?): String? = withContext(Dispatchers.IO) {
+        val id = Crypto.generateIdentity()
+        try { uploadBackup(id, keyPass, accountPass) } catch (e: Exception) { return@withContext keyErr(e) }
+        keyDone(id)
+        null
+    }
+
+    /** Locks this phone's key with a (new) key password. */
+    suspend fun setKeyPassword(keyPass: String, accountPass: String?): String? = withContext(Dispatchers.IO) {
+        try { uploadBackup(identity!!, keyPass, accountPass) } catch (e: Exception) { return@withContext keyErr(e) }
+        if (keyStep.value == KeyStep.SET_PASSWORD) keyStep.value = null
+        keyBackedUp.value = true
+        null
     }
 
     fun logout() {
@@ -270,6 +330,9 @@ object Engine {
         val raw = Api.usersRaw()
         val list = parseUsers(raw)
         for (u in list) if (u.pubkey != null && u.username != me) db.saveKey(u.username, u.pubkey)
+        val self = list.firstOrNull { it.username == me }?.pubkey
+        // another device made a new key for this account: stop until the user restores it here
+        if (self != null && self != identity?.pubB64 && keyStep.value != KeyStep.CHOOSE) try { checkKey() } catch (e: Exception) { }
         prefs.edit().putString("users_raw", raw).apply()
         users.value = list
         tick.value++
@@ -290,7 +353,7 @@ object Engine {
             try { refreshUsers() } catch (e: Exception) { }
             try { refreshGroups() } catch (e: Exception) { }
             try { refreshRequests() } catch (e: Exception) { }
-            try { keyBackedUp.value = Api.keyBackup()?.optString("pub") == identity?.pubB64 } catch (e: Exception) { }
+            try { checkKey() } catch (e: Exception) { }
         }
     }
 
@@ -389,12 +452,19 @@ object Engine {
     suspend fun streamLoop() = withContext(Dispatchers.IO) {
         var backoff = 1000L
         while (isActive && Api.token != null) {
+            // never read messages with the wrong key: they would be stored as unreadable
+            if (keyStep.value == KeyStep.CHOOSE) {
+                connected.value = false
+                wake.receive()
+                continue
+            }
             try {
                 refreshUsers()
+                if (keyStep.value == KeyStep.CHOOSE) continue
                 try { refreshGroups() } catch (e: Api.HttpError) { if (e.code == 401) throw e }
                 try { refreshRequests() } catch (e: Exception) { }
                 Api.stream(
-                    prefs.getLong("last_id", 0),
+                    prefs.getLong("last_id", 0), prefs.getLong("cseq", -1),
                     onOpen = {
                         connected.value = true
                         backoff = 1000L
@@ -417,6 +487,8 @@ object Engine {
         val o = JSONObject(data)
         when (ev) {
             "msg" -> handleMsg(o)
+            "change" -> handleChange(o)
+            "cseq" -> prefs.edit().putLong("cseq", o.getLong("seq")).apply()
             "presence" -> {
                 val u = o.getString("user")
                 val on = o.getBoolean("online")
@@ -473,6 +545,7 @@ object Engine {
             val pub = if (mine) null else (pubOf(from) ?: run { refreshUsers(); pubOf(from) })
             val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, target, pub, payload), Charsets.UTF_8))
             val r = plain.optJSONObject("r")
+            val f = plain.optJSONObject("f")
             Msg(
                 id, convo, from, mine, ts,
                 plain.optString("t", "text"), plain.optString("x", ""),
@@ -480,16 +553,37 @@ object Engine {
                 plain.optLong("s", 0), if (plain.has("fk")) plain.getString("fk") else null,
                 plain.optInt("w", 0), plain.optInt("h", 0),
                 r?.optLong("id", 0) ?: 0L, r?.optString("u"), r?.optString("x"),
-                null, mine || visible
+                null, mine || visible,
+                edited = o.optLong("edited", 0),
+                fwFrom = f?.optString("u")?.ifEmpty { null }, fwName = f?.optString("n")?.ifEmpty { null }
             )
         } catch (e: Exception) {
-            Msg(id, convo, from, mine, ts, "text", "🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)",
+            Msg(id, convo, from, mine, ts, "text", LOCKED_TEXT,
                 null, null, null, 0, null, 0, 0, 0L, null, null, null, true)
         }
         val isNew = db.insert(msg)
         if (isNew && !msg.read) postNotification(msg)
         if (id > prefs.getLong("last_id", 0)) prefs.edit().putLong("last_id", id).apply()
         if (isNew) tick.value++
+    }
+
+    /** An edit or a delete-for-everyone of a message we may already have. */
+    private fun handleChange(o: JSONObject) {
+        val id = o.getLong("id")
+        when (o.getString("kind")) {
+            "del" -> { db.get(id)?.let { pins.value = pins.value.filterValues { v -> v != id } }; db.delete(id) }
+            "edit" -> if (db.get(id) != null) {
+                val from = o.getString("from")
+                val pub = if (from == me) null else pubOf(from)
+                try {
+                    val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, o.getString("target"), pub, o.getString("payload")), Charsets.UTF_8))
+                    db.setEdited(id, plain.optString("x", ""), o.optLong("edited", System.currentTimeMillis()))
+                } catch (e: Exception) { }
+            }
+        }
+        val seq = o.optLong("seq", 0)
+        if (seq > prefs.getLong("cseq", -1)) prefs.edit().putLong("cseq", seq).apply()
+        tick.value++
     }
 
     private fun postNotification(m: Msg) {
@@ -650,6 +744,87 @@ object Engine {
         } catch (e: Exception) { errText(e) }
     }
 
+    // ---------------- edit / delete for everyone / forward ----------------
+
+    const val EDIT_WINDOW_MS = 48 * 3600_000L
+
+    fun canEdit(m: Msg): Boolean =
+        m.mine && m.type == "text" && m.id > 0 && m.status == 0 && System.currentTimeMillis() - m.ts < EDIT_WINDOW_MS
+
+    /** The plaintext JSON a message was sent with (rebuilt from what we stored). */
+    private fun plainOf(m: Msg, text: String = m.text): JSONObject {
+        val p = JSONObject().put("t", m.type).put("x", text)
+        if (m.type != "text") p.put("n", m.fileName ?: "file").put("m", m.mime ?: "application/octet-stream")
+            .put("s", m.size).put("fk", m.fkey ?: "").put("w", m.w).put("h", m.h)
+        replyJson(p, m)
+        forwardJson(p, m)
+        return p
+    }
+
+    private fun forwardJson(plain: JSONObject, m: Msg) {
+        if (m.fwFrom != null) plain.put("f", JSONObject().put("u", m.fwFrom).put("n", m.fwName ?: ""))
+    }
+
+    /** Edits my text message; the old version is kept on the server encrypted for me only. */
+    suspend fun editMessage(m: Msg, newText: String): String? = withContext(Dispatchers.IO) {
+        try {
+            val payload = encryptFor(m.convo, plainOf(m, newText).toString().toByteArray())
+            val id = identity!!
+            val prev = Crypto.encryptFor(id, me, m.convo, mapOf(me to id.pubB64), plainOf(m).toString().toByteArray())
+            val at = Api.edit(m.id, payload, prev)
+            db.setEdited(m.id, newText, at)
+            tick.value++
+            null
+        } catch (e: Api.HttpError) {
+            if (e.code == 403 && (e.message ?: "").contains("edit_window_passed")) "فقط تا ۴۸ ساعت بعد از ارسال می‌شود پیام را ویرایش کرد" else errText(e)
+        } catch (e: Exception) { errText(e) }
+    }
+
+    suspend fun deleteForAll(m: Msg): String? = withContext(Dispatchers.IO) {
+        try {
+            Api.deleteForAll(m.id)
+            db.delete(m.id)
+            tick.value++
+            null
+        } catch (e: Exception) { errText(e) }
+    }
+
+    /** Earlier texts of my edited message, oldest first, with the time each was replaced. */
+    suspend fun editHistory(m: Msg): List<Pair<String, Long>> = withContext(Dispatchers.IO) {
+        try {
+            Api.history(m.id).mapNotNull { (payload, ts) ->
+                try {
+                    val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, me, m.convo, null, payload), Charsets.UTF_8))
+                    plain.optString("x", "") to ts
+                } catch (e: Exception) { null }
+            }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    /**
+     * Forwards messages to other chats. Files are not uploaded again: the new message points to the same
+     * file and carries its key. With hideSender the copy looks like my own message.
+     */
+    fun forward(msgs: List<Msg>, targets: List<String>, hideSender: Boolean) {
+        val now = System.currentTimeMillis()
+        var n = 0
+        for (t in targets) for (m in msgs.sortedBy { it.ts }) {
+            if (m.status != 0 || m.type == "call" || m.id <= 0) continue
+            val origin = m.fwFrom ?: m.sender
+            val originName = m.fwName ?: nameOf(m.sender)
+            val fw = if (hideSender) null else origin
+            val copy = Msg(
+                -System.nanoTime(), t, me, true, now + n++, m.type, m.text, null, m.fileName, m.mime, m.size, m.fkey, m.w, m.h,
+                0L, null, null, m.localPath?.takeIf { File(it).exists() }, true, status = 1,
+                uploadId = m.fileId?.let { "f:$it" }, fwFrom = fw, fwName = if (fw != null) originName else null
+            )
+            if (m.type != "text" && m.fileId == null) continue
+            db.insert(copy)
+        }
+        tick.value++
+        flushAll()
+    }
+
     // ---------------- sending ----------------
 
     fun encryptFor(convo: String, plain: ByteArray): String {
@@ -779,6 +954,7 @@ object Engine {
     private fun sendQueuedText(m: Msg) {
         val plain = JSONObject().put("t", "text").put("x", m.text)
         replyJson(plain, m)
+        forwardJson(plain, m)
         val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plain.toString().toByteArray()), null)
         db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, read = true))
         db.delete(m.id)
@@ -801,9 +977,10 @@ object Engine {
     }
 
     private fun sendQueuedFile(m: Msg) {
-        val path = m.localPath ?: throw UserError("فایل محلی پیدا نشد")
-        val f = File(path)
-        if (!f.exists()) throw UserError("فایل محلی پیدا نشد")
+        // a forwarded file is already on the server ("f:" upload id), so it needs no local copy
+        val known = m.uploadId?.startsWith("f:") == true
+        val f = m.localPath?.let { File(it) }
+        if (!known && (f == null || !f.exists())) throw UserError("فایل محلی پیدا نشد")
         val fkey = m.fkey ?: throw UserError("کلید فایل پیدا نشد")
         val total = Crypto.cipherSize(m.size)
         val chunks = Crypto.chunkCount(m.size)
@@ -824,11 +1001,12 @@ object Engine {
                 off = 0
             }
             val up: String = upId
+            val src = f!!
             setProgress(m.id, off.toFloat() / total)
             val plainBuf = ByteArray(Crypto.FILE_CHUNK)
             val block = ByteArray(Crypto.CIPHER_CHUNK * 4)
             var resyncs = 0
-            RandomAccessFile(f, "r").use { raf ->
+            RandomAccessFile(src, "r").use { raf ->
                 while (fileId == null) {
                     var idx = (off / Crypto.CIPHER_CHUNK).toInt()
                     var pos = 0
@@ -863,11 +1041,15 @@ object Engine {
         val plain = JSONObject().put("t", m.type).put("n", m.fileName ?: "file").put("m", m.mime ?: "application/octet-stream")
             .put("s", m.size).put("fk", fkey).put("w", m.w).put("h", m.h)
         replyJson(plain, m)
+        forwardJson(plain, m)
         val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plain.toString().toByteArray()), fileId)
         val dest = File(mediaDir(), fileId!!)
-        if (!f.renameTo(dest)) { f.copyTo(dest, overwrite = true); f.delete() }
-        db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, fileId = fileId, localPath = dest.absolutePath, read = true))
-        db.setLocalPath(id, dest.absolutePath)
+        if (f != null && f.exists() && f.absolutePath != dest.absolutePath) {
+            if (known) { if (!dest.exists()) f.copyTo(dest) } else if (!f.renameTo(dest)) { f.copyTo(dest, overwrite = true); f.delete() }
+        }
+        val path = dest.takeIf { it.exists() }?.absolutePath
+        db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, fileId = fileId, localPath = path, read = true))
+        if (path != null) db.setLocalPath(id, path)
         db.delete(m.id)
         setProgress(m.id, null)
         tick.value++

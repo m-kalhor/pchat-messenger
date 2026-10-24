@@ -168,6 +168,24 @@ object Api {
         return Pair(o.getLong("id"), o.getLong("ts"))
     }
 
+    /** Replaces the text of my message; prev = the old version encrypted for me only (edit history). Returns the edit time. */
+    fun edit(id: Long, payload: String, prev: String?): Long {
+        val b = JSONObject().put("id", id).put("payload", payload)
+        if (prev != null) b.put("prev", prev)
+        return JSONObject(exec(req("/api/edit").post(b.toString().toRequestBody(JSON)).build())).getLong("edited")
+    }
+
+    /** Deletes my message for everyone. */
+    fun deleteForAll(id: Long) {
+        exec(req("/api/delete").post(JSONObject().put("id", id).toString().toRequestBody(JSON)).build())
+    }
+
+    /** Earlier versions of my edited message: (payload encrypted for me only, time it was replaced). */
+    fun history(id: Long): List<Pair<String, Long>> {
+        val a = JSONObject(exec(req("/api/history?id=$id").get().build())).getJSONArray("versions")
+        return (0 until a.length()).map { a.getJSONObject(it).let { v -> v.getString("payload") to v.getLong("ts") } }
+    }
+
     /** Returns true if the other side was online and received the signal. */
     fun signal(target: String, kind: String, payload: String): Boolean {
         val b = JSONObject().put("target", target).put("kind", kind).put("payload", payload)
@@ -223,8 +241,9 @@ object Api {
     fun cancelStream() { streamCall?.cancel() }
 
     /** Blocks while connected. Server sends a ping every 15 s, so a 45 s read timeout detects dead links. */
-    fun stream(since: Long, onOpen: () -> Unit, onEvent: (String, String) -> Unit) {
-        val call = streamClient.newCall(req("/api/events?since=$since").header("Accept", "text/event-stream").get().build())
+    /** csince = last edit/delete number seen (-1 = none yet: the server only reports the current number). */
+    fun stream(since: Long, csince: Long, onOpen: () -> Unit, onEvent: (String, String) -> Unit) {
+        val call = streamClient.newCall(req("/api/events?since=$since&csince=$csince").header("Accept", "text/event-stream").get().build())
         streamCall = call
         call.execute().use { resp ->
             if (!resp.isSuccessful) throw HttpError(resp.code, "stream")

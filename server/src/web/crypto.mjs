@@ -139,26 +139,28 @@ export async function openLegacyFile(fkey, blob) {
 }
 
 // ---------------- key backup (same format as the server tests and the Android app) ----------------
-// {v:1, kdf:"pbkdf2-sha256", iter, salt, iv, ct, pub}: the PKCS#8 private key sealed with
-// AES-256-GCM under PBKDF2-HMAC-SHA256(account password), AAD "sepan-keybackup-v1|<username>".
+// {v, kdf:"pbkdf2-sha256", iter, salt, iv, ct, pub}: the PKCS#8 private key sealed with AES-256-GCM
+// under PBKDF2-HMAC-SHA256(secret), AAD "sepan-keybackup-v<v>|<username>". v1 (1.1-1.2) used the
+// login password as the secret; v2 (since 1.3.0) uses a separate key password only the user knows,
+// so an admin password reset no longer locks the user out of the old messages.
 // Stored on the server so every login (any device) gets the same key and old messages stay readable.
 const BACKUP_ITER = 310000;
 async function backupKek(password, salt, iter) {
   const base = await subtle.importKey('raw', te.encode(password), 'PBKDF2', false, ['deriveKey']);
   return subtle.deriveKey({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations: iter }, base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
-export async function exportBackup(my, username, password) {
+export async function exportBackup(my, username, keyPassword) {
   const salt = randomBytes(16), iv = randomBytes(12);
-  const kek = await backupKek(password, salt, BACKUP_ITER);
+  const kek = await backupKek(keyPassword, salt, BACKUP_ITER);
   const der = await subtle.exportKey('pkcs8', my.priv);
-  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: te.encode('sepan-keybackup-v1|' + username), tagLength: 128 }, kek, der);
-  return { v: 1, kdf: 'pbkdf2-sha256', iter: BACKUP_ITER, salt: b64(salt), iv: b64(iv), ct: b64(ct), pub: my.pubB64 };
+  const ct = await subtle.encrypt({ name: 'AES-GCM', iv, additionalData: te.encode('sepan-keybackup-v2|' + username), tagLength: 128 }, kek, der);
+  return { v: 2, kdf: 'pbkdf2-sha256', iter: BACKUP_ITER, salt: b64(salt), iv: b64(iv), ct: b64(ct), pub: my.pubB64 };
 }
-/** Returns the identity, or throws if the password does not open the backup. */
-export async function importBackup(backup, username, password) {
-  if (!backup || backup.v !== 1 || backup.kdf !== 'pbkdf2-sha256') throw new Error('unknown backup format');
-  const kek = await backupKek(password, unb64(backup.salt), backup.iter);
-  const der = await subtle.decrypt({ name: 'AES-GCM', iv: unb64(backup.iv), additionalData: te.encode('sepan-keybackup-v1|' + username), tagLength: 128 }, kek, unb64(backup.ct));
+/** Opens a v1 (login password) or v2 (key password) backup. Throws if the secret is wrong. */
+export async function importBackup(backup, username, secret) {
+  if (!backup || (backup.v !== 1 && backup.v !== 2) || backup.kdf !== 'pbkdf2-sha256') throw new Error('unknown backup format');
+  const kek = await backupKek(secret, unb64(backup.salt), backup.iter);
+  const der = await subtle.decrypt({ name: 'AES-GCM', iv: unb64(backup.iv), additionalData: te.encode(`sepan-keybackup-v${backup.v}|` + username), tagLength: 128 }, kek, unb64(backup.ct));
   const priv = await subtle.importKey('pkcs8', der, EC, true, ['deriveBits']);
   return { priv, pubB64: backup.pub };
 }

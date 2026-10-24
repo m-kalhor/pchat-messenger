@@ -17,7 +17,7 @@ if (cmd === 'add') {
     const hasDefault = !!db.prepare('SELECT 1 FROM categories WHERE id=1').get();
     const pw = core.createUser(name, rest.join(' '), hasDefault ? [1] : []);
     console.log(`User: ${name}\nPassword: ${pw}\n(Shown once. Give it to the user privately.)`);
-    console.log('Note: set who this user can see in the admin panel (visibility matrix).');
+    console.log('Note: set who this user can see in the admin panel ("ارتباط کاربران" tab).');
   } catch (e) { console.error('Error:', e.message); process.exit(1); }
 } else if (cmd === 'reset') {
   need();

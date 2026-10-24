@@ -15,6 +15,7 @@ test('Crypto.kt still uses the parameters this port mirrors', () => {
     'Cipher.getInstance("AES/GCM/NoPadding")', 'GCMParameterSpec(128, iv)', 'randomBytes(12)', 'randomBytes(32)',
     'const val FILE_CHUNK = 1 shl 20', 'const val TAG = 16', '"fc|$index|${if (last) 1 else 0}"',
     'val aad = "$me|$target".toByteArray()', 'put("v", 1)',
+    'PBKDF2WithHmacSHA256', 'BACKUP_ITER = 310000', '"sepan-keybackup-v2|$username"', '"sepan-keybackup-v$v|$username"',
   ]) assert.ok(kt.includes(s), `Crypto.kt changed: expected to find ${s} — update test/helpers/pchat-crypto.js`);
 });
 

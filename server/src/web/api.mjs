@@ -35,6 +35,9 @@ export const me = () => call('GET', '/api/me');
 export const users = () => call('GET', '/api/users');
 export const groups = () => call('GET', '/api/groups');
 export const setPubkey = (pubkey) => call('POST', '/api/pubkey', { pubkey });
+export const editMessage = (id, payload, prev) => call('POST', '/api/edit', { id, payload, prev });
+export const deleteMessage = (id) => call('POST', '/api/delete', { id });
+export const messageHistory = (id) => call('GET', '/api/history?id=' + id);
 export const setProfile = (display_name, bio) => call('POST', '/api/profile', { display_name, bio });
 export const uploadAvatar = (webp) => call('POST', '/api/avatar', webp, { 'content-type': 'image/webp' });
 export const deleteAvatar = () => call('DELETE', '/api/avatar');
@@ -67,8 +70,8 @@ export async function fileRange(id, start, end) {
  * Live events (Server-Sent Events read with fetch, because EventSource cannot send the Authorization
  * header). Resolves when the stream ends; rejects on errors. `signal` aborts it.
  */
-export async function stream(since, abort, onOpen, onEvent) {
-  const r = await fetch('/api/events?since=' + since, { headers: { authorization: 'Bearer ' + token, accept: 'text/event-stream' }, signal: abort, cache: 'no-store' });
+export async function stream(since, csince, abort, onOpen, onEvent) {
+  const r = await fetch('/api/events?since=' + since + '&csince=' + csince, { headers: { authorization: 'Bearer ' + token, accept: 'text/event-stream' }, signal: abort, cache: 'no-store' });
   if (!r.ok) throw new HttpError(r.status);
   onOpen();
   const reader = r.body.getReader();
