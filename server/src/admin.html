@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>پنل مدیریت پیام‌رسان</title>
+<title>پنل مدیریت سپن</title>
 <style>
 :root{--bg:#0f1720;--card:#17212b;--line:#243140;--text:#e8eef5;--mut:#8aa0b5;--pri:#3390ec;--red:#e5484d;--grn:#30a46c}
 *{box-sizing:border-box}
@@ -141,7 +141,7 @@ function render(){
   var undo=h('button',{class:'sec',onclick:function(){if(!confirm('همهٔ تغییرات ذخیره‌نشده لغو شود؟'))return;P={users:{},cats:{},vis:{},backup:null};render();}},'لغو تغییرات');
   bar={el:h('div',{class:'savebar'},h('div',{class:'in'},cnt,undo,save)),cnt:cnt,save:save,undo:undo};
   app.replaceChildren(
-    h('header',null,h('h1',null,'پنل مدیریت پیام‌رسان'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},vis:{},backup:null};showLogin();}},'خروج')),
+    h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},vis:{},backup:null};showLogin();}},'خروج')),
     nav,box,bar.el);
   ({users:users,cats:cats,matrix:matrix,mon:monitor,bak:backups,acct:account})[tab](box);
   updateBar();
@@ -262,7 +262,7 @@ function monitor(box){
       h('div',null,'شبکه ↓ / ↑',h('b',null,fmtB(L.rx)+'/s  ·  '+fmtB(L.tx)+'/s')),
       h('div',null,'دیسک خواندن / نوشتن',h('b',null,fmtB(L.dr)+'/s  ·  '+fmtB(L.dw)+'/s')),
       h('div',null,'آنلاین / کل کاربران',h('b',null,i.online+' / '+i.users)),
-      h('div',null,'حجم فایل‌های پیام‌رسان',h('b',null,fmtB(i.filesBytes)+' ('+i.filesCount+' فایل)')),
+      h('div',null,'حجم فایل‌های سپن',h('b',null,fmtB(i.filesBytes)+' ('+i.filesCount+' فایل)')),
       h('div',null,'حجم دیتابیس',h('b',null,fmtB(i.dbBytes))),
       h('div',null,'حافظه برنامه',h('b',null,fmtB(i.nodeRss))),
       h('div',null,'زمان روشن بودن سرور',h('b',null,fmtDur(i.uptime))));

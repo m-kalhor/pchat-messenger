@@ -107,7 +107,7 @@ fun LoginScreen() {
             Text("✉", color = Color.White, fontSize = 44.sp)
         }
         Spacer(Modifier.height(20.dp))
-        Text("ورود به پیام‌رسان", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Text("ورود به سپن", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(6.dp))
         Text("نام کاربری و رمز را مدیر سرور به شما داده است", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
         Spacer(Modifier.height(24.dp))
@@ -160,7 +160,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
             TopAppBar(
                 title = {
                     Column {
-                        Text("پیام‌رسان", fontWeight = FontWeight.Bold)
+                        Text("سپن", fontWeight = FontWeight.Bold)
                         Text(if (connected) "متصل" else "در حال اتصال…", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                     }
                 },

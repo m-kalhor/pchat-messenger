@@ -25,5 +25,5 @@ jobs:
         run: ./gradlew assembleDebug --stacktrace
       - uses: actions/upload-artifact@v4
         with:
-          name: pchat-debug-apk
+          name: sepan-debug-apk
           path: android/app/build/outputs/apk/debug/*.apk
