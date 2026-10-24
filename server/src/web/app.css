@@ -172,3 +172,4 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .call .cb.on { background: #fff; color: #10202f; }
 .call .cb.red { background: #e53935; }
 .call .cb.green { background: #43a047; }
+.setting select { width: auto; max-width: 55%; flex: none; }
