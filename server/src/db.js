@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS pins (
   convo TEXT PRIMARY KEY, message_id INTEGER NOT NULL, by TEXT NOT NULL, ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS contact_requests (
+  from_user TEXT NOT NULL, to_user TEXT NOT NULL, status TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (from_user, to_user));
+CREATE TABLE IF NOT EXISTS blocks (
+  viewer TEXT NOT NULL, target TEXT NOT NULL, PRIMARY KEY (viewer, target));
+CREATE TABLE IF NOT EXISTS disconnects (
+  a TEXT NOT NULL, b TEXT NOT NULL, PRIMARY KEY (a, b));
 CREATE TABLE IF NOT EXISTS uploads (
   id TEXT PRIMARY KEY, owner TEXT NOT NULL, size INTEGER NOT NULL, off INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);
 `);
@@ -41,6 +47,8 @@ const userCols = db.prepare('PRAGMA table_info(users)').all().map((r) => r.name)
 if (!userCols.includes('display_name')) db.exec('ALTER TABLE users ADD COLUMN display_name TEXT');
 if (!userCols.includes('avatar_ver')) db.exec('ALTER TABLE users ADD COLUMN avatar_ver INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('disabled')) db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('bio')) db.exec('ALTER TABLE users ADD COLUMN bio TEXT');
+if (!userCols.includes('key_backup')) db.exec('ALTER TABLE users ADD COLUMN key_backup TEXT');
 
 function getSetting(key, def = null) {
   const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);

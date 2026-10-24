@@ -36,6 +36,14 @@
 | `GET /api/file/<id>` | دانلود با پشتیبانی از Range |
 | `GET /api/turn` | اعتبار موقت TURN (HMAC-SHA1) |
 
+## نسخهٔ وب (PWA)
+- `server/src/web.js` یک شنوندهٔ HTTPS جدا روی پورت ۴۴۳ (`WEB_PORT`) با گواهی جدا (`WEB_CERT_DIR`، پیش‌فرض `certs/web`) راه می‌اندازد. مسیرهای `/api/` همان handler پورت ۸۴۴۳ هستند؛ بقیه فایل‌های ثابت `server/src/web/` با CSP سخت‌گیرانه (`script-src 'self'`) است. گواهی هر ساعت دوباره خوانده می‌شود (`setSecureContext`).
+- پورت ۸۰ (`WEB_HTTP_PORT`، با `0` خاموش) فقط `/setup`، `/sepan-ca.mobileconfig` (پروفایل iOS از نوع `com.apple.security.root`) و `/sepan-ca.crt` را می‌دهد و بقیه را به https هدایت می‌کند. `WEB_DISABLE=1` کل نسخهٔ وب را خاموش می‌کند.
+- کلاینت: ماژول‌های ES بدون build؛ `crypto.mjs` نسخهٔ WebCrypto همان `Crypto.kt` است (کلید عمومی SPKI، HKDF با salt صفر، AES-GCM با IV دوازده‌بایتی در ابتدا، فایل‌های تکه‌ای با nonce و AAD یکسان). کلید خصوصی به‌صورت CryptoKey در IndexedDB می‌ماند و پیام‌های رمزگشایی‌شده و عکس‌ها هم در IndexedDB ذخیره می‌شوند.
+- رویدادهای زنده با `fetch` و خواندن جریان SSE (EventSource هدر Authorization نمی‌فرستد).
+- عکس پروفایل با یک رمزگذار کوچک WebP بی‌اتلاف (VP8L) در `webp.mjs` ساخته می‌شود، چون Safari از canvas خروجی WebP نمی‌دهد.
+- تماس‌ها با WebRTC مرورگر و همان سیگنال‌های رمزشدهٔ `sig_invite/accept/ice/reject/hangup` اپ اندروید.
+
 ## پنل مدیریت
 پورت جدا (۸۴۴۴)، رابط فارسی راست‌به‌چپ، CSRF، کوکی HttpOnly/SameSite=Strict/Secure، سیاست CSP سخت‌گیرانه، محدودیت تلاش ورود (۵ شکست برای هر IP ← ۱۰ دقیقه مسدودی)، و `ufw limit 8444/tcp`.
 

@@ -1,5 +1,5 @@
 'use strict';
-const { db, setSetting, hashPassword } = require('./db');
+const { db, setSetting, getSetting, hashPassword } = require('./db');
 const core = require('./core');
 
 const [, , cmd, name, ...rest] = process.argv;
@@ -32,7 +32,12 @@ if (cmd === 'add') {
 } else if (cmd === 'adminpw') {
   const pw = core.genPw();
   setSetting('admin_pass', hashPassword(pw));
-  console.log(`Admin panel password: ${pw}\n(Shown once. Run "msgadmin adminpw" again to reset it.)`);
+  const user = getSetting('admin_user', 'admin');
+  console.log(`Admin panel password: ${pw}\nAdmin panel username: ${user}\n(Shown once. Run "msgadmin adminpw" again to reset it.)`);
+} else if (cmd === 'adminuser') {
+  if (!name || !/^[a-z0-9_.\-]{3,32}$/.test(name)) { console.error('Admin username: 3-32 chars of a-z, 0-9, _ . -'); process.exit(1); }
+  setSetting('admin_user', name);
+  console.log(`Admin panel username: ${name}`);
 } else {
-  console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw');
+  console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw  |  msgadmin adminuser <name>');
 }

@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -23,6 +24,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.collectAsState
@@ -53,13 +55,14 @@ class MainActivity : ComponentActivity() {
         deepLink.value = intent.getStringExtra("convo")
     }
 
-    override fun onStart() { super.onStart(); Engine.appVisible = true }
-    override fun onStop() { super.onStop(); Engine.appVisible = false }
+    override fun onStart() { super.onStart(); Engine.appVisible = true; AppLock.onAppStart(); Engine.refreshDirectory() }
+    override fun onStop() { super.onStop(); Engine.appVisible = false; AppLock.onAppStop() }
 }
 
 @Composable
 fun PChatTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+    val theme by Prefs.theme.collectAsState()
+    val dark = when (theme) { Prefs.THEME_LIGHT -> false; Prefs.THEME_DARK -> true; else -> isSystemInDarkTheme() }
     val scheme = if (dark) {
         darkColorScheme(primary = Color(0xFF5EB5F7), background = Color(0xFF0E1621), surface = Color(0xFF17212B), surfaceVariant = Color(0xFF0E1621))
     } else {
@@ -75,10 +78,12 @@ fun App(deepLink: MutableState<String?>) {
     val ctx = LocalContext.current
     val logged by Engine.loggedIn.collectAsState()
     var convo by remember { mutableStateOf<String?>(null) }
+    var settings by remember { mutableStateOf(false) }
     var askBattery by remember { mutableStateOf(false) }
 
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val call by CallManager.state.collectAsState()
+    val locked by AppLock.locked.collectAsState()
 
     // show over the lock screen only while a call is ringing / running
     LaunchedEffect(call.phase) {
@@ -87,6 +92,21 @@ fun App(deepLink: MutableState<String?>) {
             act.setShowWhenLocked(call.phase != CallPhase.IDLE)
             act.setTurnScreenOn(call.phase == CallPhase.INCOMING)
         }
+        // never let the screen time out during a call (a video call used to go black)
+        if (act != null) {
+            if (call.phase != CallPhase.IDLE) act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            else act.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        }
+    }
+
+    // voice call held to the ear: switch the screen off with the proximity sensor, like Telegram
+    val earpiece = call.phase != CallPhase.IDLE && call.phase != CallPhase.INCOMING && !call.video && !call.speaker
+    DisposableEffect(earpiece) {
+        val pm = ctx.getSystemService(PowerManager::class.java)
+        val lock = if (earpiece && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK))
+            pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "pchat:proximity").apply { setReferenceCounted(false); acquire(4 * 3600 * 1000L) }
+        else null
+        onDispose { try { lock?.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } catch (e: Exception) { } }
     }
 
     LaunchedEffect(deepLink.value) {
@@ -100,18 +120,23 @@ fun App(deepLink: MutableState<String?>) {
             if (!pm.isIgnoringBatteryOptimizations(ctx.packageName) && !Engine.prefs.getBoolean("battery_asked", false)) askBattery = true
         } else {
             convo = null
+            settings = false
             ctx.stopService(Intent(ctx, MessengerService::class.java))
         }
     }
     BackHandler(enabled = convo != null && call.phase == CallPhase.IDLE) { convo = null }
+    BackHandler(enabled = settings && convo == null && call.phase == CallPhase.IDLE) { settings = false }
 
     if (!logged) {
         LoginScreen()
     } else if (call.phase != CallPhase.IDLE) {
         CallScreen()
+    } else if (locked) {
+        LockScreen()
     } else {
         val c = convo
-        if (c == null) ChatListScreen(onOpen = { convo = it }, onLogout = { Engine.logout() })
+        if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })
+        else if (c == null) ChatListScreen(onOpen = { convo = it }, onSettings = { settings = true }, onLogout = { Engine.logout() })
         else ChatScreen(c, onBack = { convo = null })
     }
 

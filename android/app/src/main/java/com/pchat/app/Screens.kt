@@ -107,7 +107,7 @@ fun LoginScreen() {
             Text("✉", color = Color.White, fontSize = 44.sp)
         }
         Spacer(Modifier.height(20.dp))
-        Text("ورود به پیام‌رسان", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Text("ورود به سپن", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(6.dp))
         Text("نام کاربری و رمز را مدیر سرور به شما داده است", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
         Spacer(Modifier.height(24.dp))
@@ -146,29 +146,33 @@ fun LoginScreen() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
+fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: () -> Unit) {
     val tick by Engine.tick.collectAsState()
     val users by Engine.users.collectAsState()
     val connected by Engine.connected.collectAsState()
     val rows = remember(tick, users) { Engine.summaries() }
     var menu by remember { mutableStateOf(false) }
-    var showKeys by remember { mutableStateOf(false) }
-    var showProfile by remember { mutableStateOf(false) }
+    var addContact by remember { mutableStateOf(false) }
+    var showRequests by remember { mutableStateOf(false) }
+    val incoming by Engine.incomingRequests.collectAsState()
+    val backedUp by Engine.keyBackedUp.collectAsState()
+    var showBackup by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
             TopAppBar(
                 title = {
                     Column {
-                        Text("پیام‌رسان", fontWeight = FontWeight.Bold)
+                        Text("سپن", fontWeight = FontWeight.Bold)
                         Text(if (connected) "متصل" else "در حال اتصال…", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                     }
                 },
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("پروفایل من") }, onClick = { menu = false; showProfile = true })
-                        DropdownMenuItem(text = { Text("امنیت و اثرانگشت کلیدها") }, onClick = { menu = false; showKeys = true })
+                        DropdownMenuItem(text = { Text("افزودن مخاطب") }, onClick = { menu = false; addContact = true })
+                        DropdownMenuItem(text = { Text("درخواست‌های اتصال" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
+                        DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
                         DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
                     }
                 }
@@ -176,6 +180,31 @@ fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
         }
     ) { pad ->
         LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+            if (incoming.isNotEmpty()) item(key = "requests") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showRequests = true }.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("👋", fontSize = 22.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("${incoming.size} درخواست اتصال تازه", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text("مشاهده", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            if (backedUp == false) item(key = "keybackup") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showBackup = true }.background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔑", fontSize = 22.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("برای اینکه پیام‌های قبلی پس از ورود دوباره از دست نروند، پشتیبان کلید را فعال کنید",
+                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("فعال کن", color = MaterialTheme.colorScheme.primary)
+                }
+            }
             items(rows, key = { it.convo }) { r ->
               Column {
                 val online = users.firstOrNull { it.username == r.convo }?.online ?: false
@@ -207,8 +236,9 @@ fun ChatListScreen(onOpen: (String) -> Unit, onLogout: () -> Unit) {
             }
         }
     }
-    if (showKeys) KeysDialog(users.map { it.username }.filter { it != Engine.me }) { showKeys = false }
-    if (showProfile) ProfileDialog { showProfile = false }
+    if (addContact) AddContactDialog { addContact = false }
+    if (showRequests) RequestsDialog { showRequests = false }
+    if (showBackup) KeyBackupDialog { showBackup = false }
 }
 
 /** Shows key fingerprints so users can verify each other out-of-band (protects against a malicious server swapping keys). */
@@ -246,53 +276,5 @@ fun KeysDialog(contacts: List<String>, onClose: () -> Unit) {
                 }
             }
         }
-    )
-}
-
-@Composable
-fun ProfileDialog(onClose: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    val users by Engine.users.collectAsState()
-    val self = users.firstOrNull { it.username == Engine.me }
-    var name by remember { mutableStateOf(self?.displayName ?: "") }
-    var busy by remember { mutableStateOf(false) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) {
-            busy = true; msg = null
-            scope.launch {
-                msg = Engine.saveAvatar(uri) ?: "عکس پروفایل به‌روز شد"
-                busy = false
-            }
-        }
-    }
-    AlertDialog(
-        onDismissRequest = onClose,
-        title = { Text("پروفایل من") },
-        text = {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
-                Box(Modifier.clickable(enabled = !busy) { pick.launch("image/*") }) { Avatar(Engine.me, false, 96) }
-                TextButton(onClick = { pick.launch("image/*") }, enabled = !busy) { Text("تغییر عکس") }
-                Spacer(Modifier.height(4.dp))
-                OutlinedTextField(
-                    value = name, onValueChange = { if (it.length <= 40) name = it }, singleLine = true,
-                    label = { Text("نام نمایشی") }, modifier = Modifier.fillMaxWidth()
-                )
-                Text("نام کاربری: ${Engine.me}", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(top = 6.dp))
-                if (busy) { Spacer(Modifier.height(8.dp)); CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
-                msg?.let { Text(it, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
-            }
-        },
-        confirmButton = {
-            TextButton(enabled = !busy, onClick = {
-                busy = true; msg = null
-                scope.launch {
-                    val e = Engine.saveDisplayName(name)
-                    busy = false
-                    if (e == null) onClose() else msg = e
-                }
-            }) { Text("ذخیره") }
-        },
-        dismissButton = { TextButton(onClick = onClose) { Text("بستن") } }
     )
 }

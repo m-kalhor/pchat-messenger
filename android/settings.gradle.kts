@@ -14,5 +14,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "PChat"
+rootProject.name = "Sepan"
 include(":app")

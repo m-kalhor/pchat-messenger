@@ -91,6 +91,18 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 2) {
         writableDatabase.execSQL("UPDATE messages SET local_path=? WHERE id=?", arrayOf<Any>(path, id))
     }
 
+    /** Files of messages that are not delivered yet (queued or failed); these must survive a cleanup. */
+    fun unsentPaths(): List<String> {
+        val out = ArrayList<String>()
+        readableDatabase.rawQuery("SELECT local_path FROM messages WHERE status<>0 AND local_path IS NOT NULL", null).use { c -> while (c.moveToNext()) out.add(c.getString(0)) }
+        return out
+    }
+
+    /** Forget where delivered messages' files are stored (after the files were deleted to free space). */
+    fun clearLocalPaths() {
+        writableDatabase.execSQL("UPDATE messages SET local_path=NULL WHERE status=0")
+    }
+
     fun delete(id: Long) {
         writableDatabase.execSQL("DELETE FROM messages WHERE id=?", arrayOf<Any>(id))
     }

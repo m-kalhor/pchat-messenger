@@ -6,6 +6,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { db, DATA_DIR, hashPassword, checkPassword } = require('./db');
 const core = require('./core');
+const contacts = require('./contacts');
 const { sanitizeWebp } = require('./webp');
 const stats = require('./stats');
 const backup = require('./backup');
@@ -38,6 +39,7 @@ const q = {
   sess: db.prepare('SELECT s.username AS username, s.created AS created, u.disabled AS disabled FROM sessions s JOIN users u ON u.username=s.username WHERE s.th=?'),
   delSess: db.prepare('DELETE FROM sessions WHERE th=?'),
   setKey: db.prepare('UPDATE users SET pubkey=? WHERE username=?'),
+  setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
   addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts) VALUES(?,?,?,?,?,?)'),
   msg: db.prepare('SELECT * FROM messages WHERE id=?'),
   addFile: db.prepare('INSERT INTO files(id,owner,size,ts) VALUES(?,?,?,?)'),
@@ -49,7 +51,10 @@ const q = {
   setOff: db.prepare('UPDATE uploads SET off=?, ts=? WHERE id=?'),
   delUp: db.prepare('DELETE FROM uploads WHERE id=?'),
   setName: db.prepare('UPDATE users SET display_name=? WHERE username=?'),
-  bumpAvatar: db.prepare('UPDATE users SET avatar_ver=avatar_ver+1 WHERE username=?'),
+  setBio: db.prepare('UPDATE users SET bio=? WHERE username=?'),
+  // avatar_ver > 0 = has a photo; removing it flips the sign so the next upload still gets a fresh version
+  bumpAvatar: db.prepare('UPDATE users SET avatar_ver=abs(avatar_ver)+1 WHERE username=?'),
+  dropAvatar: db.prepare('UPDATE users SET avatar_ver=-abs(avatar_ver) WHERE username=?'),
   setPin: db.prepare('INSERT INTO pins(convo,message_id,by,ts) VALUES(?,?,?,?) ON CONFLICT(convo) DO UPDATE SET message_id=excluded.message_id, by=excluded.by, ts=excluded.ts'),
   delPin: db.prepare('DELETE FROM pins WHERE convo=?'),
   pin: db.prepare('SELECT * FROM pins WHERE convo=?'),
@@ -133,7 +138,7 @@ function refreshAll() { for (const u of onlineUsers()) emit(u, 'refresh', {}); }
 function profileChanged(username) {
   const u = core.q.user.get(username);
   if (!u) return;
-  broadcastTo(audienceOf(username), 'profile', { username, display_name: u.display_name, avatar_ver: u.avatar_ver });
+  broadcastTo(audienceOf(username), 'profile', { username, display_name: u.display_name, avatar_ver: u.avatar_ver, bio: u.bio || null });
 }
 function kick(username) {
   const set = clients.get(username);
@@ -155,8 +160,23 @@ function resolveTarget(user, target) {
 }
 function pinKey(user, tr) { return tr.type === 'group' ? tr.cat.gkey : core.convoKey(user, tr.peer); }
 
+const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
+function keyBackupOf(u) {
+  if (!u || !u.key_backup) return null;
+  try { return JSON.parse(u.key_backup); } catch { return null; }
+}
+/** v1: { v:1, kdf:'pbkdf2-sha256', iter, salt, iv, ct, pub } — all binary fields base64 */
+function cleanKeyBackup(k) {
+  if (!k || typeof k !== 'object' || k.v !== 1 || k.kdf !== 'pbkdf2-sha256') return null;
+  const iter = Number(k.iter);
+  if (!Number.isInteger(iter) || iter < 100000 || iter > 5000000) return null;
+  const ok = (x, min, max) => typeof x === 'string' && x.length >= min && x.length <= max && B64.test(x);
+  if (!ok(k.salt, 16, 64) || !ok(k.iv, 16, 24) || !ok(k.ct, 64, 2048) || !ok(k.pub, 64, 1024)) return null;
+  return { v: 1, kdf: 'pbkdf2-sha256', iter, salt: k.salt, iv: k.iv, ct: k.ct, pub: k.pub };
+}
+
 function publicUser(u, extra) {
-  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, online: isOnline(u.username), avatar_ver: u.avatar_ver, ...extra };
+  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, online: isOnline(u.username), avatar_ver: u.avatar_ver, bio: u.bio || null, ...extra };
 }
 
 function replay(user, since) {
@@ -200,8 +220,10 @@ async function route(req, res) {
     fails.delete('u:' + username);
     const token = crypto.randomBytes(32).toString('hex');
     q.addSess.run(sha256(token), username, now());
-    if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024) q.setKey.run(b.pubkey, username);
-    return send(res, 200, { token, username });
+    // with a key backup the account keeps one identity key on every device: a new device restores it instead
+    const kb = keyBackupOf(u);
+    if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024 && (!kb || kb.pub === b.pubkey)) q.setKey.run(b.pubkey, username);
+    return send(res, 200, { token, username, key_backup: kb });
   }
 
   const a = authInfo(req);
@@ -212,7 +234,7 @@ async function route(req, res) {
 
   if (p === '/api/me' && req.method === 'GET') {
     const u = core.q.user.get(user);
-    return send(res, 200, { username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver });
+    return send(res, 200, { username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null });
   }
 
   if (p === '/api/users' && req.method === 'GET') {
@@ -228,16 +250,35 @@ async function route(req, res) {
   if (p === '/api/pubkey' && req.method === 'POST') {
     const b = await readJson(req, 4096);
     if (typeof b.pubkey !== 'string' || b.pubkey.length > 1024) return send(res, 400, { error: 'bad_pubkey' });
+    const kb = keyBackupOf(core.q.user.get(user));
+    if (kb && kb.pub !== b.pubkey) return send(res, 409, { error: 'key_backup_mismatch' });
     q.setKey.run(b.pubkey, user);
+    return send(res, 200, { ok: true });
+  }
+
+  // password-encrypted copy of the identity private key (the server cannot open it); see docs/ARCHITECTURE.md
+  if (p === '/api/keybackup' && req.method === 'GET') return send(res, 200, { key_backup: keyBackupOf(core.q.user.get(user)) });
+  if (p === '/api/keybackup' && req.method === 'POST') {
+    const b = await readJson(req, 8192);
+    const me = core.q.user.get(user);
+    // the account password is required: it is what the backup is locked with, and a stolen session alone must not swap the key
+    if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
+    if (typeof b.password !== 'string' || !checkPassword(b.password, me.pass)) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    const kb = cleanKeyBackup(b.key_backup);
+    if (!kb) return send(res, 400, { error: 'bad_key_backup' });
+    const before = me.pubkey;
+    q.setBackup.run(JSON.stringify(kb), kb.pub, user);
+    if (before !== kb.pub) broadcastTo(audienceOf(user).filter((x) => x !== user), 'refresh', {});
     return send(res, 200, { ok: true });
   }
 
   if (p === '/api/profile' && req.method === 'POST') {
     const b = await readJson(req, 4096);
-    const name = core.cleanDisplay(b.display_name);
-    q.setName.run(name || null, user);
+    if (typeof b.display_name === 'string') q.setName.run(core.cleanDisplay(b.display_name) || null, user);
+    if (typeof b.bio === 'string') q.setBio.run(core.cleanBio(b.bio) || null, user);
     profileChanged(user);
-    return send(res, 200, { display_name: name || null });
+    const u = core.q.user.get(user);
+    return send(res, 200, { display_name: u.display_name || null, bio: u.bio || null });
   }
 
   if (p === '/api/avatar' && req.method === 'POST') {
@@ -249,6 +290,13 @@ async function route(req, res) {
     fs.writeFileSync(dest + '.tmp', clean);
     fs.renameSync(dest + '.tmp', dest);
     q.bumpAvatar.run(user);
+    profileChanged(user);
+    return send(res, 200, { avatar_ver: core.q.user.get(user).avatar_ver });
+  }
+
+  if (p === '/api/avatar' && req.method === 'DELETE') {
+    try { fs.unlinkSync(path.join(AVATARS_DIR, user + '.webp')); } catch { }
+    q.dropAvatar.run(user);
     profileChanged(user);
     return send(res, 200, { avatar_ver: core.q.user.get(user).avatar_ver });
   }
@@ -332,6 +380,28 @@ async function route(req, res) {
     if (tr.type === 'group') for (const u of core.membersOf(tr.cat.id)) emit(u, 'pin', { convo: key, messageId: mid, by: user });
     else { emit(tr.peer, 'pin', { convo: user, messageId: mid, by: user }); emit(user, 'pin', { convo: tr.peer, messageId: mid, by: user }); }
     return send(res, 200, { ok: true });
+  }
+
+  // ---- connection requests between users (fill the visibility matrix without the admin) ----
+  if (p === '/api/contacts/requests' && req.method === 'GET') return send(res, 200, contacts.lists(user));
+  const cm = /^\/api\/contacts\/(request|respond|cancel|remove)$/.exec(p);
+  if (cm && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    const other = String(b.username || '').trim().toLowerCase();
+    try {
+      let result = 'ok';
+      if (cm[1] === 'request') result = contacts.request(user, other);
+      else if (cm[1] === 'respond') contacts.respond(user, other, !!b.accept);
+      else if (cm[1] === 'cancel') contacts.cancel(user, other);
+      else contacts.remove(user, other);
+      emit(other, 'contacts', {});
+      emit(user, 'contacts', {});
+      if (result === 'connected' || (cm[1] === 'respond' && b.accept) || cm[1] === 'remove') { emit(other, 'refresh', {}); emit(user, 'refresh', {}); }
+      return send(res, 200, { result });
+    } catch (e) {
+      const code = e.message === 'no_such_user' || e.message === 'no_request' ? 404 : e.message === 'not_allowed' ? 403 : 400;
+      return send(res, code, { error: e.message });
+    }
   }
 
   if (p === '/api/turn' && req.method === 'GET') {
@@ -499,6 +569,9 @@ backup.startScheduler();
 // ---------- admin panel (separate listener, localhost by default) ----------
 const ctx = { kick, refreshAll, profileChanged, onlineUsers, isOnline };
 require('./adminpanel').start(ctx, tlsOptions);
+
+// ---------- web version / PWA for iPhone (own port and certificate, same API) ----------
+require('./web').start(handler, { plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST });
 
 server.listen(PORT, '0.0.0.0', () => console.log(`messenger listening on ${PORT} (${PLAIN ? 'PLAIN HTTP - test only' : 'TLS'})`));
 for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { server.close(); process.exit(0); });

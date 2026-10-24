@@ -114,7 +114,33 @@ function decryptFrom(my, me, sender, target, senderPub, payload) {
   return open(k, unb64(o.c), aad);
 }
 
-module.exports = {
+/**
+ * Key backup v1 (Crypto.exportBackup / importBackup in Crypto.kt, same in the web client):
+ * KEK = PBKDF2-HMAC-SHA256(password, salt, iter, 32 bytes);
+ * ct = AES-256-GCM(KEK, iv, PKCS#8 DER private key, aad "sepan-keybackup-v1|" + username), tag appended.
+ */
+function exportBackup(my, username, password, iter = 310000) {
+  const salt = crypto.randomBytes(16);
+  const iv = crypto.randomBytes(12);
+  const kek = crypto.pbkdf2Sync(Buffer.from(password, 'utf8'), salt, iter, 32, 'sha256');
+  const c = crypto.createCipheriv('aes-256-gcm', kek, iv);
+  c.setAAD(Buffer.from('sepan-keybackup-v1|' + username));
+  const ct = Buffer.concat([c.update(my.priv.export({ type: 'pkcs8', format: 'der' })), c.final(), c.getAuthTag()]);
+  return { v: 1, kdf: 'pbkdf2-sha256', iter, salt: b64(salt), iv: b64(iv), ct: b64(ct), pub: my.pubB64 };
+}
+
+/** Returns the identity, or throws when the password is wrong. */
+function importBackup(kb, username, password) {
+  const kek = crypto.pbkdf2Sync(Buffer.from(password, 'utf8'), unb64(kb.salt), kb.iter, 32, 'sha256');
+  const raw = unb64(kb.ct);
+  const d = crypto.createDecipheriv('aes-256-gcm', kek, unb64(kb.iv));
+  d.setAAD(Buffer.from('sepan-keybackup-v1|' + username));
+  d.setAuthTag(raw.subarray(raw.length - 16));
+  const der = Buffer.concat([d.update(raw.subarray(0, raw.length - 16)), d.final()]);
+  return { priv: crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }), pubB64: kb.pub };
+}
+
+module.exports = { exportBackup, importBackup,
   b64, unb64, newIdentity, fingerprint, hkdf, pairKey, seal, open,
   FILE_CHUNK, TAG, CIPHER_CHUNK, chunkCount, cipherSize, newFileKey, isChunked,
   sealChunk, openChunk, sealFileChunks, openFileChunks, encryptFor, decryptFrom,

@@ -127,3 +127,18 @@ test('pins only accept messages from that conversation', async () => {
   assert.equal(r.status, 400);
   assert.equal(r.data.error, 'bad_message');
 });
+
+test('groups created or assigned after a user exists show up for old and new members', async () => {
+  const late = S.core.createCategory('بعدی');
+  S.core.setUserCategories('dave', [late]); // dave existed before the group
+  tok.frank = await S.user('frank', []); // frank is created first, added to the group afterwards
+  S.core.setUserCategories('frank', [late]);
+  for (const u of ['dave', 'frank']) {
+    const r = await S.api(tok[u], 'GET', '/api/groups');
+    assert.equal(r.status, 200);
+    const g = r.data.find((x) => x.id === late);
+    assert.ok(g, `${u} must see the new group`);
+    assert.deepEqual(g.members, ['dave', 'frank']);
+  }
+  assert.equal((await send('frank', 'g:' + late)).status, 200);
+});

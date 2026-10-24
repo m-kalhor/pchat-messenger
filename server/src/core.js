@@ -14,6 +14,8 @@ const q = {
   visList: db.prepare('SELECT target FROM visibility WHERE viewer=?'),
   priorSenders: db.prepare('SELECT DISTINCT sender FROM messages WHERE target=?'),
   hasMsg: db.prepare('SELECT 1 FROM messages WHERE sender=? AND target=? LIMIT 1'),
+  blocked: db.prepare('SELECT 1 FROM blocks WHERE (viewer=? AND target=?) OR (viewer=? AND target=?)'),
+  cut: db.prepare('SELECT 1 FROM disconnects WHERE a=? AND b=?'),
   mates: db.prepare('SELECT DISTINCT b.username AS u FROM user_categories a JOIN user_categories b ON a.category_id=b.category_id WHERE a.username=? AND b.username<>?'),
 };
 
@@ -23,17 +25,24 @@ const membersOf = (catId) => q.members.all(catId).map((r) => r.username);
 const isMember = (username, catId) => !!q.isMember.get(username, catId);
 const groupByKey = (gkey) => q.catByKey.get(gkey);
 
+const pairKey = (a, b) => (a < b ? [a, b] : [b, a]);
+/** The admin closed this pair in the matrix (⛔): no chat and no connection requests, in either direction. */
+const isBlocked = (a, b) => !!q.blocked.get(a, b, b, a);
+/** One of the two removed the connection themselves; earlier messages no longer allow replying. */
+const isCut = (a, b) => !!q.cut.get(...pairKey(a, b));
+
 /** A may start (visibility matrix) or answer (B already wrote to A) a private chat with B. */
 function canDM(a, b) {
   if (a === b || !activeUser(b)) return false;
-  return !!q.vis.get(a, b) || !!q.hasMsg.get(b, a);
+  if (q.vis.get(a, b)) return true;
+  return !!q.hasMsg.get(b, a) && !isBlocked(a, b) && !isCut(a, b);
 }
 
 /** Everyone `username` is allowed to know about: matrix contacts, people who wrote to them, group mates. */
 function contacts(username) {
   const m = new Map();
   for (const r of q.visList.all(username)) m.set(r.target, { dm: true });
-  for (const r of q.priorSenders.all(username)) if (!m.has(r.sender)) m.set(r.sender, { dm: true });
+  for (const r of q.priorSenders.all(username)) if (!m.has(r.sender) && !isBlocked(username, r.sender) && !isCut(username, r.sender)) m.set(r.sender, { dm: true });
   for (const r of q.mates.all(username, username)) if (!m.has(r.u)) m.set(r.u, { dm: false });
   m.delete(username);
   for (const k of [...m.keys()]) if (!activeUser(k)) m.delete(k);
@@ -51,6 +60,11 @@ function genPw() {
 
 function cleanDisplay(s) {
   return String(s || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 40);
+}
+
+/** Profile bio: up to 70 characters (like Telegram), one line breaks allowed at most as a space. */
+function cleanBio(s) {
+  return String(s || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
 }
 
 function createUser(username, display, catIds) {
@@ -80,6 +94,9 @@ function deleteUser(username) {
   db.prepare('DELETE FROM sessions WHERE username=?').run(username);
   db.prepare('DELETE FROM user_categories WHERE username=?').run(username);
   db.prepare('DELETE FROM visibility WHERE viewer=? OR target=?').run(username, username);
+  db.prepare('DELETE FROM blocks WHERE viewer=? OR target=?').run(username, username);
+  db.prepare('DELETE FROM disconnects WHERE a=? OR b=?').run(username, username);
+  db.prepare('DELETE FROM contact_requests WHERE from_user=? OR to_user=?').run(username, username);
   return db.prepare('DELETE FROM users WHERE username=?').run(username).changes > 0;
 }
 
@@ -93,6 +110,6 @@ function createCategory(name) {
 }
 
 module.exports = {
-  NAME_RE, q, activeUser, groupsOf, membersOf, isMember, groupByKey, canDM, contacts, convoKey,
-  genPw, cleanDisplay, createUser, setUserCategories, resetPassword, deleteUser, createCategory,
+  NAME_RE, q, activeUser, isBlocked, isCut, pairKey, groupsOf, membersOf, isMember, groupByKey, canDM, contacts, convoKey,
+  genPw, cleanDisplay, cleanBio, createUser, setUserCategories, resetPassword, deleteUser, createCategory,
 };

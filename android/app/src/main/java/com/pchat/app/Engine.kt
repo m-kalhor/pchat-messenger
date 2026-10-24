@@ -55,10 +55,14 @@ object Engine {
     val tick = MutableStateFlow(0L)
     val users = MutableStateFlow<List<UserInfo>>(emptyList())
     val groups = MutableStateFlow<List<GroupInfo>>(emptyList())
+    val incomingRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
+    val outgoingRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
     /** conversation key -> pinned message id */
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     val loggedIn = MutableStateFlow(false)
+    /** null = unknown yet, true = the server holds a backup of this device's identity key, false = it does not */
+    val keyBackedUp = MutableStateFlow<Boolean?>(null)
     val connected = MutableStateFlow(false)
     /** message id -> 0..1 for running uploads/downloads */
     val progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
@@ -99,6 +103,7 @@ object Engine {
         loggedIn.value = Api.token != null
         try { users.value = parseUsers(prefs.getString("users_raw", "[]") ?: "[]") } catch (e: Exception) { }
         try { groups.value = parseGroups(prefs.getString("groups_raw", "[]") ?: "[]") } catch (e: Exception) { }
+        Prefs.load()
         CallManager.init(app)
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = app.getSystemService(NotificationManager::class.java)
@@ -106,6 +111,23 @@ object Engine {
             nm.createNotificationChannel(NotificationChannel(CH_SVC, "اتصال", NotificationManager.IMPORTANCE_MIN))
             nm.createNotificationChannel(NotificationChannel(CH_CALL, "تماس", NotificationManager.IMPORTANCE_HIGH).apply { setSound(null, null) })
         }
+    }
+
+    /** Bytes used by downloaded/sent files, the partial-download folder and the avatar cache. */
+    fun storageUsage(): Long = Prefs.dirSize(mediaDir()) + Prefs.dirSize(dlDir()) + Prefs.dirSize(avatarDir())
+
+    /**
+     * Frees space: deletes received and sent files that are already delivered, partial downloads and cached avatars.
+     * Messages stay; their files are downloaded again from the server when opened (while the server still keeps them).
+     */
+    suspend fun clearMedia() = withContext(Dispatchers.IO) {
+        val keep = db.unsentPaths().map { File(it).name }.toSet()
+        mediaDir().listFiles()?.forEach { if (it.name !in keep) it.delete() }
+        dlDir().listFiles()?.forEach { it.delete() }
+        avatarDir().listFiles()?.forEach { it.delete() }
+        avatarMem.evictAll()
+        db.clearLocalPaths()
+        tick.value++
     }
 
     private fun mediaDir(): File = File(app.filesDir, "media").also { it.mkdirs() }
@@ -121,9 +143,12 @@ object Engine {
         prefs.edit().putLong("last_id", 0).remove("users_raw").remove("groups_raw").apply()
         users.value = emptyList()
         groups.value = emptyList()
+        incomingRequests.value = emptyList()
+        outgoingRequests.value = emptyList()
         pins.value = emptyMap()
         progress.value = emptyMap()
         failures.value = emptyMap()
+        keyBackedUp.value = null
         tick.value++
     }
 
@@ -155,10 +180,15 @@ object Engine {
     suspend fun login(user: String, pass: String): String? = withContext(Dispatchers.IO) {
         try {
             val u = user.trim().lowercase()
-            val t = Api.login(u, pass, identity!!.pubB64)
-            if (prefs.getString("me", null) != u) wipeLocal()
+            val prevMe = prefs.getString("me", null)
+            // another account on this phone must not reuse the previous account's key
+            val local = if (prevMe != null && prevMe != u) Crypto.generateIdentity() else identity!!
+            val r = Api.login(u, pass, local.pubB64)
+            val t = r.getString("token")
+            if (prevMe != u) wipeLocal()
             prefs.edit().putString("token", t).putString("me", u).apply()
             Api.token = t
+            useIdentity(syncKeyBackup(u, pass, r.optJSONObject("key_backup"), local))
             loggedIn.value = true
             null
         } catch (e: Api.HttpError) {
@@ -167,6 +197,49 @@ object Engine {
                 429 -> "تلاش‌های ناموفق زیاد بود؛ ۱۰ دقیقه صبر کنید"
                 else -> "خطای سرور (${e.code})"
             }
+        } catch (e: Exception) {
+            "اتصال به سرور برقرار نشد"
+        }
+    }
+
+    private fun useIdentity(id: Identity) {
+        if (id.pubB64 != identity?.pubB64) Crypto.saveIdentity(app, id)
+        identity = id
+    }
+
+    /**
+     * One identity key per account, kept on the server encrypted with the login password (the server cannot read it).
+     * A new device (or a reinstall) restores the key, so old messages stay readable after logging in again.
+     * Returns the identity to use; upload failures never fail the login.
+     */
+    private fun syncKeyBackup(u: String, pass: String, kb: JSONObject?, local: Identity): Identity {
+        if (kb != null) {
+            try {
+                val restored = Crypto.importBackup(kb, u, pass)
+                keyBackedUp.value = true
+                return restored
+            } catch (e: Exception) {
+                // the backup was made with an older password (reset by the admin): fall through and back up again.
+                // when it holds a different key that key cannot be recovered, so this device's key replaces it.
+            }
+        }
+        keyBackedUp.value = try { Api.uploadKeyBackup(Crypto.exportBackup(local, u, pass), pass); true } catch (e: Exception) { false }
+        return local
+    }
+
+    /** For accounts logged in before key backup existed: Settings asks for the password once. Returns an error or null. */
+    suspend fun enableKeyBackup(pass: String): String? = withContext(Dispatchers.IO) {
+        val u = me
+        try {
+            val kb = Api.keyBackup()
+            val id = if (kb != null) try { Crypto.importBackup(kb, u, pass) } catch (e: Exception) { null } else null
+            // the account's key is in the backup (e.g. restored on another phone): use it here too
+            if (id != null) { useIdentity(id); keyBackedUp.value = true; refreshDirectory(); return@withContext null }
+            Api.uploadKeyBackup(Crypto.exportBackup(identity!!, u, pass), pass)
+            keyBackedUp.value = true
+            null
+        } catch (e: Api.HttpError) {
+            if (e.code == 403) "رمز عبور اشتباه است" else if (e.code == 429) "تلاش‌های زیاد؛ کمی صبر کنید" else "خطای سرور (${e.code})"
         } catch (e: Exception) {
             "اتصال به سرور برقرار نشد"
         }
@@ -208,6 +281,69 @@ object Engine {
         prefs.edit().putString("groups_raw", raw).apply()
         groups.value = list
         tick.value++
+    }
+
+    /** Re-reads contacts and groups in the background, so a group the admin added while a "refresh" event was missed still shows up. */
+    fun refreshDirectory() {
+        if (Api.token == null) return
+        scope.launch {
+            try { refreshUsers() } catch (e: Exception) { }
+            try { refreshGroups() } catch (e: Exception) { }
+            try { refreshRequests() } catch (e: Exception) { }
+            try { keyBackedUp.value = Api.keyBackup()?.optString("pub") == identity?.pubB64 } catch (e: Exception) { }
+        }
+    }
+
+    fun refreshRequests() {
+        val (inc, out) = Api.contactRequests()
+        val known = incomingRequests.value.map { it.username }.toSet()
+        incomingRequests.value = inc
+        outgoingRequests.value = out
+        for (r in inc) if (r.username !in known && !prefs.getBoolean("req_seen_${r.username}_${r.ts}", false)) {
+            prefs.edit().putBoolean("req_seen_${r.username}_${r.ts}", true).apply()
+            postRequestNotification(r)
+        }
+    }
+
+    private fun contactErr(e: Exception): String {
+        val code = (e as? Api.HttpError)?.let { try { JSONObject(it.message ?: "").optString("error") } catch (x: Exception) { "" } } ?: ""
+        return when (code) {
+            "no_such_user" -> "کاربری با این نام کاربری پیدا نشد"
+            "bad_username" -> "نام کاربری نامعتبر است"
+            "already_connected" -> "شما از قبل به این کاربر متصل هستید"
+            "declined_recently" -> "این کاربر درخواست قبلی شما را رد کرده؛ فردا دوباره امتحان کنید"
+            "not_allowed" -> "مدیر ارتباط شما با این کاربر را بسته است"
+            "no_request" -> "این درخواست دیگر وجود ندارد"
+            else -> errText(e)
+        }
+    }
+
+    /** Sends / answers / withdraws a connection request, or removes a connection. Returns (error, result). */
+    suspend fun contactAction(what: String, username: String, accept: Boolean = false): Pair<String?, String?> = withContext(Dispatchers.IO) {
+        try {
+            val r = Api.contactAction(what, username.trim().lowercase(), accept)
+            try { refreshRequests() } catch (e: Exception) { }
+            try { refreshUsers() } catch (e: Exception) { }
+            null to r
+        } catch (e: Exception) { contactErr(e) to null }
+    }
+
+    private fun postRequestNotification(r: ContactRequest) {
+        if (appVisible) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val i = Intent(app, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+        val pi = PendingIntent.getActivity(app, 7702, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val who = r.displayName?.let { "$it (${r.username})" } ?: r.username
+        val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle("درخواست اتصال")
+            .setContentText("$who می‌خواهد با شما در ارتباط باشد")
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        NotificationManagerCompat.from(app).notify(("req:" + r.username).hashCode(), n)
     }
 
     private fun pubOf(u: String): String? =
@@ -256,6 +392,7 @@ object Engine {
             try {
                 refreshUsers()
                 try { refreshGroups() } catch (e: Api.HttpError) { if (e.code == 401) throw e }
+                try { refreshRequests() } catch (e: Exception) { }
                 Api.stream(
                     prefs.getLong("last_id", 0),
                     onOpen = {
@@ -292,10 +429,11 @@ object Engine {
                 val u = o.getString("username")
                 val dn = if (o.isNull("display_name")) null else o.getString("display_name")
                 val ver = o.optInt("avatar_ver", 0)
+                val bio = if (o.isNull("bio")) null else o.optString("bio", "").ifEmpty { null }
                 if (users.value.none { it.username == u }) {
                     try { refreshUsers() } catch (e: Exception) { }
                 } else {
-                    users.value = users.value.map { if (it.username == u) it.copy(displayName = dn, avatarVer = ver) else it }
+                    users.value = users.value.map { if (it.username == u) it.copy(displayName = dn, avatarVer = ver, bio = bio) else it }
                 }
                 tick.value++
             }
@@ -303,6 +441,7 @@ object Engine {
                 try { refreshUsers() } catch (e: Exception) { }
                 try { refreshGroups() } catch (e: Exception) { }
             }
+            "contacts" -> try { refreshRequests() } catch (e: Exception) { }
             "pin" -> {
                 val convo = o.getString("convo")
                 if (o.isNull("messageId")) pins.value = pins.value - convo
@@ -358,6 +497,7 @@ object Engine {
             ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         val group = isGroup(m.convo)
+        if (!Prefs.shouldNotify(m.convo, group)) return
         val title = if (group) groupName(m.convo) else nameOf(m.sender)
         val body = (if (group) nameOf(m.sender) + ": " else "") + U.preview(m)
         val i = Intent(app, MainActivity::class.java).apply {
@@ -365,7 +505,7 @@ object Engine {
             putExtra("convo", m.convo)
         }
         val pi = PendingIntent.getActivity(app, m.convo.hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val n = NotificationCompat.Builder(app, CH_MSG)
+        val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
             .setContentText(body)
@@ -473,10 +613,19 @@ object Engine {
         }
     }
 
-    suspend fun saveDisplayName(name: String): String? = withContext(Dispatchers.IO) {
+    suspend fun saveProfile(name: String, bio: String): String? = withContext(Dispatchers.IO) {
         try {
-            Api.setDisplayName(name.trim())
+            Api.setProfile(name.trim(), bio.trim())
             refreshUsers()
+            null
+        } catch (e: Exception) { errText(e) }
+    }
+
+    suspend fun removeAvatar(): String? = withContext(Dispatchers.IO) {
+        try {
+            val ver = Api.deleteAvatar()
+            users.value = users.value.map { if (it.username == me) it.copy(avatarVer = ver) else it }
+            tick.value++
             null
         } catch (e: Exception) { errText(e) }
     }

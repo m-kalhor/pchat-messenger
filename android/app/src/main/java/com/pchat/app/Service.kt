@@ -42,7 +42,7 @@ class MessengerService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val n = NotificationCompat.Builder(this, Engine.CH_SVC)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("پیام‌رسان فعال است")
+            .setContentTitle("سپن فعال است")
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
