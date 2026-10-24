@@ -153,7 +153,7 @@ sleep 3
 # --- first-time admin panel password ---
 NEWPW=""
 if [ ! -f /opt/messenger/data/.admin_pw_created ]; then
-  NEWPW="$(msgadmin adminpw | head -1)"
+  NEWPW="$(msgadmin adminpw | head -2)"
   touch /opt/messenger/data/.admin_pw_created
   chown msg:msg /opt/messenger/data/.admin_pw_created
 fi
@@ -172,7 +172,7 @@ echo
 echo "Certificate fingerprint (SHA-256) - needed for the Android app:"
 openssl x509 -in /opt/messenger/certs/cert.pem -noout -fingerprint -sha256
 echo
-if [ -n "$NEWPW" ]; then echo "$NEWPW"; echo "(save this password now - it is shown only once)"; else echo "Admin panel password unchanged (reset with: msgadmin adminpw)"; fi
+if [ -n "$NEWPW" ]; then echo "$NEWPW"; echo "(save this password now - it is shown only once)"; else echo "Admin panel password unchanged (reset with: msgadmin adminpw). Username: admin unless you changed it in the panel"; fi
 echo
 case "$MODE" in
   local) echo "Admin panel: only from the server. Use an SSH tunnel (Bitvise C2S: 127.0.0.1:8444 -> 127.0.0.1:8444), then open https://127.0.0.1:8444" ;;
