@@ -155,6 +155,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     var addContact by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
     val incoming by Engine.incomingRequests.collectAsState()
+    val backedUp by Engine.keyBackedUp.collectAsState()
+    var showBackup by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -190,6 +192,19 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     Text("مشاهده", color = MaterialTheme.colorScheme.primary)
                 }
             }
+            if (backedUp == false) item(key = "keybackup") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { showBackup = true }.background(MaterialTheme.colorScheme.error.copy(alpha = 0.10f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🔑", fontSize = 22.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("برای اینکه پیام‌های قبلی پس از ورود دوباره از دست نروند، پشتیبان کلید را فعال کنید",
+                        fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("فعال کن", color = MaterialTheme.colorScheme.primary)
+                }
+            }
             items(rows, key = { it.convo }) { r ->
               Column {
                 val online = users.firstOrNull { it.username == r.convo }?.online ?: false
@@ -223,6 +238,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     }
     if (addContact) AddContactDialog { addContact = false }
     if (showRequests) RequestsDialog { showRequests = false }
+    if (showBackup) KeyBackupDialog { showBackup = false }
 }
 
 /** Shows key fingerprints so users can verify each other out-of-band (protects against a malicious server swapping keys). */
