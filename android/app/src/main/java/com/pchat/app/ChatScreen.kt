@@ -1,5 +1,13 @@
 package com.pchat.app
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import android.content.Context
 import android.content.Intent
 import android.widget.Toast
@@ -127,6 +135,14 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     val msgs = results ?: allMsgs
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     var text by remember { mutableStateOf("") }
+    var field by remember { mutableStateOf(TextFieldValue("")) }
+    var emojiOpen by remember { mutableStateOf(false) }
+    val keyboard = LocalSoftwareKeyboardController.current
+    val inputFocus = remember { FocusRequester() }
+    val inputTouch = remember { MutableInteractionSource() }
+    val inputPressed by inputTouch.collectIsPressedAsState()
+    LaunchedEffect(inputPressed) { if (inputPressed) emojiOpen = false }
+    BackHandler(enabled = emojiOpen) { emojiOpen = false }
     var replyTo by remember { mutableStateOf<Msg?>(null) }
     var viewer by remember { mutableStateOf<String?>(null) }
     var showKeys by remember { mutableStateOf(false) }
@@ -348,6 +364,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     )
                 }
             } else Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+              Column {
                 Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                     Box {
                         IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
@@ -356,9 +373,16 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                             DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
                         }
                     }
+                    IconButton(onClick = {
+                        if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
+                        else { keyboard?.hide(); emojiOpen = true }
+                    }) { Text(if (emojiOpen) "⌨️" else "😊", fontSize = 22.sp) }
                     OutlinedTextField(
-                        value = text, onValueChange = { if (it.length <= 4000) text = it }, placeholder = { Text("پیام…") },
-                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f)
+                        // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
+                        value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
+                        onValueChange = { if (it.text.length <= 4000) { field = it; text = it.text } },
+                        placeholder = { Text("پیام…") }, interactionSource = inputTouch,
+                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
                     )
                     IconButton(
                         enabled = text.isNotBlank(),
@@ -370,6 +394,14 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                         }
                     ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
                 }
+                if (emojiOpen) EmojiPanel { e ->
+                    val cur = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
+                    val a = minOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
+                    val b = maxOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
+                    val t = text.substring(0, a) + e + text.substring(b)
+                    if (t.length <= 4000) { text = t; field = TextFieldValue(t, TextRange(a + e.length)) }
+                }
+              }
             }
         }
     }
@@ -401,6 +433,7 @@ fun Bubble(
     val sub = fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024
+    val bigEmoji = remember(m.text, m.type, m.replyId) { m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0 }
 
     LaunchedEffect(m.id, m.localPath) {
         if (autoImage) Engine.downloadMedia(m)
@@ -412,9 +445,9 @@ fun Bubble(
     ) {
         Box {
             Surface(
-                color = bg,
+                color = if (bigEmoji) Color.Transparent else bg,
                 shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = if (m.mine) 14.dp else 3.dp, bottomEnd = if (m.mine) 3.dp else 14.dp),
-                shadowElevation = 1.dp,
+                shadowElevation = if (bigEmoji) 0.dp else 1.dp,
                 modifier = Modifier.widthIn(max = 300.dp).combinedClickable(onClick = {}, onLongClick = { if (m.type != "call") menu = true })
             ) {
                 Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
@@ -462,7 +495,7 @@ fun Bubble(
                             if (progress != null) ProgressBar(progress, Modifier.fillMaxWidth().padding(top = 4.dp))
                         }
                         "call" -> Text(m.text, color = sub, fontSize = 14.sp)
-                        else -> Text(m.text, color = fg, fontSize = 16.sp, style = TextStyle(textDirection = TextDirection.Content))
+                        else -> if (bigEmoji) BigEmoji(m.text, m.id) else Text(m.text, color = fg, fontSize = 16.sp, style = TextStyle(textDirection = TextDirection.Content))
                     }
                     if (m.status == 2) {
                         Text(failure ?: "ارسال نشد", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
