@@ -101,6 +101,7 @@ object Engine {
         loggedIn.value = Api.token != null
         try { users.value = parseUsers(prefs.getString("users_raw", "[]") ?: "[]") } catch (e: Exception) { }
         try { groups.value = parseGroups(prefs.getString("groups_raw", "[]") ?: "[]") } catch (e: Exception) { }
+        Prefs.load()
         CallManager.init(app)
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = app.getSystemService(NotificationManager::class.java)
@@ -108,6 +109,23 @@ object Engine {
             nm.createNotificationChannel(NotificationChannel(CH_SVC, "اتصال", NotificationManager.IMPORTANCE_MIN))
             nm.createNotificationChannel(NotificationChannel(CH_CALL, "تماس", NotificationManager.IMPORTANCE_HIGH).apply { setSound(null, null) })
         }
+    }
+
+    /** Bytes used by downloaded/sent files, the partial-download folder and the avatar cache. */
+    fun storageUsage(): Long = Prefs.dirSize(mediaDir()) + Prefs.dirSize(dlDir()) + Prefs.dirSize(avatarDir())
+
+    /**
+     * Frees space: deletes received and sent files that are already delivered, partial downloads and cached avatars.
+     * Messages stay; their files are downloaded again from the server when opened (while the server still keeps them).
+     */
+    suspend fun clearMedia() = withContext(Dispatchers.IO) {
+        val keep = db.unsentPaths().map { File(it).name }.toSet()
+        mediaDir().listFiles()?.forEach { if (it.name !in keep) it.delete() }
+        dlDir().listFiles()?.forEach { it.delete() }
+        avatarDir().listFiles()?.forEach { it.delete() }
+        avatarMem.evictAll()
+        db.clearLocalPaths()
+        tick.value++
     }
 
     private fun mediaDir(): File = File(app.filesDir, "media").also { it.mkdirs() }
@@ -266,7 +284,7 @@ object Engine {
         val i = Intent(app, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
         val pi = PendingIntent.getActivity(app, 7702, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         val who = r.displayName?.let { "$it (${r.username})" } ?: r.username
-        val n = NotificationCompat.Builder(app, CH_MSG)
+        val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("درخواست اتصال")
             .setContentText("$who می‌خواهد با شما در ارتباط باشد")
@@ -427,6 +445,7 @@ object Engine {
             ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) return
         val group = isGroup(m.convo)
+        if (!Prefs.shouldNotify(m.convo, group)) return
         val title = if (group) groupName(m.convo) else nameOf(m.sender)
         val body = (if (group) nameOf(m.sender) + ": " else "") + U.preview(m)
         val i = Intent(app, MainActivity::class.java).apply {
@@ -434,7 +453,7 @@ object Engine {
             putExtra("convo", m.convo)
         }
         val pi = PendingIntent.getActivity(app, m.convo.hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val n = NotificationCompat.Builder(app, CH_MSG)
+        val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle(title)
             .setContentText(body)

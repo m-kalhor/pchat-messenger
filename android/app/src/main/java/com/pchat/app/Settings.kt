@@ -54,6 +54,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 const val BIO_MAX = 70
 
@@ -71,6 +80,12 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     var photoMenu by remember { mutableStateOf(false) }
     var showKeys by remember { mutableStateOf(false) }
     var showPhoto by remember { mutableStateOf(false) }
+    val notifTick by Prefs.notifTick.collectAsState()
+    var showLock by remember { mutableStateOf(false) }
+    var lockOn by remember { mutableStateOf(AppLock.enabled) }
+    var confirmClear by remember { mutableStateOf(false) }
+    var usage by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(confirmClear) { if (!confirmClear) usage = withContext(Dispatchers.IO) { Engine.storageUsage() } }
     val hasPhoto = (self?.avatarVer ?: 0) > 0
     val changed = name.trim() != (self?.displayName ?: "") || bio.trim() != (self?.bio ?: "")
 
@@ -137,9 +152,47 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 ) { Text("ذخیره") }
             }
 
+            // ---- notifications ----
+            SectionTitle("اعلان‌ها")
+            SwitchRow("پیام‌های خصوصی", "نمایش اعلان برای گفتگوهای خصوصی", Prefs.notifyPrivate.also { notifTick }) { Prefs.notifyPrivate = it }
+            SwitchRow("گروه‌ها", "نمایش اعلان برای پیام‌های گروه", Prefs.notifyGroups.also { notifTick }) { Prefs.notifyGroups = it }
+            SwitchRow("صدا", null, Prefs.sound.also { notifTick }) { Prefs.sound = it }
+            SwitchRow("لرزش", null, Prefs.vibrate.also { notifTick }) { Prefs.vibrate = it }
+            Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ 🔔 بالای همان گفتگو را بزنید.", fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
+
+            // ---- appearance ----
+            SectionTitle("ظاهر")
+            val theme by Prefs.theme.collectAsState()
+            for ((v, label) in listOf(Prefs.THEME_SYSTEM to "مطابق تنظیمات گوشی", Prefs.THEME_LIGHT to "روشن", Prefs.THEME_DARK to "تیره")) {
+                RadioRow(label, theme == v) { Prefs.setTheme(v) }
+            }
+            val textSize by Prefs.textSize.collectAsState()
+            Text("اندازهٔ متن پیام‌ها", fontSize = 15.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
+            Row(Modifier.padding(horizontal = 12.dp)) {
+                for ((i, sz) in Prefs.textSizes.withIndex()) {
+                    TextButton(onClick = { Prefs.setTextSize(sz) }) {
+                        Text(listOf("کوچک", "معمولی", "بزرگ", "خیلی بزرگ")[i], fontSize = (sz - 2).sp,
+                            fontWeight = if (sz == textSize) FontWeight.Bold else FontWeight.Normal,
+                            color = if (sz == textSize) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+            }
+            Text("نمونهٔ متن پیام با این اندازه", fontSize = textSize.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+
             // ---- privacy and security ----
             SectionTitle("حریم خصوصی و امنیت")
+            SettingRow("قفل برنامه", if (lockOn) "روشن" else "خاموش") { showLock = true }
             SettingRow("اثرانگشت کلیدها", "مقایسهٔ کلید امنیتی با مخاطبان") { showKeys = true }
+
+            // ---- data and storage ----
+            SectionTitle("داده و حافظه")
+            Text("دانلود خودکار عکس‌ها", fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            val auto = Prefs.autoDownload.also { notifTick }
+            for ((v, label) in listOf(Prefs.AUTO_ALWAYS to "همیشه", Prefs.AUTO_WIFI to "فقط با وای‌فای", Prefs.AUTO_NEVER to "هرگز (با ضربه دانلود شود)")) {
+                RadioRow(label, auto == v) { Prefs.autoDownload = v }
+            }
+            SettingRow("فضای استفاده‌شده", (usage?.let { U.size(it) } ?: "در حال محاسبه…") + " · پاک کردن فایل‌های ذخیره‌شده") { confirmClear = true }
 
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
@@ -149,6 +202,96 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     }
     if (showKeys) KeysDialog(users.map { it.username }.filter { it != Engine.me }) { showKeys = false }
     if (showPhoto) PhotoDialog(Engine.me) { showPhoto = false }
+    if (showLock) LockSettingsDialog { showLock = false; lockOn = AppLock.enabled }
+    if (confirmClear) AlertDialog(
+        onDismissRequest = { confirmClear = false },
+        title = { Text("پاک کردن فایل‌ها") },
+        text = { Text("عکس‌ها و فایل‌های ذخیره‌شده روی این گوشی پاک می‌شوند تا فضا آزاد شود. پیام‌ها می‌مانند و هر فایل با باز کردنش دوباره از سرور دریافت می‌شود (تا وقتی سرور آن را نگه دارد).") },
+        confirmButton = { TextButton(onClick = { scope.launch { Engine.clearMedia(); confirmClear = false } }) { Text("پاک کن", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("انصراف") } }
+    )
+}
+
+@Composable
+fun SwitchRow(title: String, subtitle: String?, checked: Boolean, onChange: (Boolean) -> Unit) {
+    SettingRow(title, subtitle, trailing = { Switch(checked = checked, onCheckedChange = onChange) }) { onChange(!checked) }
+}
+
+@Composable
+fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        RadioButton(selected = selected, onClick = onClick)
+        Text(label, fontSize = 15.sp)
+    }
+}
+
+/** Turn the app lock on/off, change the PIN, pick when it locks and whether the fingerprint may unlock it. */
+@Composable
+fun LockSettingsDialog(onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    var enabled by remember { mutableStateOf(AppLock.enabled) }
+    var settingPin by remember { mutableStateOf(!AppLock.enabled) }
+    var pin1 by remember { mutableStateOf("") }
+    var pin2 by remember { mutableStateOf("") }
+    var msg by remember { mutableStateOf<String?>(null) }
+    var timeout by remember { mutableStateOf(AppLock.timeoutMs) }
+    var bio by remember { mutableStateOf(AppLock.useBiometric) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("قفل برنامه") },
+        confirmButton = { TextButton(onClick = onClose) { Text("بستن") } },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (settingPin) {
+                    Text(if (enabled) "رمز تازه را وارد کنید" else "یک رمز ۴ تا ۶ رقمی انتخاب کنید. هر بار که برنامه باز شود، این رمز پرسیده می‌شود.", fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    PinField(pin1, "رمز") { pin1 = it }
+                    Spacer(Modifier.height(6.dp))
+                    PinField(pin2, "تکرار رمز") { pin2 = it }
+                    Row {
+                        TextButton(onClick = {
+                            msg = when {
+                                pin1.length < 4 -> "رمز باید دست‌کم ۴ رقم باشد"
+                                pin1 != pin2 -> "رمز و تکرار آن یکی نیستند"
+                                else -> { AppLock.setPin(pin1); enabled = true; settingPin = false; pin1 = ""; pin2 = ""; "قفل برنامه روشن شد" }
+                            }
+                        }) { Text("ذخیرهٔ رمز") }
+                        if (enabled) TextButton(onClick = { settingPin = false; pin1 = ""; pin2 = "" }) { Text("انصراف") }
+                    }
+                } else {
+                    Text("قفل برنامه روشن است.", fontSize = 14.sp)
+                    Text("قفل شود بعد از:", fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp))
+                    for ((v, label) in listOf(0L to "فوراً", 60_000L to "۱ دقیقه", 5 * 60_000L to "۵ دقیقه", 3600_000L to "۱ ساعت")) {
+                        RadioRow(label, timeout == v) { timeout = v; AppLock.timeoutMs = v }
+                    }
+                    if (AppLock.biometricAvailable(ctx)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("باز کردن با اثرانگشت", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                            Switch(checked = bio, onCheckedChange = { bio = it; AppLock.useBiometric = it })
+                        }
+                    }
+                    Row {
+                        TextButton(onClick = { settingPin = true; msg = null }) { Text("تغییر رمز") }
+                        TextButton(onClick = { AppLock.disable(); enabled = false; settingPin = true; msg = "قفل برنامه خاموش شد" }) {
+                            Text("خاموش کردن قفل", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
+                }
+                msg?.let { Text(it, fontSize = 13.sp, modifier = Modifier.padding(top = 6.dp)) }
+                Text("اگر رمز را فراموش کنید، باید برنامه را پاک کنید و دوباره وارد شوید.", fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(top = 8.dp))
+            }
+        }
+    )
+}
+
+@Composable
+private fun PinField(value: String, label: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value, onValueChange = { v -> onChange(v.filter { it.isDigit() }.take(6)) }, singleLine = true,
+        label = { Text(label) }, visualTransformation = PasswordVisualTransformation(),
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), modifier = Modifier.fillMaxWidth()
+    )
 }
 
 @Composable

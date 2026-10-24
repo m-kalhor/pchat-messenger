@@ -55,13 +55,14 @@ class MainActivity : ComponentActivity() {
         deepLink.value = intent.getStringExtra("convo")
     }
 
-    override fun onStart() { super.onStart(); Engine.appVisible = true; Engine.refreshDirectory() }
-    override fun onStop() { super.onStop(); Engine.appVisible = false }
+    override fun onStart() { super.onStart(); Engine.appVisible = true; AppLock.onAppStart(); Engine.refreshDirectory() }
+    override fun onStop() { super.onStop(); Engine.appVisible = false; AppLock.onAppStop() }
 }
 
 @Composable
 fun PChatTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+    val theme by Prefs.theme.collectAsState()
+    val dark = when (theme) { Prefs.THEME_LIGHT -> false; Prefs.THEME_DARK -> true; else -> isSystemInDarkTheme() }
     val scheme = if (dark) {
         darkColorScheme(primary = Color(0xFF5EB5F7), background = Color(0xFF0E1621), surface = Color(0xFF17212B), surfaceVariant = Color(0xFF0E1621))
     } else {
@@ -82,6 +83,7 @@ fun App(deepLink: MutableState<String?>) {
 
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val call by CallManager.state.collectAsState()
+    val locked by AppLock.locked.collectAsState()
 
     // show over the lock screen only while a call is ringing / running
     LaunchedEffect(call.phase) {
@@ -129,6 +131,8 @@ fun App(deepLink: MutableState<String?>) {
         LoginScreen()
     } else if (call.phase != CallPhase.IDLE) {
         CallScreen()
+    } else if (locked) {
+        LockScreen()
     } else {
         val c = convo
         if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })

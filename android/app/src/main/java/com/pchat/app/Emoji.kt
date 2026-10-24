@@ -137,7 +137,7 @@ fun EmojiPanel(onPick: (String) -> Unit) {
 
 /** An emoji-only message: twice the normal text size, pops in and wobbles once; tap to replay. */
 @Composable
-fun BigEmoji(text: String, key: Any) {
+fun BigEmoji(text: String, key: Any, sizeSp: Int = 32) {
     val scope = rememberCoroutineScope()
     val scale = remember { Animatable(0.4f) }
     val angle = remember { Animatable(0f) }
@@ -151,7 +151,7 @@ fun BigEmoji(text: String, key: Any) {
         Modifier.clickable(indication = null, interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() }) { scope.launch { play() } }
     ) {
         Text(
-            text.trim(), fontSize = 32.sp, lineHeight = 40.sp,
+            text.trim(), fontSize = sizeSp.sp, lineHeight = (sizeSp * 1.25f).sp,
             modifier = Modifier.graphicsLayer { scaleX = scale.value; scaleY = scale.value; rotationZ = angle.value }
         )
     }

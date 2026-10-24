@@ -220,6 +220,9 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
         else -> "آفلاین"
     }
     var showProfile by remember { mutableStateOf(false) }
+    var muteMenu by remember { mutableStateOf(false) }
+    val notifTick by Prefs.notifTick.collectAsState()
+    val muted = remember(notifTick, convo) { Prefs.isMuted(convo) }
     val canSend = isGroup || peer == null || peer.dm || allMsgs.any { !it.mine }
     val pinnedId = pins[convo]
     val pinnedMsg = remember(pinnedId, tick) { pinnedId?.let { Engine.db.get(it) } }
@@ -257,6 +260,16 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                         if (!isGroup) {
                             IconButton(onClick = { startCall(convo, false) }) { Icon(Icons.Default.Call, contentDescription = "تماس صوتی") }
                             IconButton(onClick = { startCall(convo, true) }) { Text("📹", fontSize = 20.sp) }
+                        }
+                        Box {
+                            IconButton(onClick = { muteMenu = true }) { Text(if (muted) "🔕" else "🔔", fontSize = 18.sp) }
+                            DropdownMenu(expanded = muteMenu, onDismissRequest = { muteMenu = false }) {
+                                if (muted) DropdownMenuItem(text = { Text("روشن کردن اعلان") }, onClick = { muteMenu = false; Prefs.unmute(convo) })
+                                DropdownMenuItem(text = { Text("بی‌صدا برای ۱ ساعت") }, onClick = { muteMenu = false; Prefs.mute(convo, 3600_000L) })
+                                DropdownMenuItem(text = { Text("بی‌صدا برای ۸ ساعت") }, onClick = { muteMenu = false; Prefs.mute(convo, 8 * 3600_000L) })
+                                DropdownMenuItem(text = { Text("بی‌صدا برای ۲ روز") }, onClick = { muteMenu = false; Prefs.mute(convo, 48 * 3600_000L) })
+                                DropdownMenuItem(text = { Text("بی‌صدا برای همیشه") }, onClick = { muteMenu = false; Prefs.mute(convo, null) })
+                            }
                         }
                         IconButton(onClick = { showKeys = true }) { Icon(Icons.Default.Lock, contentDescription = "امنیت") }
                     }
@@ -432,7 +445,9 @@ fun Bubble(
     val fg = if (dark) Color(0xFFF5F5F5) else Color(0xFF111111)
     val sub = fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
-    val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024
+    val textSize by Prefs.textSize.collectAsState()
+    val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
+    val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
     val bigEmoji = remember(m.text, m.type, m.replyId) { m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0 }
 
     LaunchedEffect(m.id, m.localPath) {
@@ -495,7 +510,7 @@ fun Bubble(
                             if (progress != null) ProgressBar(progress, Modifier.fillMaxWidth().padding(top = 4.dp))
                         }
                         "call" -> Text(m.text, color = sub, fontSize = 14.sp)
-                        else -> if (bigEmoji) BigEmoji(m.text, m.id) else Text(m.text, color = fg, fontSize = 16.sp, style = TextStyle(textDirection = TextDirection.Content))
+                        else -> if (bigEmoji) BigEmoji(m.text, m.id, textSize * 2) else Text(m.text, color = fg, fontSize = textSize.sp, style = TextStyle(textDirection = TextDirection.Content))
                     }
                     if (m.status == 2) {
                         Text(failure ?: "ارسال نشد", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
