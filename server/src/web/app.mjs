@@ -153,6 +153,8 @@ function route() {
   S.openConvo = null;
   const hash = decodeURIComponent(location.hash.slice(1) || '/');
   if (!S.me) view = LoginScreen();
+  else if (S.keyStep) view = KeyScreen(S.keyStep);
+  else if (hash === '/keypass') view = KeyScreen('change');
   else if (hash.startsWith('/c/')) view = ChatScreen(hash.slice(3));
   else if (hash.startsWith('/p/')) view = ProfileScreen(hash.slice(3));
   else if (hash === '/new') view = ContactsScreen();
@@ -174,6 +176,7 @@ let logoutReason = null;
 E.on((kind, data) => {
   if (kind === 'login') { go('#/'); route(); return; }
   if (kind === 'logout') { logoutReason = data; route(); return; }
+  if (kind === 'key') { route(); return; }
   if (kind === 'msg' && data && !data.mine && data.id > 0 && Date.now() - data.ts < 60000 && S.openConvo !== data.convo) {
     const group = E.isGroup(data.convo);
     toast((group ? E.groupName(data.convo) + ' · ' + E.nameOf(data.sender) : E.nameOf(data.sender)) + ': ' + E.preview(data).slice(0, 60), () => go('#/c/' + encodeURIComponent(data.convo)));
@@ -205,21 +208,11 @@ function LoginScreen() {
   const err = h('div', { class: 'err' }, logoutReason || '');
   logoutReason = null;
   const btn = h('button', { class: 'btn', type: 'submit' }, 'ورود');
-  async function submit(e, force = false) {
+  async function submit(e) {
     if (e) e.preventDefault();
     if (!user.value.trim() || !pass.value) { err.textContent = 'نام کاربری و رمز عبور را وارد کنید'; return; }
     btn.disabled = true; err.textContent = '';
-    try {
-      const r = await E.login(user.value, pass.value, force);
-      if (r.conflict) {
-        const ok = r.conflict === 'reset'
-          ? await confirmBox('کلید قبلی باز نشد', 'رمز عبور این حساب عوض شده و پشتیبان کلید با رمز تازه باز نمی‌شود. اگر ادامه دهید یک کلید تازه ساخته می‌شود و پیام‌های قبلی دیگر خوانده نمی‌شوند. ادامه می‌دهید؟', 'ادامه با کلید تازه', true)
-          : await confirmBox('این حساب روی دستگاه دیگری فعال است',
-            'این حساب روی دستگاه دیگری (احتمالاً نسخهٔ قدیمی اندروید) کلید دیگری دارد. اگر اینجا وارد شوید، آن دستگاه پیام‌های تازه را باز نمی‌کند تا اپ آن به‌روز و دوباره وارد شود. ادامه می‌دهید؟',
-            'ورود در اینجا', true);
-        if (ok) return submit(null, true);
-      }
-    } catch (ex) { err.textContent = E.errText(ex); }
+    try { await E.login(user.value, pass.value); } catch (ex) { err.textContent = E.errText(ex); }
     btn.disabled = false;
   }
   const el = h('div', { class: 'scroll' }, h('div', { class: 'login' },
@@ -229,6 +222,73 @@ function LoginScreen() {
     h('form', { class: 'form', onsubmit: submit }, user, pass, err, btn),
     isIOS && !standalone() ? h('div', { class: 'hint' }, 'بعد از ورود، از دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' گزینهٔ ', h('b', null, '«افزودن به صفحهٔ اصلی»'), ' را بزنید تا سپن مثل یک برنامه باز شود.') : null));
   return { el, mounted: () => user.focus() };
+}
+
+// ---------------- identity key: restore / new key / key password ----------------
+/**
+ * mode 'choose': this device does not have the account's key (restore it with the key password or make
+ * a new one); 'setpass': the key has no key password yet (mandatory); 'change': from Settings.
+ */
+function KeyScreen(mode) {
+  const kb = S.keyBackup;
+  const pwField = (ph, ac) => h('input', { type: 'password', placeholder: ph, autocomplete: ac || 'new-password', class: 'ltr' });
+  const acct = () => (E.needsAccountPassword() || mode === 'change' ? pwField('رمز ورود حساب', 'current-password') : null);
+  const busy = async (btn, err, fn) => {
+    btn.disabled = true; err.className = 'err'; err.textContent = '';
+    try { const e = await fn(); if (e) err.textContent = e; } catch (ex) { err.textContent = E.errText(ex); }
+    btn.disabled = false;
+  };
+  const checkNew = (a, b) => (a.value.length < 6 ? 'رمز کلید باید دست‌کم ۶ نویسه باشد' : a.value !== b.value ? 'رمز کلید و تکرار آن یکی نیستند' : null);
+
+  // set (or change) the key password of the key on this device
+  const setForm = (title, intro, submitLabel, makeNew) => {
+    const p1 = pwField('رمز کلید تازه'), p2 = pwField('تکرار رمز کلید'), ap = acct();
+    const err = h('div', { class: 'err' });
+    const btn = h('button', { class: 'btn' + (makeNew ? ' danger' : ''), type: 'submit' }, submitLabel);
+    return h('form', { class: 'form', onsubmit: (e) => {
+      e.preventDefault();
+      busy(btn, err, async () => {
+        const bad = checkNew(p1, p2) || (ap && !ap.value ? 'رمز ورود حساب را وارد کنید' : null);
+        if (bad) return bad;
+        if (makeNew && !(await confirmBox('ساخت کلید تازه', 'با کلید تازه، پیام‌های قبلی روی دستگاه‌هایی که آن‌ها را ندارند باز نمی‌شوند و دستگاه‌های دیگر شما باید دوباره کلید را بازگردانند. ادامه می‌دهید؟', 'ساخت کلید تازه', true))) return null;
+        const e2 = makeNew ? await E.newKey(p1.value, ap && ap.value) : await E.setKeyPassword(p1.value, ap && ap.value);
+        if (!e2 && mode === 'change') { toast('رمز کلید عوض شد'); go('#/settings'); }
+        return e2;
+      });
+    } }, h('h3', null, title), h('p', { class: 'hint' }, intro), p1, p2, ap, err, btn);
+  };
+
+  let body;
+  if (mode === 'choose') {
+    const restore = kb ? (() => {
+      const kp = pwField(kb.v === 2 ? 'رمز کلید' : 'رمز ورود قبلی حساب', 'current-password');
+      const err = h('div', { class: 'err' });
+      const btn = h('button', { class: 'btn', type: 'submit' }, 'بازگرداندن کلید قبلی');
+      return h('form', { class: 'form', onsubmit: (e) => { e.preventDefault(); busy(btn, err, () => (kp.value ? E.restoreKey(kp.value) : 'رمز را وارد کنید')); } },
+        h('h3', null, 'بازگرداندن کلید قبلی (پیشنهادی)'),
+        h('p', { class: 'hint' }, kb.v === 2
+          ? 'رمز کلیدی را که برای حسابتان گذاشته‌اید وارد کنید. پیام‌های قبلی خوانا می‌مانند و مخاطبان تغییری نمی‌بینند.'
+          : 'این حساب هنوز رمز کلید ندارد و کلیدش با رمز ورود قبلی قفل است. همان رمز قبلی را وارد کنید.'),
+        kp, err, btn);
+    })() : h('p', { class: 'hint' }, 'برای کلید این حساب پشتیبانی روی سرور نیست، پس فقط ساخت کلید تازه ممکن است.');
+    body = [
+      h('p', null, 'کلید رمزنگاری این دستگاه با کلید حساب شما یکی نیست. تا یکی از دو راه زیر را انتخاب نکنید، پیامی فرستاده یا باز نمی‌شود.'),
+      restore,
+      h('div', { class: 'section' }, 'یا'),
+      setForm('ساخت کلید تازه', 'پیام‌های قبلی با کلید تازه باز نمی‌شوند و کنار نام شما برای مخاطبان «کلید عوض شد» می‌آید. اگر رمز کلید را فراموش کرده‌اید، همین راه را بزنید.', 'ساخت کلید تازه', true),
+    ];
+  } else if (mode === 'setpass') {
+    body = [setForm('رمز کلید بگذارید', 'کلید رمزنگاری شما با این رمز قفل می‌شود و روی سرور می‌ماند تا روی هر دستگاه بازگردد. این رمز جدا از رمز ورود است، فقط شما آن را می‌دانید و مدیر هم نمی‌تواند عوضش کند. اگر فراموشش کنید، پیام‌های قدیمی روی دستگاه تازه باز نمی‌شوند.', 'ذخیرهٔ رمز کلید', false)];
+  } else {
+    body = [setForm('تغییر رمز کلید', 'کلید همان می‌ماند؛ فقط رمزی که پشتیبانش با آن قفل است عوض می‌شود.', 'ذخیرهٔ رمز کلید تازه', false)];
+  }
+  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
+    h('div', { class: 'bar' },
+      mode === 'change' ? h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/settings') }, '→') : null,
+      h('h1', null, 'کلید رمزنگاری'),
+      mode !== 'change' ? h('button', { class: 'btn sm flat', onclick: () => E.logout() }, 'خروج') : null),
+    h('div', { class: 'scroll' }, h('div', { class: 'keybox' }, body)));
+  return { el };
 }
 
 // ---------------- chat list ----------------
@@ -669,6 +729,7 @@ function SettingsScreen() {
       setting('دانلود خودکار عکس‌ها', 'عکس‌های تا ۲۵ مگابایت', toggle('autoImages', true)),
       setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن')),
       h('div', { class: 'section' }, 'امنیت'),
+      setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
       h('div', { class: 'hint' }, 'کد امنیتی شما:', h('br'), myFp),
       h('div', { class: 'hint' }, 'اثر انگشت گواهی ریشهٔ سپن (SHA-256):', h('br'), caFp, h('br'), h('a', { href: '/setup' }, 'راهنمای نصب گواهی روی آیفون')),
       h('div', { class: 'section' }, 'دربارهٔ سپن'),

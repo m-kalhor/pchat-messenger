@@ -103,6 +103,14 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 2) {
         writableDatabase.execSQL("UPDATE messages SET local_path=NULL WHERE status=0")
     }
 
+    /** Deletes messages stored as unreadable; returns the smallest server id among them (0 if none). */
+    fun deleteLocked(text: String): Long {
+        var min = 0L
+        readableDatabase.rawQuery("SELECT MIN(id) FROM messages WHERE text=? AND id>0", arrayOf(text)).use { c -> if (c.moveToFirst() && !c.isNull(0)) min = c.getLong(0) }
+        writableDatabase.execSQL("DELETE FROM messages WHERE text=? AND id>0", arrayOf<Any>(text))
+        return min
+    }
+
     fun delete(id: Long) {
         writableDatabase.execSQL("DELETE FROM messages WHERE id=?", arrayOf<Any>(id))
     }

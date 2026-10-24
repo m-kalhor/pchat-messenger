@@ -77,6 +77,7 @@ fun PChatTheme(content: @Composable () -> Unit) {
 fun App(deepLink: MutableState<String?>) {
     val ctx = LocalContext.current
     val logged by Engine.loggedIn.collectAsState()
+    val keyStep by Engine.keyStep.collectAsState()
     var convo by remember { mutableStateOf<String?>(null) }
     var settings by remember { mutableStateOf(false) }
     var askBattery by remember { mutableStateOf(false) }
@@ -127,12 +128,15 @@ fun App(deepLink: MutableState<String?>) {
     BackHandler(enabled = convo != null && call.phase == CallPhase.IDLE) { convo = null }
     BackHandler(enabled = settings && convo == null && call.phase == CallPhase.IDLE) { settings = false }
 
+    val ks = keyStep
     if (!logged) {
         LoginScreen()
     } else if (call.phase != CallPhase.IDLE) {
         CallScreen()
     } else if (locked) {
         LockScreen()
+    } else if (ks != null) {
+        KeyScreen(ks, onLogout = { Engine.logout() })
     } else {
         val c = convo
         if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })

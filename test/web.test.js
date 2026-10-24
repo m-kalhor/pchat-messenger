@@ -62,11 +62,13 @@ test('key backup: web and Android restore each other', async () => {
   const C = await W();
   const web = await C.newIdentity();
   const kb = await C.exportBackup(web, 'mina', 'pw-1');
+  assert.equal(kb.v, 2, 'the web app writes v2 (key password) backups');
   const onPhone = N.importBackup(kb, 'mina', 'pw-1');
   assert.equal(onPhone.pubB64, web.pubB64);
   const phone = N.newIdentity();
-  const restored = await C.importBackup(N.exportBackup(phone, 'reza', 'pw-2'), 'reza', 'pw-2');
+  const restored = await C.importBackup(N.exportBackup(phone, 'reza', 'pw-2', 100000, 2), 'reza', 'pw-2');
   assert.equal(restored.pubB64, phone.pubB64);
+  assert.equal((await C.importBackup(N.exportBackup(phone, 'reza', 'old-login-pw'), 'reza', 'old-login-pw')).pubB64, phone.pubB64, 'v1 backups still open');
   // the restored key really is the same key: a message to the phone opens in the browser
   const payload = N.encryptFor(onPhone, 'mina', 'reza', { mina: onPhone.pubB64, reza: phone.pubB64 }, 'ok');
   assert.equal(td.decode(await C.decryptFrom(restored, 'reza', 'mina', 'reza', onPhone.pubB64, payload)), 'ok');

@@ -165,14 +165,17 @@ function keyBackupOf(u) {
   if (!u || !u.key_backup) return null;
   try { return JSON.parse(u.key_backup); } catch { return null; }
 }
-/** v1: { v:1, kdf:'pbkdf2-sha256', iter, salt, iv, ct, pub } — all binary fields base64 */
+/**
+ * { v, kdf:'pbkdf2-sha256', iter, salt, iv, ct, pub } — all binary fields base64.
+ * v1 is locked with the login password, v2 (since 1.3.0) with a separate key password; the server cannot tell them apart.
+ */
 function cleanKeyBackup(k) {
-  if (!k || typeof k !== 'object' || k.v !== 1 || k.kdf !== 'pbkdf2-sha256') return null;
+  if (!k || typeof k !== 'object' || (k.v !== 1 && k.v !== 2) || k.kdf !== 'pbkdf2-sha256') return null;
   const iter = Number(k.iter);
   if (!Number.isInteger(iter) || iter < 100000 || iter > 5000000) return null;
   const ok = (x, min, max) => typeof x === 'string' && x.length >= min && x.length <= max && B64.test(x);
   if (!ok(k.salt, 16, 64) || !ok(k.iv, 16, 24) || !ok(k.ct, 64, 2048) || !ok(k.pub, 64, 1024)) return null;
-  return { v: 1, kdf: 'pbkdf2-sha256', iter, salt: k.salt, iv: k.iv, ct: k.ct, pub: k.pub };
+  return { v: k.v, kdf: 'pbkdf2-sha256', iter, salt: k.salt, iv: k.iv, ct: k.ct, pub: k.pub };
 }
 
 function publicUser(u, extra) {

@@ -11,6 +11,7 @@ const td = new TextDecoder();
 
 export const S = {
   me: '', identity: null, ready: false,
+  keyStep: null, keyBackup: null, // see checkKey()
   users: [], groups: [], pins: {}, read: {}, typing: {},
   convos: new Map(),          // convo -> array of messages, oldest first
   lastId: 0,
@@ -79,44 +80,27 @@ export async function init() {
   for (const list of S.convos.values()) list.sort(byOrder);
   for (const m of [...S.convos.values()].flat()) if (m.status === 1 && m.type !== 'text') { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
   S.ready = true;
-  startStream();
+  let step = null;
+  try { step = await checkKey(); } catch { }
+  if (step !== 'choose') startStream();
   refreshAll();
   return true;
 }
 
 /**
- * Logs in and sets up the account's key. The key is kept on the server as a backup encrypted with
- * the account password, so every login, on any device, uses the same key and old messages stay
- * readable (same flow as the Android app):
- *  - a backup exists: open it with the password and use that key;
- *  - it cannot be opened (the admin reset the password): keep using this device's key if it is
- *    the same one, otherwise ask, because a new key cannot read the old messages;
- *  - no backup yet: back up this device's key (asking first if another device registered a
- *    different key without a backup, i.e. an older Android version).
- * Returns { ok: true } or { conflict: 'reset' | 'device' }; call again with force = true to go ahead.
+ * Logs in. The account's key lives on the server as a backup locked with the user's key password
+ * (v2) or, for accounts from 1.1-1.2, with the login password (v1), so every device uses the same key
+ * and old messages stay readable. After the login checkKey() decides whether the user must first
+ * restore the key, make a new one or set a key password (S.keyStep); the key screen handles that.
  */
-export async function login(username, password, force = false) {
+export async function login(username, password) {
   username = username.trim().toLowerCase();
   let id = S.identity || (await C.newIdentity());
   const r = await api.login(username, password);
   api.setToken(r.token);
-  const giveUp = async (conflict) => { try { await api.logout(); } catch { } api.setToken(null); return { conflict }; };
-  const backup = async () => {
-    const kb = await C.exportBackup(id, r.username, password);
-    try { await api.saveKeyBackup(kb, password); } catch (e) {
-      if (!(e instanceof api.HttpError && e.status === 404)) throw e;
-      await api.setPubkey(id.pubB64); // server without key backups
-    }
-  };
-  if (r.key_backup) {
-    try { id = await C.importBackup(r.key_backup, r.username, password); } catch {
-      if (r.key_backup.pub !== id.pubB64 && !force) return giveUp('reset');
-      await backup();
-    }
-  } else {
-    const self = (await api.users()).find((u) => u.username === r.username);
-    if (self && self.pubkey && self.pubkey !== id.pubB64 && !force) return giveUp('device');
-    await backup();
+  // a v1 backup opens with the login password: take that key silently (then only a key password is missing)
+  if (r.key_backup && r.key_backup.v === 1 && r.key_backup.pub !== id.pubB64) {
+    try { id = await C.importBackup(r.key_backup, r.username, password); } catch { }
   }
   S.identity = id;
   await store.kvSet('identity', id);
@@ -124,12 +108,96 @@ export async function login(username, password, force = false) {
   S.me = r.username;
   await store.kvSet('me', S.me);
   await store.kvSet('token', r.token);
+  loginPass = password;
   S.users = (await api.users()).map((u) => (u.username === S.me ? { ...u, pubkey: id.pubB64 } : u));
   await store.kvSet('users', S.users);
+  try { await checkKey(r.key_backup); } catch { }
+  emit('login');
+  if (S.keyStep !== 'choose') startStream();
+  refreshAll();
+  return { ok: true };
+}
+
+// ---------------- identity key: restore / new / key password ----------------
+let loginPass = null; // kept in memory only, so the key step right after login needs no second password
+export const needsAccountPassword = () => !loginPass;
+
+/**
+ * S.keyStep: 'choose' = this device's key is not the account's key (restore it with the key password,
+ * or make a new one); 'setpass' = the key is right but has no key password yet (mandatory);
+ * null = all good. `kb` is the server's backup when the caller already has it.
+ */
+export async function checkKey(kb) {
+  if (kb === undefined) kb = (await api.getKeyBackup()).key_backup;
+  const self = (await api.users()).find((u) => u.username === S.me);
+  const serverPub = self ? self.pubkey : null;
+  const mine = S.identity.pubB64;
+  let step = null;
+  if (kb && kb.pub !== mine) step = 'choose';
+  else if (!kb && serverPub && serverPub !== mine) step = 'choose';
+  else if (!kb || kb.v !== 2) step = 'setpass';
+  S.keyBackup = kb || null;
+  if (step !== S.keyStep) { S.keyStep = step; emit('key'); }
+  if (step === 'choose') stopStream();
+  return step;
+}
+
+async function uploadBackup(id, keyPassword, accountPassword) {
+  const kb = await C.exportBackup(id, S.me, keyPassword);
+  await api.saveKeyBackup(kb, accountPassword || loginPass);
+  if (accountPassword) loginPass = accountPassword;
+  S.keyBackup = kb;
+}
+
+/** Messages that arrived while the wrong key was in use are fetched and opened again. */
+async function retryLocked() {
+  let from = 0;
+  for (const list of S.convos.values()) {
+    for (const m of [...list]) if (m.locked && m.id > 0) { if (!from || m.id < from) from = m.id; removeLocal(m); await store.delMsg(m.id); }
+  }
+  if (from && from - 1 < S.lastId) { S.lastId = from - 1; await store.kvSet('last_id', S.lastId); }
+}
+
+async function keyDone(id) {
+  S.identity = id;
+  await store.kvSet('identity', id);
+  S.users = S.users.map((u) => (u.username === S.me ? { ...u, pubkey: id.pubB64 } : u));
+  await retryLocked();
+  S.keyStep = null;
+  emit('key');
+  emit('msg', null);
   startStream();
   refreshAll();
-  emit('login');
-  return { ok: true };
+}
+
+/** Restores the account key from the server backup. Returns an error text or null. */
+export async function restoreKey(secret) {
+  const kb = S.keyBackup;
+  if (!kb) return 'پشتیبانی از کلید روی سرور نیست';
+  let id;
+  try { id = await C.importBackup(kb, S.me, secret); } catch { return kb.v === 1 ? 'رمز درست نیست (برای این حساب رمز ورود قبلی را بزنید)' : 'رمز کلید درست نیست'; }
+  await keyDone(id);
+  if (kb.v !== 2) { S.keyStep = 'setpass'; emit('key'); }
+  return null;
+}
+
+/** Replaces the account key with a new one (old messages cannot be opened with it). */
+export async function newKey(keyPassword, accountPassword) {
+  const id = await C.newIdentity();
+  try { await uploadBackup(id, keyPassword, accountPassword); } catch (e) { return keyErr(e); }
+  await keyDone(id);
+  return null;
+}
+
+/** Locks this device's key with a (new) key password. */
+export async function setKeyPassword(keyPassword, accountPassword) {
+  try { await uploadBackup(S.identity, keyPassword, accountPassword); } catch (e) { return keyErr(e); }
+  if (S.keyStep === 'setpass') { S.keyStep = null; emit('key'); }
+  return null;
+}
+function keyErr(e) {
+  if (e instanceof api.HttpError && e.status === 403) { loginPass = null; return 'رمز ورود حساب اشتباه است'; }
+  return errText(e);
 }
 
 function resetState() {
@@ -148,6 +216,7 @@ async function endSession(reason) {
   await store.kvDel('me');
   await store.wipeAccountData();
   S.me = '';
+  S.keyStep = null; S.keyBackup = null; loginPass = null;
   resetState();
   emit('logout', reason || null);
 }
@@ -157,10 +226,10 @@ export async function refreshUsers() {
   const list = await api.users();
   S.users = list.map((u) => (u.username === S.me ? { ...u, pubkey: S.identity.pubB64 } : u));
   const self = list.find((u) => u.username === S.me);
-  if (self && self.pubkey && self.pubkey !== S.identity.pubB64) {
-    // the account logged in on another device (its Android phone), which replaced our key
-    await endSession('این حساب روی دستگاه دیگری وارد شد؛ برای استفاده در اینجا دوباره وارد شوید');
-    return;
+  if (self && self.pubkey && self.pubkey !== S.identity.pubB64 && S.keyStep !== 'choose') {
+    // another device made a new key for this account: stop until the user restores it here
+    await checkKey();
+    if (S.keyStep === 'choose') return;
   }
   await store.kvSet('users', S.users);
   emit('users');

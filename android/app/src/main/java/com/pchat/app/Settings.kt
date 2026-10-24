@@ -186,10 +186,9 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             SectionTitle("حریم خصوصی و امنیت")
             SettingRow("قفل برنامه", if (lockOn) "روشن" else "خاموش") { showLock = true }
             SettingRow("اثرانگشت کلیدها", "مقایسهٔ کلید امنیتی با مخاطبان") { showKeys = true }
-            SettingRow("پشتیبان کلید رمزنگاری", when (backedUp) {
-                true -> "فعال · با ورود دوباره، پیام‌های قبلی خوانا می‌مانند"
-                false -> "غیرفعال · برای فعال کردن بزنید"
-                null -> "در حال بررسی…"
+            SettingRow("رمز کلید", when (backedUp) {
+                false -> "تنظیم نشده · برای تنظیم بزنید"
+                else -> "کلید رمزنگاری روی سرور با این رمز قفل است · تغییر"
             }, color = if (backedUp == false) MaterialTheme.colorScheme.error else Color.Unspecified) { showBackup = true }
 
             // ---- data and storage ----
@@ -210,7 +209,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     if (showKeys) KeysDialog(users.map { it.username }.filter { it != Engine.me }) { showKeys = false }
     if (showPhoto) PhotoDialog(Engine.me) { showPhoto = false }
     if (showLock) LockSettingsDialog { showLock = false; lockOn = AppLock.enabled }
-    if (showBackup) KeyBackupDialog { showBackup = false }
+    if (showBackup) KeyPasswordDialog { showBackup = false }
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },
         title = { Text("پاک کردن فایل‌ها") },
@@ -231,50 +230,6 @@ fun RadioRow(label: String, selected: Boolean, onClick: () -> Unit) {
         RadioButton(selected = selected, onClick = onClick)
         Text(label, fontSize = 15.sp)
     }
-}
-
-/**
- * The identity key is kept on the server encrypted with the login password, so logging in again
- * (or on a new phone) restores it and old messages stay readable. Accounts that logged in before
- * this existed enter their password here once.
- */
-@Composable
-fun KeyBackupDialog(onClose: () -> Unit) {
-    val scope = rememberCoroutineScope()
-    val backedUp by Engine.keyBackedUp.collectAsState()
-    var pass by remember { mutableStateOf("") }
-    var busy by remember { mutableStateOf(false) }
-    var msg by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = { if (!busy) onClose() },
-        title = { Text("پشتیبان کلید رمزنگاری") },
-        text = {
-            Column {
-                Text("کلید رمزنگاری شما با رمز عبور حسابتان قفل می‌شود و روی سرور می‌ماند. سرور نمی‌تواند آن را باز کند. " +
-                    "با ورود دوباره یا ورود از گوشی دیگر، همین کلید برمی‌گردد و پیام‌های قبلی خوانا می‌مانند.", fontSize = 13.sp)
-                if (backedUp != true) {
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = pass, onValueChange = { pass = it }, singleLine = true, label = { Text("رمز عبور حساب") },
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password), modifier = Modifier.fillMaxWidth()
-                    )
-                } else {
-                    Text("پشتیبان فعال است.", fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
-                }
-                if (busy) CircularProgressIndicator(Modifier.padding(top = 8.dp).size(24.dp))
-                msg?.let { Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(top = 6.dp)) }
-            }
-        },
-        confirmButton = {
-            if (backedUp != true) TextButton(enabled = !busy && pass.isNotEmpty(), onClick = {
-                busy = true; msg = null
-                scope.launch { msg = Engine.enableKeyBackup(pass); busy = false; if (msg == null) onClose() }
-            }) { Text("فعال کن") }
-            else TextButton(onClick = onClose) { Text("بستن") }
-        },
-        dismissButton = { if (backedUp != true) TextButton(enabled = !busy, onClick = onClose) { Text("بعداً") } }
-    )
 }
 
 /** Turn the app lock on/off, change the PIN, pick when it locks and whether the fingerprint may unlock it. */
