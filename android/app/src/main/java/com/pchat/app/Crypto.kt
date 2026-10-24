@@ -58,28 +58,69 @@ object Crypto {
         val sp = ctx.getSharedPreferences("identity", Context.MODE_PRIVATE)
         val stored = sp.getString("priv", null)
         val pub = sp.getString("pub", null)
-        val kf = KeyFactory.getInstance("EC")
         if (stored != null && pub != null) {
             try {
                 val raw = unb64(stored)
                 val c = Cipher.getInstance("AES/GCM/NoPadding")
                 c.init(Cipher.DECRYPT_MODE, wrapKey(), GCMParameterSpec(128, raw.copyOfRange(0, 12)))
-                val pk = kf.generatePrivate(PKCS8EncodedKeySpec(c.doFinal(raw, 12, raw.size - 12)))
+                val pk = KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(c.doFinal(raw, 12, raw.size - 12)))
                 return Identity(pk, pub)
             } catch (e: Exception) {
                 // fall through and create a fresh identity
             }
         }
+        return newIdentity(ctx)
+    }
+
+    fun newIdentity(ctx: Context): Identity = generateIdentity().also { saveIdentity(ctx, it) }
+
+    /** A fresh key pair that is not stored yet. */
+    fun generateIdentity(): Identity {
         val g = KeyPairGenerator.getInstance("EC")
         g.initialize(ECGenParameterSpec("secp256r1"))
         val kp = g.generateKeyPair()
+        return Identity(kp.private, b64(kp.public.encoded))
+    }
+
+    /** Stores the private key wrapped by the Keystore key (it never leaves the device unencrypted). */
+    fun saveIdentity(ctx: Context, id: Identity) {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.ENCRYPT_MODE, wrapKey())
-        val iv = c.iv
-        val enc = iv + c.doFinal(kp.private.encoded)
-        val pubB64 = b64(kp.public.encoded)
-        sp.edit().putString("priv", b64(enc)).putString("pub", pubB64).apply()
-        return Identity(kp.private, pubB64)
+        val enc = c.iv + c.doFinal(id.priv.encoded)
+        ctx.getSharedPreferences("identity", Context.MODE_PRIVATE).edit()
+            .putString("priv", b64(enc)).putString("pub", id.pubB64).commit()
+    }
+
+    // ---------------- key backup v1 (same format as the web client and test/helpers/pchat-crypto.js) ----------------
+    // KEK = PBKDF2-HMAC-SHA256(password, salt, iter, 256 bits)
+    // ct  = AES-256-GCM(KEK, iv, PKCS#8 private key, aad "sepan-keybackup-v1|" + username), tag appended
+    private const val BACKUP_ITER = 310000
+
+    private fun backupKek(password: String, salt: ByteArray, iter: Int): SecretKey {
+        val f = javax.crypto.SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+        val raw = f.generateSecret(javax.crypto.spec.PBEKeySpec(password.toCharArray(), salt, iter, 256)).encoded
+        return SecretKeySpec(raw, "AES")
+    }
+
+    fun exportBackup(my: Identity, username: String, password: String): JSONObject {
+        val salt = randomBytes(16)
+        val iv = randomBytes(12)
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, backupKek(password, salt, BACKUP_ITER), GCMParameterSpec(128, iv))
+        c.updateAAD(("sepan-keybackup-v1|$username").toByteArray())
+        val ct = c.doFinal(my.priv.encoded)
+        return JSONObject().put("v", 1).put("kdf", "pbkdf2-sha256").put("iter", BACKUP_ITER)
+            .put("salt", b64(salt)).put("iv", b64(iv)).put("ct", b64(ct)).put("pub", my.pubB64)
+    }
+
+    /** Throws when the password is wrong (GCM tag check fails). */
+    fun importBackup(kb: JSONObject, username: String, password: String): Identity {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.DECRYPT_MODE, backupKek(password, unb64(kb.getString("salt")), kb.getInt("iter")),
+            GCMParameterSpec(128, unb64(kb.getString("iv"))))
+        c.updateAAD(("sepan-keybackup-v1|$username").toByteArray())
+        val der = c.doFinal(unb64(kb.getString("ct")))
+        return Identity(KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(der)), kb.getString("pub"))
     }
 
     fun fingerprint(pubB64: String): String {

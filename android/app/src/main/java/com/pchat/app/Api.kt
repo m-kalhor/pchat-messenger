@@ -94,11 +94,20 @@ object Api {
         }
     }
 
-    fun login(user: String, pass: String, pub: String): String {
+    /** Returns {token, username, key_backup (object or null)}. */
+    fun login(user: String, pass: String, pub: String): JSONObject {
         val body = JSONObject().put("username", user).put("password", pass).put("pubkey", pub).toString()
         val r = Request.Builder().url(Config.BASE + "/api/login").post(body.toRequestBody(JSON)).build()
-        return JSONObject(exec(r)).getString("token")
+        return JSONObject(exec(r))
     }
+
+    /** Stores the password-encrypted identity key on the server (also makes its pub the account's key). */
+    fun uploadKeyBackup(kb: JSONObject, pass: String) {
+        val body = JSONObject().put("key_backup", kb).put("password", pass).toString()
+        exec(req("/api/keybackup").post(body.toRequestBody(JSON)).build())
+    }
+
+    fun keyBackup(): JSONObject? = JSONObject(exec(req("/api/keybackup").get().build())).optJSONObject("key_backup")
 
     fun logout(t: String?) {
         if (t == null) return

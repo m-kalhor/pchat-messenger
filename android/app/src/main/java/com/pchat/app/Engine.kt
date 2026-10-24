@@ -61,6 +61,8 @@ object Engine {
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
     val loggedIn = MutableStateFlow(false)
+    /** null = unknown yet, true = the server holds a backup of this device's identity key, false = it does not */
+    val keyBackedUp = MutableStateFlow<Boolean?>(null)
     val connected = MutableStateFlow(false)
     /** message id -> 0..1 for running uploads/downloads */
     val progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
@@ -146,6 +148,7 @@ object Engine {
         pins.value = emptyMap()
         progress.value = emptyMap()
         failures.value = emptyMap()
+        keyBackedUp.value = null
         tick.value++
     }
 
@@ -177,10 +180,15 @@ object Engine {
     suspend fun login(user: String, pass: String): String? = withContext(Dispatchers.IO) {
         try {
             val u = user.trim().lowercase()
-            val t = Api.login(u, pass, identity!!.pubB64)
-            if (prefs.getString("me", null) != u) wipeLocal()
+            val prevMe = prefs.getString("me", null)
+            // another account on this phone must not reuse the previous account's key
+            val local = if (prevMe != null && prevMe != u) Crypto.generateIdentity() else identity!!
+            val r = Api.login(u, pass, local.pubB64)
+            val t = r.getString("token")
+            if (prevMe != u) wipeLocal()
             prefs.edit().putString("token", t).putString("me", u).apply()
             Api.token = t
+            useIdentity(syncKeyBackup(u, pass, r.optJSONObject("key_backup"), local))
             loggedIn.value = true
             null
         } catch (e: Api.HttpError) {
@@ -189,6 +197,49 @@ object Engine {
                 429 -> "تلاش‌های ناموفق زیاد بود؛ ۱۰ دقیقه صبر کنید"
                 else -> "خطای سرور (${e.code})"
             }
+        } catch (e: Exception) {
+            "اتصال به سرور برقرار نشد"
+        }
+    }
+
+    private fun useIdentity(id: Identity) {
+        if (id.pubB64 != identity?.pubB64) Crypto.saveIdentity(app, id)
+        identity = id
+    }
+
+    /**
+     * One identity key per account, kept on the server encrypted with the login password (the server cannot read it).
+     * A new device (or a reinstall) restores the key, so old messages stay readable after logging in again.
+     * Returns the identity to use; upload failures never fail the login.
+     */
+    private fun syncKeyBackup(u: String, pass: String, kb: JSONObject?, local: Identity): Identity {
+        if (kb != null) {
+            try {
+                val restored = Crypto.importBackup(kb, u, pass)
+                keyBackedUp.value = true
+                return restored
+            } catch (e: Exception) {
+                // the backup was made with an older password (reset by the admin): fall through and back up again.
+                // when it holds a different key that key cannot be recovered, so this device's key replaces it.
+            }
+        }
+        keyBackedUp.value = try { Api.uploadKeyBackup(Crypto.exportBackup(local, u, pass), pass); true } catch (e: Exception) { false }
+        return local
+    }
+
+    /** For accounts logged in before key backup existed: Settings asks for the password once. Returns an error or null. */
+    suspend fun enableKeyBackup(pass: String): String? = withContext(Dispatchers.IO) {
+        val u = me
+        try {
+            val kb = Api.keyBackup()
+            val id = if (kb != null) try { Crypto.importBackup(kb, u, pass) } catch (e: Exception) { null } else null
+            // the account's key is in the backup (e.g. restored on another phone): use it here too
+            if (id != null) { useIdentity(id); keyBackedUp.value = true; refreshDirectory(); return@withContext null }
+            Api.uploadKeyBackup(Crypto.exportBackup(identity!!, u, pass), pass)
+            keyBackedUp.value = true
+            null
+        } catch (e: Api.HttpError) {
+            if (e.code == 403) "رمز عبور اشتباه است" else if (e.code == 429) "تلاش‌های زیاد؛ کمی صبر کنید" else "خطای سرور (${e.code})"
         } catch (e: Exception) {
             "اتصال به سرور برقرار نشد"
         }
@@ -239,6 +290,7 @@ object Engine {
             try { refreshUsers() } catch (e: Exception) { }
             try { refreshGroups() } catch (e: Exception) { }
             try { refreshRequests() } catch (e: Exception) { }
+            try { keyBackedUp.value = Api.keyBackup()?.optString("pub") == identity?.pubB64 } catch (e: Exception) { }
         }
     }
 
