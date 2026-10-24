@@ -39,6 +39,7 @@ const q = {
   sess: db.prepare('SELECT s.username AS username, s.created AS created, u.disabled AS disabled FROM sessions s JOIN users u ON u.username=s.username WHERE s.th=?'),
   delSess: db.prepare('DELETE FROM sessions WHERE th=?'),
   setKey: db.prepare('UPDATE users SET pubkey=? WHERE username=?'),
+  setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
   addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts) VALUES(?,?,?,?,?,?)'),
   msg: db.prepare('SELECT * FROM messages WHERE id=?'),
   addFile: db.prepare('INSERT INTO files(id,owner,size,ts) VALUES(?,?,?,?)'),
@@ -159,6 +160,21 @@ function resolveTarget(user, target) {
 }
 function pinKey(user, tr) { return tr.type === 'group' ? tr.cat.gkey : core.convoKey(user, tr.peer); }
 
+const B64 = /^[A-Za-z0-9+/]+={0,2}$/;
+function keyBackupOf(u) {
+  if (!u || !u.key_backup) return null;
+  try { return JSON.parse(u.key_backup); } catch { return null; }
+}
+/** v1: { v:1, kdf:'pbkdf2-sha256', iter, salt, iv, ct, pub } — all binary fields base64 */
+function cleanKeyBackup(k) {
+  if (!k || typeof k !== 'object' || k.v !== 1 || k.kdf !== 'pbkdf2-sha256') return null;
+  const iter = Number(k.iter);
+  if (!Number.isInteger(iter) || iter < 100000 || iter > 5000000) return null;
+  const ok = (x, min, max) => typeof x === 'string' && x.length >= min && x.length <= max && B64.test(x);
+  if (!ok(k.salt, 16, 64) || !ok(k.iv, 16, 24) || !ok(k.ct, 64, 2048) || !ok(k.pub, 64, 1024)) return null;
+  return { v: 1, kdf: 'pbkdf2-sha256', iter, salt: k.salt, iv: k.iv, ct: k.ct, pub: k.pub };
+}
+
 function publicUser(u, extra) {
   return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, online: isOnline(u.username), avatar_ver: u.avatar_ver, bio: u.bio || null, ...extra };
 }
@@ -204,8 +220,10 @@ async function route(req, res) {
     fails.delete('u:' + username);
     const token = crypto.randomBytes(32).toString('hex');
     q.addSess.run(sha256(token), username, now());
-    if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024) q.setKey.run(b.pubkey, username);
-    return send(res, 200, { token, username });
+    // with a key backup the account keeps one identity key on every device: a new device restores it instead
+    const kb = keyBackupOf(u);
+    if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024 && (!kb || kb.pub === b.pubkey)) q.setKey.run(b.pubkey, username);
+    return send(res, 200, { token, username, key_backup: kb });
   }
 
   const a = authInfo(req);
@@ -232,7 +250,25 @@ async function route(req, res) {
   if (p === '/api/pubkey' && req.method === 'POST') {
     const b = await readJson(req, 4096);
     if (typeof b.pubkey !== 'string' || b.pubkey.length > 1024) return send(res, 400, { error: 'bad_pubkey' });
+    const kb = keyBackupOf(core.q.user.get(user));
+    if (kb && kb.pub !== b.pubkey) return send(res, 409, { error: 'key_backup_mismatch' });
     q.setKey.run(b.pubkey, user);
+    return send(res, 200, { ok: true });
+  }
+
+  // password-encrypted copy of the identity private key (the server cannot open it); see docs/ARCHITECTURE.md
+  if (p === '/api/keybackup' && req.method === 'GET') return send(res, 200, { key_backup: keyBackupOf(core.q.user.get(user)) });
+  if (p === '/api/keybackup' && req.method === 'POST') {
+    const b = await readJson(req, 8192);
+    const me = core.q.user.get(user);
+    // the account password is required: it is what the backup is locked with, and a stolen session alone must not swap the key
+    if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
+    if (typeof b.password !== 'string' || !checkPassword(b.password, me.pass)) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    const kb = cleanKeyBackup(b.key_backup);
+    if (!kb) return send(res, 400, { error: 'bad_key_backup' });
+    const before = me.pubkey;
+    q.setBackup.run(JSON.stringify(kb), kb.pub, user);
+    if (before !== kb.pub) broadcastTo(audienceOf(user).filter((x) => x !== user), 'refresh', {});
     return send(res, 200, { ok: true });
   }
 

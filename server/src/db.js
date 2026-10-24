@@ -48,6 +48,7 @@ if (!userCols.includes('display_name')) db.exec('ALTER TABLE users ADD COLUMN di
 if (!userCols.includes('avatar_ver')) db.exec('ALTER TABLE users ADD COLUMN avatar_ver INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('disabled')) db.exec('ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('bio')) db.exec('ALTER TABLE users ADD COLUMN bio TEXT');
+if (!userCols.includes('key_backup')) db.exec('ALTER TABLE users ADD COLUMN key_backup TEXT');
 
 function getSetting(key, def = null) {
   const r = db.prepare('SELECT value FROM settings WHERE key=?').get(key);
