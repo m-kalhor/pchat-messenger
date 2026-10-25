@@ -13,6 +13,10 @@ export const S = {
   me: '', identity: null, ready: false,
   keyStep: null, keyBackup: null, // see checkKey()
   users: [], groups: [], pins: {}, read: {}, typing: {},
+  gtyping: {},                // group -> { username: when they last typed }
+  receipts: {},               // convo -> { username: { d: delivered up to id, s: seen up to id } }
+  rseq: -1,                   // last reaction change seen (-1 = none yet)
+  privacy: { hide_seen: false, hide_last_seen: false },
   convos: new Map(),          // convo -> array of messages, oldest first
   lastId: 0,
   cseq: -1,                   // last edit/delete number seen (-1 = none yet)
@@ -40,6 +44,7 @@ const pubOf = (u) => (u === S.me ? S.identity.pubB64 : (user(u) || {}).pubkey ||
 
 export function preview(m) {
   if (m.type === 'image') return '🖼 عکس';
+  if (m.type === 'voice') return '🎤 پیام صوتی';
   if (m.type === 'file') return '📎 ' + (m.name || 'فایل');
   if (m.type === 'call') return '📞 ' + m.text;
   return m.text || '';
@@ -79,6 +84,10 @@ export async function init() {
   S.users = (await store.kvGet('users')) || [];
   S.groups = (await store.kvGet('groups')) || [];
   S.read = (await store.kvGet('read')) || {};
+  const rs = await store.kvGet('rseq');
+  S.rseq = typeof rs === 'number' ? rs : -1;
+  S.receipts = (await store.kvGet('receipts')) || {};
+  S.privacy = (await store.kvGet('privacy')) || S.privacy;
   for (const m of await store.allMsgs()) addLocal(m);
   for (const list of S.convos.values()) list.sort(byOrder);
   for (const m of [...S.convos.values()].flat()) if (m.status === 1 && m.type !== 'text') { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
@@ -87,6 +96,7 @@ export async function init() {
   try { step = await checkKey(); } catch { }
   if (step !== 'choose') startStream();
   refreshAll();
+  refreshPush();
   return true;
 }
 
@@ -118,6 +128,7 @@ export async function login(username, password) {
   emit('login');
   if (S.keyStep !== 'choose') startStream();
   refreshAll();
+  refreshPush();
   return { ok: true };
 }
 
@@ -204,16 +215,18 @@ function keyErr(e) {
 }
 
 function resetState() {
-  S.users = []; S.groups = []; S.pins = {}; S.read = {}; S.typing = {};
+  S.users = []; S.groups = []; S.pins = {}; S.read = {}; S.typing = {}; S.gtyping = {}; S.receipts = {}; S.rseq = -1;
   S.convos = new Map(); S.lastId = 0; S.cseq = -1; S.progress.clear(); S.failures.clear();
 }
 
 export async function logout() {
+  await disablePush().catch(() => { });
   try { await api.logout(); } catch { }
   await endSession();
 }
 async function endSession(reason) {
   stopStream();
+  dropBrowserPush();
   api.setToken(null);
   await store.kvDel('token');
   await store.kvDel('me');
@@ -246,10 +259,17 @@ export async function refreshRequests() {
   S.requests = await api.contactRequests();
   emit('requests');
 }
+export async function refreshMe() {
+  const r = await api.me();
+  S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen };
+  await store.kvSet('privacy', S.privacy);
+  emit('privacy');
+}
 function refreshAll() {
   refreshUsers().catch(handleAuth);
   refreshGroups().catch(handleAuth);
   refreshRequests().catch(handleAuth);
+  refreshMe().catch(handleAuth);
 }
 function handleAuth(e) { if (e instanceof api.HttpError && e.status === 401 && api.getToken()) endSession(); }
 
@@ -269,7 +289,10 @@ export function startStream() {
       setConn('connecting');
       let opened = 0, replayed = 0;
       try {
-        await api.stream(S.lastId, S.cseq, ctl.signal, () => { setConn('online'); backoff = 1000; opened = lastData = Date.now(); flush(); }, (ev, data) => {
+        await api.stream(S.lastId, S.cseq, S.rseq, await deviceId(), document.visibilityState === 'visible', ctl.signal, () => {
+          setConn('online'); backoff = 1000; opened = lastData = Date.now(); flush();
+          setTimeout(syncReceipts, 2500);
+        }, (ev, data) => {
           lastData = Date.now();
           if (ev !== 'ping') queueEvent(ev, data);
           // the server replays at most 2000 old messages per connection: reconnect for the rest
@@ -315,9 +338,19 @@ async function handleEvent(ev, data) {
     case 'presence': {
       const u = user(o.user);
       if (!u || o.online) { try { await refreshUsers(); } catch { } }
-      if (user(o.user)) user(o.user).online = o.online;
+      const x = user(o.user);
+      if (x) { x.online = o.online; if ('last_seen' in o) { x.last_seen = o.last_seen; x.recently = !!o.recently; } }
       return emit('users');
     }
+    case 'typing': {
+      (S.gtyping[o.convo] = S.gtyping[o.convo] || {})[o.from] = Date.now();
+      emit('typing', o.convo); setTimeout(() => emit('typing', o.convo), 4500);
+      return;
+    }
+    case 'receipt': setReceipt(o); saveReceipts(); return emit('receipts', o.convo);
+    case 'receipts': for (const r of o.list || []) setReceipt(r); saveReceipts(); return emit('receipts', null);
+    case 'react': return handleReact(o);
+    case 'rseq': S.rseq = o.seq; return store.kvSet('rseq', S.rseq);
     case 'profile': {
       const u = user(o.username);
       if (!u) { try { await refreshUsers(); } catch { } return; }
@@ -358,8 +391,11 @@ async function handleMsg(o) {
     if (!pub && !mine) { try { await refreshUsers(); } catch { } pub = pubOf(o.from); }
     const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pub, o.payload)));
     const r = plain.r || null;
+    // a voice message travels as a file with v:1 (older apps show it as an audio file)
+    const voice = plain.t === 'file' && plain.v === 1;
     m = {
-      id: o.id, convo, sender: o.from, mine, ts: o.ts, type: plain.t || 'text', text: plain.x || '', edited: o.edited || 0,
+      id: o.id, convo, sender: o.from, mine, ts: o.ts, type: voice ? 'voice' : plain.t || 'text', text: plain.x || '', edited: o.edited || 0,
+      ...(voice ? { dur: Number(plain.d) || 0, wave: Array.isArray(plain.wf) ? plain.wf.slice(0, 100).map((x) => Math.max(0, Math.min(31, x | 0))) : [] } : {}),
       fwFrom: plain.f ? plain.f.u || null : null, fwName: plain.f ? plain.f.n || null : null,
       fileId: o.fileId || null, name: plain.n || null, mime: plain.m || null, size: plain.s || 0, fk: plain.fk || null,
       w: plain.w || 0, h: plain.h || 0, replyId: r ? r.id || 0 : 0, replyUser: r ? r.u || null : null, replyText: r ? r.x || null : null, status: 0,
@@ -367,6 +403,8 @@ async function handleMsg(o) {
   } catch {
     m = { id: o.id, convo, sender: o.from, mine, ts: o.ts, type: 'text', text: '🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)', status: 0, locked: true };
   }
+  if (o.reactions) m.reactions = { ...o.reactions };
+  if (!mine) ack(convo, 'delivered', o.id);
   const isNew = addLocal(m);
   if (isNew) S.convos.get(convo).sort(byOrder);
   await store.putMsg(m);
@@ -398,13 +436,190 @@ async function handleChange(o) {
   if (o.seq > S.cseq) { S.cseq = o.seq; await store.kvSet('cseq', S.cseq); }
 }
 
+// ---------------- delivered / seen ticks ----------------
+/** Receipts are watermarks: everything up to id `delivered` reached a device of that user, up to `seen` was read. */
+function setReceipt(r) {
+  const c = (S.receipts[r.convo] = S.receipts[r.convo] || {});
+  const old = c[r.user] || { d: 0, s: 0 };
+  c[r.user] = { d: Math.max(old.d, r.delivered || 0), s: Math.max(old.s, r.seen || 0) };
+  // read on another of my devices: read here too
+  if (r.user === S.me && (r.seen || 0) > (S.read[r.convo] || 0)) { S.read[r.convo] = r.seen; store.kvSet('read', S.read); emit('read', r.convo); }
+}
+let saveTimer = null;
+function saveReceipts() { if (!saveTimer) saveTimer = setTimeout(() => { saveTimer = null; store.kvSet('receipts', S.receipts); }, 1000); }
+
+/** 'sent' (grey ✓) · 'delivered' (blue ✓) · 'seen' (blue ✓✓) for my message, null for others. In a group: all members. */
+export function tickOf(m) {
+  if (!m.mine || m.id <= 0 || m.status !== 0 || m.type === 'call') return null;
+  const rc = S.receipts[m.convo] || {};
+  const d = (u) => Math.max((rc[u] || {}).d || 0, (rc[u] || {}).s || 0), s = (u) => (rc[u] || {}).s || 0;
+  if (isGroup(m.convo)) {
+    const g = S.groups.find((x) => x.key === m.convo);
+    const others = (g ? g.members : []).filter((u) => u !== S.me);
+    if (!others.length) return 'sent';
+    if (others.every((u) => s(u) >= m.id)) return 'seen';
+    return others.every((u) => d(u) >= m.id) ? 'delivered' : 'sent';
+  }
+  if (!S.privacy.hide_seen && s(m.convo) >= m.id) return 'seen';
+  return d(m.convo) >= m.id ? 'delivered' : 'sent';
+}
+
+/** Group members by how far they got with my message: { seen, delivered, sent } (lists of usernames). */
+export function readersOf(m) {
+  const rc = S.receipts[m.convo] || {};
+  const g = S.groups.find((x) => x.key === m.convo);
+  const out = { seen: [], delivered: [], sent: [] };
+  for (const u of (g ? g.members : [m.convo]).filter((x) => x !== S.me)) {
+    const r = rc[u] || { d: 0, s: 0 };
+    out[r.s >= m.id ? 'seen' : Math.max(r.d, r.s) >= m.id ? 'delivered' : 'sent'].push(u);
+  }
+  return out;
+}
+
+const acks = {};
+let ackTimer = null;
+function ack(convo, kind, id, delay = 700) {
+  if (!(id > 0)) return;
+  const a = (acks[convo] = acks[convo] || {});
+  if ((a[kind] || 0) < id) a[kind] = id;
+  if (!ackTimer) ackTimer = setTimeout(sendAcks, delay);
+}
+async function sendAcks() {
+  ackTimer = null;
+  const items = Object.entries(acks).map(([target, a]) => ({ target, delivered: a.delivered || 0, seen: a.seen || 0 }));
+  for (const k of Object.keys(acks)) delete acks[k];
+  if (!items.length || !api.getToken()) return;
+  try { await api.receipts(items); } catch {
+    for (const it of items) { ack(it.target, 'delivered', it.delivered, 10000); ack(it.target, 'seen', it.seen, 10000); }
+  }
+}
+const lastIncoming = (convo, upTo = Infinity) => {
+  const list = S.convos.get(convo) || [];
+  for (let i = list.length - 1; i >= 0; i--) if (!list[i].mine && list[i].id > 0 && list[i].id <= upTo) return list[i].id;
+  return 0;
+};
+/** After (re)connecting: report what this device has, so lost acks and messages from before 1.4 get ticks too. */
+function syncReceipts() {
+  for (const convo of S.convos.keys()) {
+    ack(convo, 'delivered', lastIncoming(convo));
+    ack(convo, 'seen', lastIncoming(convo, S.read[convo] || 0));
+  }
+}
+
+// ---------------- reactions ----------------
+export const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏'];
+const convoOfMsg = (from, target) => (isGroup(target) ? target : from === S.me ? target : from);
+async function handleReact(o) {
+  if (o.seq > S.rseq) { S.rseq = o.seq; store.kvSet('rseq', S.rseq); }
+  const m = (S.convos.get(convoOfMsg(o.from, o.target)) || []).find((x) => x.id === o.id);
+  if (!m) return;
+  const r = { ...(m.reactions || {}) };
+  if (o.emoji) r[o.user] = o.emoji; else delete r[o.user];
+  m.reactions = r;
+  await store.putMsg(m);
+  emit('react', m);
+}
+/** Sets (or with null removes) my reaction to m. Returns an error text or null. */
+export async function react(m, emoji) {
+  const before = m.reactions || {};
+  const r = { ...before };
+  if (emoji) r[S.me] = emoji; else delete r[S.me];
+  m.reactions = r;
+  emit('react', m);
+  try { await api.react(m.id, emoji || null); await store.putMsg(m); return null; } catch (e) { m.reactions = before; emit('react', m); return errText(e); }
+}
+/** [[emoji, [usernames]]] most used first. */
+export function reactionsOf(m) {
+  const by = new Map();
+  for (const [u, e] of Object.entries(m.reactions || {})) { if (!by.has(e)) by.set(e, []); by.get(e).push(u); }
+  return [...by.entries()].sort((a, b) => b[1].length - a[1].length);
+}
+
+// ---------------- presence / privacy ----------------
+let devId = null;
+async function deviceId() {
+  if (devId) return devId;
+  devId = await store.kvGet('dev');
+  if (!devId) { devId = [...crypto.getRandomValues(new Uint8Array(8))].map((b) => b.toString(16).padStart(2, '0')).join(''); await store.kvSet('dev', devId); }
+  return devId;
+}
+/** The app came to the screen or left it (others see "online" / "last seen"). */
+export async function setActive(active) {
+  if (S.conn === 'online' && api.getToken()) api.presence(await deviceId(), active).catch(() => { });
+}
+export async function setPrivacy(p) {
+  try {
+    S.privacy = await api.privacy(p);
+    await store.kvSet('privacy', S.privacy);
+    emit('privacy');
+    await refreshUsers();
+    return null;
+  } catch (e) { return errText(e); }
+}
+
+// ---------------- notifications while closed (Web Push) ----------------
+export const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+const b64uBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(s.length / 4) * 4, '=')), (c) => c.charCodeAt(0));
+async function currentSub() {
+  const reg = await navigator.serviceWorker.getRegistration();
+  return reg ? reg.pushManager.getSubscription() : null;
+}
+/** 'unsupported' | 'denied' | 'on' | 'off' */
+export async function pushState() {
+  if (!pushSupported()) return 'unsupported';
+  if (Notification.permission === 'denied') return 'denied';
+  return Notification.permission === 'granted' && (await currentSub().catch(() => null)) ? 'on' : 'off';
+}
+export async function enablePush() {
+  if (!pushSupported()) return 'این مرورگر اعلان پس‌زمینه ندارد (در آیفون: iOS ۱۶٫۴ به بالا و باز کردن سپن از صفحهٔ اصلی)';
+  try {
+    if ((await Notification.requestPermission()) !== 'granted') return 'اجازهٔ اعلان داده نشد';
+    const reg = await navigator.serviceWorker.ready;
+    const key = b64uBytes((await api.pushKey()).key);
+    let sub = await reg.pushManager.getSubscription();
+    const old = sub && sub.options && sub.options.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey) : null;
+    if (sub && (!old || old.length !== key.length || old.some((b, i) => b !== key[i]))) { await sub.unsubscribe(); sub = null; }
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+    await api.pushSubscribe(sub.toJSON());
+    return null;
+  } catch (e) { return e instanceof api.HttpError ? errText(e) : 'فعال کردن اعلان ناموفق بود (' + (e.message || e) + ')'; }
+}
+export async function disablePush() {
+  const sub = await currentSub().catch(() => null);
+  if (!sub) return;
+  await api.pushUnsubscribe(sub.endpoint).catch(() => { });
+  await sub.unsubscribe().catch(() => { });
+}
+function dropBrowserPush() { if (pushSupported()) currentSub().then((s) => s && s.unsubscribe()).catch(() => { }); }
+/** Re-attaches this browser's subscription to the current session (after a login or an app start). */
+async function refreshPush() {
+  if (!pushSupported() || Notification.permission !== 'granted') return;
+  const sub = await currentSub().catch(() => null);
+  if (sub) api.pushSubscribe(sub.toJSON()).catch(() => { });
+}
+/** Sends a test notification; returns a sentence about how it went. */
+export async function testPush() {
+  try {
+    const { results } = await api.pushTest();
+    if (!results.length) return 'این دستگاه برای اعلان ثبت نشده';
+    const ok = results.filter((r) => r.status >= 200 && r.status < 300).length;
+    if (ok) return 'اعلان آزمایشی فرستاده شد؛ اگر تا چند ثانیه نرسید، سپن را ببندید و دوباره امتحان کنید';
+    return results.some((r) => r.status === 0) ? 'سرور به سرویس اعلان (' + results[0].host + ') دسترسی ندارد' : 'سرویس اعلان پاسخ خطا داد (' + results.map((r) => r.status).join('، ') + ')';
+  } catch (e) { return errText(e); }
+}
+
 // ---------------- edit / delete for everyone / forward ----------------
 export const EDIT_WINDOW = 48 * 3600e3;
 export const canEdit = (m) => m.mine && m.type === 'text' && m.id > 0 && m.status === 0 && Date.now() - m.ts < EDIT_WINDOW;
 const forwardJson = (m) => (m.fwFrom ? { f: { u: m.fwFrom, n: m.fwName || '' } } : {});
+/** File fields of the plaintext; a voice message is a file with v:1, its duration (ms) and waveform (0..31). */
+const fileJson = (m) => ({
+  t: m.type === 'voice' ? 'file' : m.type, n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w || 0, h: m.h || 0,
+  ...(m.type === 'voice' ? { v: 1, d: m.dur || 0, wf: m.wave || [] } : {}),
+});
 function plainOf(m, text = m.text) {
   const p = { t: m.type, x: text, ...replyJson(m), ...forwardJson(m) };
-  if (m.type !== 'text') Object.assign(p, { n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h });
+  if (m.type !== 'text') Object.assign(p, fileJson(m));
   return p;
 }
 
@@ -451,6 +666,7 @@ export async function forward(msgs, targets, hideSender) {
       const m = {
         id: localId(), convo: t, sender: S.me, mine: true, ts: Date.now() + n++, type: src.type, text: src.text || '',
         name: src.name || null, mime: src.mime || null, size: src.size || 0, fk: src.fk || null, w: src.w || 0, h: src.h || 0,
+        ...(src.type === 'voice' ? { dur: src.dur || 0, wave: src.wave || [] } : {}),
         status: 1, replyId: 0, replyUser: null, replyText: null,
         fwFrom: fw, fwName: fw ? src.fwName || nameOf(src.sender) : null,
       };
@@ -481,6 +697,7 @@ export function markRead(convo) {
   let max = S.read[convo] || 0;
   for (const m of list) if (m.id > max) max = m.id;
   if (max !== (S.read[convo] || 0)) { S.read[convo] = max; store.kvSet('read', S.read); emit('read', convo); }
+  ack(convo, 'seen', lastIncoming(convo));
 }
 
 export function summaries() {
@@ -569,11 +786,13 @@ export function retry(m) {
 
 const sentTyping = {};
 export function sendTyping(convo) {
-  if (isGroup(convo) || S.conn !== 'online') return;
+  if (S.conn !== 'online') return;
   if (Date.now() - (sentTyping[convo] || 0) < 3000) return;
   sentTyping[convo] = Date.now();
-  api.signal(convo, 'sig_typing', '1').catch(() => { });
+  (isGroup(convo) ? api.typing(convo) : api.signal(convo, 'sig_typing', '1')).catch(() => { });
 }
+/** Who is typing in a group right now (usernames). */
+export const typingIn = (convo) => Object.entries(S.gtyping[convo] || {}).filter(([u, t]) => u !== S.me && Date.now() - t < 4500).map(([u]) => u);
 
 export async function pinMessage(convo, messageId) {
   try { await api.pin(convo, messageId); return null; } catch (e) { return errText(e); }
@@ -608,6 +827,21 @@ export async function sendFile(convo, file, reply) {
   emit('msg', m);
   uploadFile(m);
   return null;
+}
+
+/** Queues a recorded voice message (blob from MediaRecorder, duration in ms, waveform 0..31). */
+export async function sendVoice(convo, blob, dur, wave, reply) {
+  const ext = /mp4|aac|m4a/.test(blob.type) ? 'm4a' : /ogg/.test(blob.type) ? 'ogg' : 'webm';
+  const m = {
+    id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'voice', text: '', name: 'voice.' + ext,
+    mime: blob.type || 'audio/mp4', size: blob.size, fk: C.newFileKey(), w: 0, h: 0, dur, wave, status: 1, ...replyOf(reply),
+  };
+  Object.defineProperty(m, '_file', { value: blob, enumerable: false, writable: true });
+  blobUrls.set(m.id, URL.createObjectURL(blob)); blobs.set(m.id, blob);
+  addLocal(m);
+  markRead(convo);
+  emit('msg', m);
+  uploadFile(m);
 }
 
 async function uploadFile(m) {
@@ -648,10 +882,10 @@ async function uploadFile(m) {
       }
       m._fileId = fileId;
     }
-    const plain = { t: m.type, n: m.name, m: m.mime, s: m.size, fk: m.fk, w: m.w, h: m.h, ...replyJson(m), ...forwardJson(m) };
+    const plain = { ...fileJson(m), ...replyJson(m), ...forwardJson(m) };
     const r = await api.send(m.convo, await encryptFor(m.convo, plain), fileId);
     const real = { ...m, id: r.id, ts: r.ts, status: 0, fileId };
-    if (file && m.type === 'image' && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
+    if (file && (m.type === 'image' || m.type === 'voice') && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
     const url = blobUrls.get(m.id);
     if (url) { blobUrls.delete(m.id); blobUrls.set(fileId, url); blobs.delete(m.id); blobs.set(fileId, file); }
     setProgress(m.id, null);

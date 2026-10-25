@@ -182,7 +182,7 @@ function presenceOf(u, viewer) {
   const online = isOnline(u.username);
   if (viewer && viewer !== u.username) {
     const v = core.q.user.get(viewer);
-    if (u.hide_last_seen || (v && v.hide_last_seen)) return { online: false, last_seen: null, recently: online || (u.last_seen || 0) > now() - RECENTLY };
+    if (u.hide_last_seen || (v && v.hide_last_seen)) return { online: false, last_seen: null, recently: online || (u.last_seen || 0) > now() - RECENTLY, hidden: true };
   }
   return { online, last_seen: online ? null : u.last_seen || null, recently: false };
 }

@@ -48,6 +48,18 @@ export const turn = () => call('GET', '/api/turn');
 export const contactRequests = () => call('GET', '/api/contacts/requests');
 export const contactAction = (what, username, accept = false) => call('POST', '/api/contacts/' + what, { username, accept });
 export const caInfo = () => call('GET', '/api/web/ca');
+export const receipts = (items) => call('POST', '/api/receipts', { items });
+export const typing = (target) => call('POST', '/api/typing', { target });
+export const react = (id, emoji) => call('POST', '/api/react', { id, emoji });
+// keepalive: also delivered when the page is being closed / sent to the background
+export const presence = (dev, active) => fetch('/api/presence', {
+  method: 'POST', keepalive: true, headers: { authorization: 'Bearer ' + token, 'content-type': 'application/json' }, body: JSON.stringify({ dev, active }),
+});
+export const privacy = (p) => call('POST', '/api/privacy', p);
+export const pushKey = () => call('GET', '/api/push/key');
+export const pushSubscribe = (subscription) => call('POST', '/api/push/subscribe', { subscription });
+export const pushUnsubscribe = (endpoint) => call('POST', '/api/push/unsubscribe', { endpoint });
+export const pushTest = () => call('POST', '/api/push/test');
 
 export const createUpload = (size) => call('POST', '/api/uploads', { size });
 export const uploadStatus = (id) => call('GET', '/api/uploads/' + id);
@@ -70,8 +82,9 @@ export async function fileRange(id, start, end) {
  * Live events (Server-Sent Events read with fetch, because EventSource cannot send the Authorization
  * header). Resolves when the stream ends; rejects on errors. `signal` aborts it.
  */
-export async function stream(since, csince, abort, onOpen, onEvent) {
-  const r = await fetch('/api/events?since=' + since + '&csince=' + csince, { headers: { authorization: 'Bearer ' + token, accept: 'text/event-stream' }, signal: abort, cache: 'no-store' });
+export async function stream(since, csince, rsince, dev, active, abort, onOpen, onEvent) {
+  const q = `since=${since}&csince=${csince}&rsince=${rsince}&dev=${encodeURIComponent(dev)}&active=${active ? 1 : 0}`;
+  const r = await fetch('/api/events?' + q, { headers: { authorization: 'Bearer ' + token, accept: 'text/event-stream' }, signal: abort, cache: 'no-store' });
   if (!r.ok) throw new HttpError(r.status);
   onOpen();
   const reader = r.body.getReader();

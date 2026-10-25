@@ -5,8 +5,9 @@ import * as api from './api.mjs';
 import { fingerprint } from './crypto.mjs';
 import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
+import * as Voice from './voice.mjs';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -52,6 +53,50 @@ function fmtListTime(ts) {
   if (ts >= d0 - 6 * DAY) return new Date(ts).toLocaleDateString('fa-IR', { weekday: 'long' });
   return new Date(ts).toLocaleDateString('fa-IR-u-ca-persian', { day: 'numeric', month: 'short' });
 }
+const fmtDur = (ms) => { const t = Math.max(0, Math.round((ms || 0) / 1000)); return faNum(Math.floor(t / 60)) + ':' + faNum(t % 60).padStart(2, '۰'); };
+/** «آنلاین», «آخرین بازدید …» or, when hidden, «اخیراً آنلاین بوده». Empty when nothing is known. */
+function lastSeenText(u) {
+  if (!u) return '';
+  if (u.online) return 'آنلاین';
+  if (u.last_seen) {
+    const d = Date.now() - u.last_seen;
+    if (d < 60e3) return 'لحظاتی پیش آنلاین بود';
+    if (d < 3600e3) return faNum(Math.floor(d / 60e3)) + ' دقیقه پیش آنلاین بود';
+    const day = startOfDay(u.last_seen), today = startOfDay(Date.now());
+    if (day === today) return 'آخرین بازدید امروز ' + fmtTime(u.last_seen);
+    if (day === today - DAY) return 'آخرین بازدید دیروز ' + fmtTime(u.last_seen);
+    return 'آخرین بازدید ' + fmtDay(u.last_seen);
+  }
+  if (u.hidden) return u.recently ? 'اخیراً آنلاین بوده' : 'مدت‌ها پیش آنلاین بوده';
+  return '';
+}
+
+// drafts and chats pinned to the top of the list: kept on this device only
+const draftOf = (c) => (pref('drafts', {})[c] || '');
+function setDraft(c, text) {
+  const d = pref('drafts', {});
+  if (text.trim()) d[c] = text; else delete d[c];
+  setPref('drafts', d);
+}
+const pinnedChats = () => pref('pinnedChats', []);
+const MAX_PINNED = 5;
+function togglePinChat(c) {
+  const list = pinnedChats();
+  if (list.includes(c)) setPref('pinnedChats', list.filter((x) => x !== c));
+  else if (list.length >= MAX_PINNED) { toast('حداکثر ' + faNum(MAX_PINNED) + ' گفتگو را می‌شود سنجاق کرد'); return; }
+  else setPref('pinnedChats', [c, ...list]);
+}
+
+/** Calls fn after a long press (or right click) on el; returns a check to skip the click that follows. */
+function onLongPress(el, fn) {
+  let t = null, fired = false, x = 0, y = 0;
+  el.addEventListener('pointerdown', (e) => { fired = false; x = e.clientX; y = e.clientY; clearTimeout(t); t = setTimeout(() => { fired = true; fn(); }, 550); });
+  el.addEventListener('pointermove', (e) => { if (Math.abs(e.clientX - x) > 10 || Math.abs(e.clientY - y) > 10) clearTimeout(t); });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) el.addEventListener(ev, () => clearTimeout(t));
+  el.addEventListener('contextmenu', (e) => { e.preventDefault(); clearTimeout(t); fired = true; fn(); });
+  return () => { const f = fired; fired = false; return f; };
+}
+
 function fmtSize(b) {
   if (b < 1024) return faNum(b) + ' بایت';
   if (b < 1048576) return faNum(Math.round(b / 1024)) + ' کیلوبایت';
@@ -81,6 +126,9 @@ function avatarWithDot(convo, cls) {
   return h('div', { class: 'av-wrap' }, avatar(convo, cls), u && u.online && convo !== S.me ? h('span', { class: 'dot' }) : null);
 }
 
+/** grey ✓ = on the server, blue ✓ = on their phone, blue ✓✓ = seen. */
+const tickEl = (t) => (t ? h('span', { class: 'tick ' + t, title: TICK_TEXT[t] }, t === 'seen' ? '✓✓' : '✓') : null);
+
 let toastTimer = null;
 function toast(text, onclick) {
   document.querySelectorAll('.toast').forEach((t) => t.remove());
@@ -90,9 +138,9 @@ function toast(text, onclick) {
   toastTimer = setTimeout(() => t.remove(), 3500);
 }
 
-function sheet(title, items) {
+function sheet(title, items, top) {
   const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
-    h('div', { class: 'sheet' }, title ? h('div', { class: 'st' }, title) : null,
+    h('div', { class: 'sheet' }, title ? h('div', { class: 'st' }, title) : null, top ? top(() => v.remove()) : null,
       items.filter(Boolean).map((it) => h('button', { class: 'it' + (it.danger ? ' danger' : ''), onclick: () => { v.remove(); it.run(); } }, it.label)),
       h('button', { class: 'it', onclick: () => v.remove() }, 'انصراف')));
   document.body.append(v);
@@ -136,12 +184,52 @@ function forwardSheet(msgs, done) {
   document.body.append(v);
 }
 
+const TICK_TEXT = { sent: 'فرستاده شد (هنوز به گوشی او نرسیده)', delivered: 'به گوشی رسید', seen: 'دیده شد' };
+
+/** Members of a group by how far they got with my message (long press › «دیده شده توسط»). */
+function readersSheet(m) {
+  const r = E.readersOf(m);
+  const part = (title, list) => (list.length ? [h('b', null, title + ' (' + faNum(list.length) + ')'),
+    list.map((u) => h('div', { class: 'pick' }, avatar(u, 'sm'), h('span', null, E.nameOf(u))))] : null);
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'وضعیت پیام'),
+      h('div', { class: 'picklist' }, part('دیده شده توسط', r.seen), part('رسیده به', r.delivered), part('هنوز نرسیده به', r.sent)),
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'بستن'))));
+  document.body.append(v);
+}
+
+/** Who reacted with what; my own reaction can be removed here. */
+function reactorsSheet(m) {
+  const mine = (m.reactions || {})[S.me];
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'واکنش‌ها'),
+      h('div', { class: 'picklist' }, E.reactionsOf(m).map(([e, us]) => us.map((u) => h('div', { class: 'pick' }, avatar(u, 'sm'), h('span', { class: 'grow' }, u === S.me ? 'شما' : E.nameOf(u)), h('span', { class: 'rbig' }, e))))),
+      h('div', { class: 'btns' },
+        mine ? h('button', { class: 'btn danger', onclick: async () => { v.remove(); const e = await E.react(m, null); if (e) toast(e); } }, 'برداشتن واکنش من') : null,
+        h('button', { class: 'btn flat', onclick: () => v.remove() }, 'بستن'))));
+  document.body.append(v);
+}
+
+/** All emoji to pick a reaction from. */
+function reactionPicker(m) {
+  const pick = async (e) => { v.remove(); Emoji.addRecent(e); const err = await E.react(m, e); if (err) toast(err); };
+  const rec = Emoji.recent();
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'sheet' }, h('div', { class: 'emojis tall' },
+      rec.length ? [h('div', { class: 'cap' }, 'اخیر'), rec.map((e) => h('button', { onclick: () => pick(e) }, e))] : [],
+      Emoji.GROUPS.map(([name, list]) => [h('div', { class: 'cap' }, name), list.split(' ').map((e) => h('button', { onclick: () => pick(e) }, e))]))));
+  document.body.append(v);
+}
+
 /** «اطلاعات پیام»: full send and edit date; for my own messages also the earlier versions (only I can see them). */
 function infoSheet(m) {
   const hist = h('div', { class: 'hist' });
+  const tick = E.tickOf(m);
   const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
     h('div', { class: 'dialog' }, h('h3', null, 'اطلاعات پیام'),
       h('p', null, 'ارسال: ' + fmtFull(m.ts)),
+      tick && !E.isGroup(m.convo) ? h('p', null, 'وضعیت: ' + TICK_TEXT[tick]) : null,
+      tick && E.isGroup(m.convo) ? (() => { const r = E.readersOf(m); return h('p', null, 'دیده: ' + faNum(r.seen.length) + ' · رسیده: ' + faNum(r.delivered.length) + ' · نرسیده: ' + faNum(r.sent.length)); })() : null,
       m.edited ? h('p', null, 'آخرین ویرایش: ' + fmtFull(m.edited)) : null,
       m.fwFrom ? h('p', null, 'فوروارد از: ' + (m.fwName || m.fwFrom)) : null,
       m.mine && m.edited ? [h('b', null, 'نسخه‌های قبلی (فقط شما می‌بینید)'), hist] : null,
@@ -232,8 +320,11 @@ E.on((kind, data) => {
   if (view && view.update) view.update(kind, data);
 });
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible') { E.resume(); if (S.openConvo) E.markRead(S.openConvo); }
+  const visible = document.visibilityState === 'visible';
+  E.setActive(visible);
+  if (visible) { E.resume(); if (S.openConvo) E.markRead(S.openConvo); }
 });
+addEventListener('pagehide', () => E.setActive(false));
 document.addEventListener('pointerdown', () => Call.unlockAudio(), { capture: true });
 
 /** Screens re-render on engine events; this batches several events into one frame. */
@@ -354,15 +445,30 @@ function ListScreen() {
     const n = S.requests.incoming.length;
     reqBadge.textContent = faNum(n);
     reqBadge.classList.toggle('hidden', !n);
-    const rows = E.summaries().map((s) => {
-      const typing = !E.isGroup(s.convo) && Date.now() - (S.typing[s.convo] || 0) < 4500;
+    const pins = pinnedChats();
+    const all = E.summaries();
+    const sorted = [...pins.map((c) => all.find((s) => s.convo === c)).filter(Boolean), ...all.filter((s) => !pins.includes(s.convo))];
+    const rows = sorted.map((s) => {
+      const group = E.isGroup(s.convo);
+      const gt = group ? E.typingIn(s.convo) : [];
+      const typing = group ? gt.length > 0 : Date.now() - (S.typing[s.convo] || 0) < 4500;
       const last = s.last;
-      const prev = typing ? 'در حال نوشتن…' : last ? (E.isGroup(s.convo) && !last.mine && last.type !== 'call' ? E.nameOf(last.sender) + ': ' : last.mine && last.type !== 'call' ? 'شما: ' : '') + E.preview(last) : 'هنوز پیامی نیست';
-      return h('button', { class: 'row', onclick: () => go('#/c/' + encodeURIComponent(s.convo)) },
+      const draft = draftOf(s.convo);
+      let prev = last ? (group && !last.mine && last.type !== 'call' ? E.nameOf(last.sender) + ': ' : last.mine && last.type !== 'call' ? 'شما: ' : '') + E.preview(last) : 'هنوز پیامی نیست';
+      if (draft) prev = [h('span', { class: 'draft' }, 'پیش‌نویس: '), draft];
+      if (typing) prev = group ? E.nameOf(gt[0]) + (gt.length > 1 ? ' و ' + faNum(gt.length - 1) + ' نفر دیگر' : '') + ' در حال نوشتن…' : 'در حال نوشتن…';
+      const tick = last && !typing && !draft ? E.tickOf(last) : null;
+      const row = h('button', { class: 'row' },
         avatarWithDot(s.convo),
         h('div', { class: 'mid' },
-          h('div', { class: 'top' }, h('div', { class: 'name' }, E.titleOf(s.convo)), h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
-          h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : null)));
+          h('div', { class: 'top' }, h('div', { class: 'name' }, E.titleOf(s.convo)), tick ? tickEl(tick) : null, h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
+          h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, '📌') : null)));
+      const wasLong = onLongPress(row, () => {
+        const pinned = pinnedChats().includes(s.convo);
+        sheet(E.titleOf(s.convo), [{ label: pinned ? 'برداشتن سنجاق از بالای فهرست' : '📌 سنجاق به بالای فهرست', run: () => { togglePinChat(s.convo); render(); } }]);
+      });
+      row.addEventListener('click', () => { if (!wasLong()) go('#/c/' + encodeURIComponent(s.convo)); });
+      return row;
     });
     fill(list, 
       isIOS && !standalone() ? h('div', { class: 'hint' }, 'برای اینکه سپن مثل یک برنامه باز شود: دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' و بعد ', h('b', null, '«افزودن به صفحهٔ اصلی»'), '.') : null,
@@ -469,6 +575,8 @@ function ChatScreen(convo) {
     } }, 'فوروارد'));
   const emojiPanel = h('div', { class: 'emojis hidden' });
   const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, '➤');
+  const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, '🎤');
+  const recBar = h('div', { class: 'recbar hidden' });
   const attachBtn = h('button', { class: 'icon', title: 'فایل یا عکس', onclick: () => fileIn.click() }, '📎');
   const emojiBtn = h('button', { class: 'icon', title: 'شکلک' }, '🙂');
 
@@ -479,7 +587,7 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, pinBar, msgs, jump,
-    h('div', { class: 'composer' }, selBar, replyBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn), emojiPanel, fileIn));
+    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn, micBtn), emojiPanel, fileIn));
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);
@@ -487,9 +595,14 @@ function ChatScreen(convo) {
     const c = connText();
     let s = '', on = false;
     if (c) s = c;
-    else if (group) { const g = S.groups.find((x) => x.key === convo); s = g ? faNum(g.members.length) + ' عضو' : ''; }
+    else if (group && E.typingIn(convo).length) { const t = E.typingIn(convo); s = E.nameOf(t[0]) + (t.length > 1 ? ' و ' + faNum(t.length - 1) + ' نفر دیگر' : '') + ' در حال نوشتن…'; on = true; }
+    else if (group) {
+      const g = S.groups.find((x) => x.key === convo);
+      const n = g ? g.members.filter((u) => u !== S.me && E.user(u) && E.user(u).online).length : 0;
+      s = g ? faNum(g.members.length) + ' عضو' + (n ? '، ' + faNum(n) + ' آنلاین' : '') : '';
+    }
     else if (Date.now() - (S.typing[convo] || 0) < 4500) { s = 'در حال نوشتن…'; on = true; }
-    else { const u = E.user(convo); s = u && u.online ? 'آنلاین' : '@' + convo; on = !!(u && u.online); }
+    else { const u = E.user(convo); s = lastSeenText(u) || '@' + convo; on = !!(u && u.online); }
     sub.textContent = s;
     sub.classList.toggle('on', on);
   }
@@ -513,6 +626,7 @@ function ChatScreen(convo) {
   function setEditing(m) {
     editing = m;
     if (m) reply = null;
+    queueMicrotask(() => showMic());
     replyBar.classList.toggle('hidden', !m);
     if (m) {
       fill(replyBar, h('div', { class: 'reply' }, h('div', { class: 'ru' }, '✎ ویرایش پیام'), h('div', { class: 'rx' }, E.preview(m))),
@@ -566,6 +680,49 @@ function ChatScreen(convo) {
       h('div', { class: 'fs' }, prog != null ? faNum(Math.round(prog * 100)) + '٪ از ' + fmtSize(m.size) : fail && m.status !== 2 ? '⚠️ ' + fail : fmtSize(m.size))));
   }
 
+  // voice messages on screen: their play button, bars and time are updated in place while playing
+  const voiceEls = new Map();
+  function paintVoice(m) {
+    const v = voiceEls.get(m.id);
+    if (!v) return;
+    const st = Voice.state(m.id);
+    const frac = m.dur ? Math.min(1, st.pos / m.dur) : 0;
+    v.btn.textContent = S.progress.get(m.id) != null ? '⏳' : st.playing ? '❚❚' : '▶';
+    v.bars.forEach((b, i) => b.classList.toggle('on', (i + 0.5) / v.bars.length <= frac));
+    v.time.textContent = fmtDur(st.playing || st.pos ? st.pos : m.dur);
+  }
+  const offPlayer = Voice.onPlayer(() => { for (const id of voiceEls.keys()) { const m = (S.convos.get(convo) || []).find((x) => x.id === id); if (m) paintVoice(m); } });
+  function voicePart(m) {
+    const fail = S.failures.get(m.id);
+    if (!E.mediaUrl(m) && m.fileId && !fail && S.progress.get(m.id) == null && pref('autoImages', true) && m.size <= 25 * 1024 * 1024) E.download(m).catch(() => { });
+    const wave = (m.wave && m.wave.length ? m.wave : new Array(40).fill(3));
+    const bars = wave.map((x) => h('i', { style: { height: (3 + x * 0.7) + 'px' } }));
+    const btn = h('button', { class: 'vplay', onclick: async (e) => {
+      e.stopPropagation();
+      Voice.prime();
+      let url = E.mediaUrl(m);
+      if (!url) {
+        if (!m.fileId) return;
+        S.failures.delete(m.id);
+        try { url = await E.download(m); } catch { renderListB(); return; }
+      }
+      Voice.toggle(m.id, url);
+    } });
+    const waveEl = h('div', { class: 'wave', onclick: (e) => { e.stopPropagation(); const r = waveEl.getBoundingClientRect(); Voice.seek(m.id, (e.clientX - r.left) / r.width); } }, bars);
+    const time = h('span');
+    voiceEls.set(m.id, { btn, bars, time });
+    const el = h('div', { class: 'voice' }, btn, h('div', { class: 'vw' }, waveEl, h('div', { class: 'fs' }, time, fail && m.status !== 2 ? ' · ⚠️ ' + fail : '')));
+    paintVoice(m);
+    return el;
+  }
+
+  function reactionRow(m) {
+    const rx = E.reactionsOf(m);
+    if (!rx.length) return null;
+    return h('div', { class: 'rx' }, rx.map(([e, us]) => h('button', { class: 'rchip' + (us.includes(S.me) ? ' mine' : ''), onclick: (ev) => { ev.stopPropagation(); reactorsSheet(m); } },
+      e, us.length > 1 ? h('span', null, faNum(us.length)) : null)));
+  }
+
   function bubble(m) {
     if (m.type === 'call') return h('div', { class: 'call-line' }, '📞 ' + m.text + ' · ' + fmtTime(m.ts));
     const big = m.type === 'text' && !m.replyId && !m.replyText && Emoji.onlyEmojiCount(m.text) > 0;
@@ -576,10 +733,12 @@ function ChatScreen(convo) {
       m.replyText || m.replyId ? h('div', { class: 'reply', onclick: (e) => { e.stopPropagation(); if (m.replyId) scrollToMsg(m.replyId); } },
         h('div', { class: 'ru' }, m.replyUser === S.me ? 'شما' : E.nameOf(m.replyUser || '')), h('div', { class: 'rx' }, m.replyText || '')) : null,
       m.type === 'image' || m.type === 'file' ? mediaPart(m) : null,
+      m.type === 'voice' ? voicePart(m) : null,
       m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, highlight(m.text)) : null,
       m.mine && prog != null && m.status === 1 ? h('div', { class: 'bar-prog' }, h('i', { style: { width: Math.round(prog * 100) + '%' } })) : null,
       m.status === 2 ? h('div', { class: 'fail' }, '⚠️ ' + (S.failures.get(m.id) || 'ارسال نشد'), h('button', { onclick: (e) => { e.stopPropagation(); E.retry(m); } }, 'تلاش دوباره')) : null,
-      h('div', { class: 'meta' }, m.mine ? h('span', null, m.status === 1 ? '🕓' : m.status === 2 ? '⚠️' : '✓') : null, m.edited ? h('span', { title: fmtFull(m.edited) }, 'ویرایش‌شده ' + (startOfDay(m.edited) === startOfDay(m.ts) ? '' : fmtDay(m.edited) + ' ') + fmtTime(m.edited) + ' ·') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
+      reactionRow(m),
+      h('div', { class: 'meta' }, m.mine ? (m.status === 1 ? h('span', null, '🕓') : m.status === 2 ? h('span', null, '⚠️') : tickEl(E.tickOf(m))) : null, m.edited ? h('span', { title: fmtFull(m.edited) }, 'ویرایش‌شده ' + (startOfDay(m.edited) === startOfDay(m.ts) ? '' : fmtDay(m.edited) + ' ') + fmtTime(m.edited) + ' ·') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
     b.dataset.id = m.id;
     const pickable = m.id > 0 && m.status === 0 && !m.locked;
     return h('div', { class: 'm ' + (m.mine ? 'me' : 'them') + (selected && selected.has(m.id) ? ' sel' : ''), onclick: () => {
@@ -593,12 +752,17 @@ function ChatScreen(convo) {
   function menu(m) {
     if (m.locked) return sheet(null, [{ label: 'حذف از این دستگاه', danger: true, run: () => E.deleteLocal(m) }]);
     const pinned = S.pins[convo] === m.id;
+    const mineR = (m.reactions || {})[S.me];
+    const reactTop = m.id > 0 && m.status === 0 ? (close) => h('div', { class: 'rpick' },
+      E.QUICK_REACTIONS.map((e) => h('button', { class: e === mineR ? 'on' : '', onclick: async () => { close(); const err = await E.react(m, e === mineR ? null : e); if (err) toast(err); } }, e)),
+      h('button', { class: 'more', title: 'ایموجی‌های بیشتر', onclick: () => { close(); reactionPicker(m); } }, '➕')) : null;
     sheet(null, [
       m.id > 0 && { label: 'پاسخ', run: () => setReply(m) },
       E.canEdit(m) && { label: 'ویرایش', run: () => setEditing(m) },
       m.id > 0 && m.status === 0 && { label: 'فوروارد', run: () => forwardSheet([m]) },
       m.id > 0 && m.status === 0 && { label: 'انتخاب', run: () => setSelecting(new Set([m.id])) },
       m.id > 0 && { label: 'اطلاعات پیام', run: () => infoSheet(m) },
+      m.mine && group && m.id > 0 && m.status === 0 && { label: 'دیده شده توسط…', run: () => readersSheet(m) },
       m.type === 'text' && { label: 'کپی', run: () => navigator.clipboard.writeText(m.text).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
       (m.type === 'image' || m.type === 'file') && E.mediaUrl(m) && { label: m.type === 'image' ? 'ذخیرهٔ عکس / اشتراک' : 'ذخیره در Files / اشتراک', run: () => saveMedia(m) },
       m.id > 0 && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
@@ -608,7 +772,7 @@ function ChatScreen(convo) {
         const e = await E.deleteForAll(m); if (e) toast(e);
       } },
       { label: 'حذف از این دستگاه', danger: true, run: () => E.deleteLocal(m) },
-    ]);
+    ], reactTop);
   }
 
   function scrollToMsg(id) {
@@ -630,6 +794,7 @@ function ChatScreen(convo) {
     const atBottom = msgs.scrollHeight - msgs.scrollTop - msgs.clientHeight < 90;
     const fromBottom = msgs.scrollHeight - msgs.scrollTop;
     const kids = [];
+    voiceEls.clear();
     if (all.length > shown.length) kids.push(h('button', { class: 'btn sm flat', style: { alignSelf: 'center' }, onclick: () => { limit += 150; renderList(true); } }, 'پیام‌های قبلی'));
     let lastDay = 0;
     for (const m of shown) {
@@ -660,7 +825,14 @@ function ChatScreen(convo) {
 
   // composer
   const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
-  ta.addEventListener('input', () => { autosize(); if (ta.value.trim()) E.sendTyping(convo); });
+  const canMic = Voice.canRecord();
+  const showMic = () => { const mic = canMic && !ta.value.trim() && !editing; micBtn.classList.toggle('hidden', !mic); sendBtn.classList.toggle('hidden', mic); };
+  let draftTimer = null;
+  ta.addEventListener('input', () => {
+    autosize(); showMic();
+    if (ta.value.trim()) E.sendTyping(convo);
+    clearTimeout(draftTimer); draftTimer = setTimeout(() => { if (!editing) setDraft(convo, ta.value); }, 400);
+  });
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !isIOS && matchMedia('(pointer: fine)').matches) { e.preventDefault(); send(); } });
   async function send() {
     const text = ta.value.trim();
@@ -672,10 +844,59 @@ function ChatScreen(convo) {
       return;
     }
     E.sendText(convo, text, reply);
-    ta.value = ''; autosize(); setReply(null);
+    ta.value = ''; autosize(); setReply(null); setDraft(convo, ''); showMic();
     forceBottom = true;
     ta.focus();
   }
+
+  // ---- voice message: hold the mic, release to send; slide sideways to cancel, up to lock ----
+  let rec = null, recState = null, recTick = null;
+  function renderRec() {
+    if (!recState) { recBar.classList.add('hidden'); return; }
+    recBar.classList.remove('hidden');
+    const t = h('span', { class: 'rt' }, fmtDur(rec ? rec.elapsed() : 0));
+    const lvl = rec ? Math.min(1, rec.level() * 4) : 0;
+    fill(recBar, h('span', { class: 'rdot', style: { transform: 'scale(' + (0.8 + lvl * 0.6) + ')' } }), t,
+      recState.locked
+        ? [h('span', { class: 'grow' }), h('button', { class: 'btn sm flat', onclick: () => endRec(false) }, '🗑 لغو'), h('button', { class: 'btn sm', onclick: () => endRec(true) }, '➤ ارسال')]
+        : h('span', { class: 'grow hintx' }, '⇠ برای لغو بکشید · ⇡ قفل'));
+  }
+  async function beginRec(e) {
+    if (rec || recState) return;
+    e.preventDefault();
+    try { micBtn.setPointerCapture(e.pointerId); } catch { }
+    recState = { x: e.clientX, y: e.clientY, locked: false, up: false, t0: Date.now() };
+    Voice.stopAll();
+    renderRec();
+    try { rec = await Voice.startRecording(); } catch {
+      recState = null; renderRec();
+      toast('دسترسی به میکروفون داده نشد'); return;
+    }
+    // the permission prompt took the finger away: start over
+    if (!recState || (recState.up && !recState.locked)) { rec.cancel(); rec = null; if (recState && Date.now() - recState.t0 > 1500) toast('دوباره دکمه را نگه دارید و صحبت کنید'); recState = null; renderRec(); return; }
+    clearInterval(recTick); recTick = setInterval(renderRec, 200);
+    renderRec();
+  }
+  async function endRec(send) {
+    const r = rec, st = recState;
+    rec = null; recState = null; clearInterval(recTick); renderRec();
+    if (!r) return;
+    if (!send) { r.cancel(); return; }
+    const out = await r.stop();
+    if (!out || out.dur < 700 || !out.blob.size) { if (st && !st.locked) toast('برای ضبط پیام صوتی، دکمه را نگه دارید'); return; }
+    forceBottom = true;
+    await E.sendVoice(convo, out.blob, out.dur, out.wave, reply);
+    setReply(null);
+  }
+  micBtn.addEventListener('pointerdown', beginRec);
+  micBtn.addEventListener('pointermove', (e) => {
+    if (!recState || recState.locked) return;
+    if (Math.abs(e.clientX - recState.x) > 90) endRec(false);
+    else if (recState.y - e.clientY > 70) { recState.locked = true; renderRec(); }
+  });
+  micBtn.addEventListener('pointerup', () => { if (!recState) return; recState.up = true; if (!recState.locked && rec) endRec(true); });
+  micBtn.addEventListener('pointercancel', () => { if (recState && !recState.locked) { recState.up = true; if (rec) endRec(false); } });
+  micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
   sendBtn.addEventListener('click', (e) => { e.preventDefault(); send(); });
   sendBtn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the keyboard open
   fileIn.addEventListener('change', async () => {
@@ -704,17 +925,23 @@ function ChatScreen(convo) {
   const renderAll = batched(() => { renderHeader(); renderPin(); renderList(); });
   const renderListB = batched(() => renderList());
   const tick = setInterval(renderHeader, 2000);
+  ta.value = draftOf(convo);
+  showMic();
   renderHeader(); renderPin();
   return {
     el,
-    mounted: () => renderList(),
-    destroy: () => { clearInterval(tick); S.openConvo = null; },
+    mounted: () => { renderList(); autosize(); },
+    destroy: () => {
+      clearInterval(tick); clearInterval(recTick); offPlayer(); S.openConvo = null;
+      if (rec) { rec.cancel(); rec = null; }
+      if (!editing) setDraft(convo, ta.value);
+    },
     update(kind, data) {
       if (kind === 'msg') {
         if (data && data.convo !== convo) return;
         if (document.visibilityState === 'visible') E.markRead(convo);
         renderListB(); renderPin();
-      } else if (kind === 'progress' || kind === 'media') renderListB();
+      } else if (kind === 'progress' || kind === 'media' || kind === 'receipts' || kind === 'privacy' || (kind === 'react' && data && data.convo === convo)) renderListB();
       else if (kind === 'pins') { renderPin(); renderListB(); }
       else if (kind === 'users' || kind === 'typing' || kind === 'conn' || kind === 'groups' || kind === 'avatar') renderAll();
     },
@@ -744,7 +971,7 @@ function ProfileScreen(convo) {
     const av = avatar(convo, 'lg');
     if (url) av.addEventListener('click', () => viewer(url));
     fill(body, 
-      h('div', { class: 'profile-head' }, av, h('h2', null, E.nameOf(convo)), h('div', { class: 'u' }, '@' + convo), h('div', { class: 'u' }, u.online ? 'آنلاین' : '')),
+      h('div', { class: 'profile-head' }, av, h('h2', null, E.nameOf(convo)), h('div', { class: 'u' }, '@' + convo), h('div', { class: 'u' }, lastSeenText(u))),
       u.bio ? h('div', { class: 'hint', dir: 'auto' }, u.bio) : null,
       h('div', { class: 'actions' },
         h('button', { class: 'btn', onclick: () => go('#/c/' + encodeURIComponent(convo)) }, '💬 پیام'),
@@ -802,6 +1029,31 @@ function SettingsScreen() {
     return c;
   };
   const setting = (label, desc, control) => h('div', { class: 'setting' }, h('div', { class: 'l' }, label, desc ? h('div', { class: 'd' }, desc) : null), control);
+  // privacy lives on the server (it decides what others get); both switches work both ways
+  const privacy = (key, label, desc) => {
+    const c = h('input', { type: 'checkbox', checked: !S.privacy[key], onchange: async () => {
+      c.disabled = true;
+      const e = await E.setPrivacy({ [key]: !c.checked });
+      c.disabled = false;
+      if (e) { toast(e); c.checked = !S.privacy[key]; }
+    } });
+    return setting(label, desc, c);
+  };
+  // notifications while the web app is closed (Web Push)
+  const pushBox = h('div');
+  async function renderPush() {
+    const st = await E.pushState();
+    const status = { unsupported: 'این مرورگر پشتیبانی نمی‌کند', denied: 'اجازهٔ اعلان رد شده (از تنظیمات گوشی › سپن › اعلان‌ها روشن کنید)', on: 'روشن', off: 'خاموش' }[st];
+    const busy = (fn) => async (e) => { e.target.disabled = true; const r = await fn(); if (r) toast(r); e.target.disabled = false; renderPush(); };
+    fill(pushBox,
+      setting('اعلان وقتی سپن بسته است', status,
+        st === 'on' ? h('button', { class: 'btn sm flat', onclick: busy(async () => { await E.disablePush(); return null; }) }, 'خاموش')
+          : st === 'off' ? h('button', { class: 'btn sm', onclick: busy(E.enablePush) }, 'روشن کردن') : null),
+      st === 'on' ? setting('آزمایش اعلان', 'یک اعلان آزمایشی از سرور فرستاده می‌شود', h('button', { class: 'btn sm flat', onclick: busy(E.testPush) }, 'ارسال')) : null,
+      isIOS && !standalone() ? h('div', { class: 'hint' }, 'در آیفون اعلان فقط وقتی کار می‌کند که سپن را با «افزودن به صفحهٔ اصلی» نصب کرده باشید و از همان آیکون باز کنید (iOS ۱۶٫۴ به بالا).') : null,
+      h('div', { class: 'hint' }, 'متن پیام در اعلان نمی‌آید (پیام‌ها سرتاسری رمزنگاری‌اند)؛ فقط نام فرستنده.'));
+  }
+  renderPush();
 
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
     h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'), h('h1', null, 'تنظیمات')),
@@ -817,9 +1069,12 @@ function SettingsScreen() {
       setting('اندازهٔ متن', null, select('fontSize', 16, [[14, 'کوچک'], [16, 'معمولی'], [18, 'بزرگ'], [20, 'خیلی بزرگ']], applyLook)),
       h('div', { class: 'section' }, 'اعلان‌ها'),
       setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
-      h('div', { class: 'hint' }, 'در آیفون، نسخهٔ وب فقط وقتی باز است پیام و تماس را دریافت می‌کند. بعد از باز کردن، همهٔ پیام‌های جامانده خودکار می‌رسند.'),
+      pushBox,
+      h('div', { class: 'section' }, 'حریم خصوصی'),
+      privacy('hide_seen', 'نمایش «دیده شد» (دو تیک آبی)', 'اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.'),
+      privacy('hide_last_seen', 'نمایش آنلاین و آخرین بازدید', 'اگر خاموش کنید، دیگران فقط «اخیراً آنلاین بوده» می‌بینند و شما هم آخرین بازدید دیگران را نمی‌بینید.'),
       h('div', { class: 'section' }, 'داده و فضا'),
-      setting('دانلود خودکار عکس‌ها', 'عکس‌های تا ۲۵ مگابایت', toggle('autoImages', true)),
+      setting('دانلود خودکار عکس‌ها و پیام‌های صوتی', 'تا ۲۵ مگابایت', toggle('autoImages', true)),
       setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن')),
       h('div', { class: 'section' }, 'امنیت'),
       setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
@@ -833,6 +1088,7 @@ function SettingsScreen() {
   renderAv();
   return { el, update: (k) => { if (k === 'users' || k === 'avatar') renderAv(); } };
 }
+// (privacy switches read S.privacy when the screen opens; it is refreshed from the server on start)
 
 /** Center-crops a picked photo to 320x320 and encodes it as WebP (what the server accepts). */
 async function toAvatar(file) {
