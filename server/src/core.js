@@ -97,6 +97,8 @@ function deleteUser(username) {
   db.prepare('DELETE FROM blocks WHERE viewer=? OR target=?').run(username, username);
   db.prepare('DELETE FROM disconnects WHERE a=? OR b=?').run(username, username);
   db.prepare('DELETE FROM contact_requests WHERE from_user=? OR to_user=?').run(username, username);
+  db.prepare('DELETE FROM receipts WHERE username=?').run(username);
+  db.prepare('DELETE FROM push_subs WHERE username=?').run(username);
   return db.prepare('DELETE FROM users WHERE username=?').run(username).changes > 0;
 }
 
