@@ -196,7 +196,7 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .row .top .tick { flex: none; font-size: 13px; }
 .row .draft { color: var(--danger); }
 .pinmark { font-size: 13px; flex: none; opacity: .7; }
-.rx { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 1px; }
+.rxn { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 1px; }
 .rchip { border: 0; border-radius: 13px; padding: 1px 8px; background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 15px; display: inline-flex; gap: 4px; align-items: center; }
 .rchip span { font-size: 12.5px; color: var(--accent); font-weight: 600; }
 .rchip.mine { background: var(--accent); }
@@ -221,3 +221,7 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .recbar .hintx { color: var(--fg2); font-size: 14px; text-align: center; }
 .recbar .grow { flex: 1; }
 .pick .grow { flex: 1; }
+.loc { display: flex; align-items: center; gap: 10px; padding: 4px 0; cursor: pointer; min-width: 200px; }
+.loc .fi { width: 44px; height: 44px; border-radius: 50%; background: #e53935; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; flex: none; }
+.loc .fn { font-weight: 600; font-size: 14.5px; }
+.loc .fs { font-size: 12.5px; color: var(--fg2); }

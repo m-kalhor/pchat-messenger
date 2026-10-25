@@ -45,6 +45,7 @@ const pubOf = (u) => (u === S.me ? S.identity.pubB64 : (user(u) || {}).pubkey ||
 export function preview(m) {
   if (m.type === 'image') return '🖼 عکس';
   if (m.type === 'voice') return '🎤 پیام صوتی';
+  if (m.type === 'location') return '📍 موقعیت مکانی';
   if (m.type === 'file') return '📎 ' + (m.name || 'فایل');
   if (m.type === 'call') return '📞 ' + m.text;
   return m.text || '';
@@ -396,6 +397,7 @@ async function handleMsg(o) {
     m = {
       id: o.id, convo, sender: o.from, mine, ts: o.ts, type: voice ? 'voice' : plain.t || 'text', text: plain.x || '', edited: o.edited || 0,
       ...(voice ? { dur: Number(plain.d) || 0, wave: Array.isArray(plain.wf) ? plain.wf.slice(0, 100).map((x) => Math.max(0, Math.min(31, x | 0))) : [] } : {}),
+      ...(locOf(plain) ? { type: 'location', loc: locOf(plain) } : {}),
       fwFrom: plain.f ? plain.f.u || null : null, fwName: plain.f ? plain.f.n || null : null,
       fileId: o.fileId || null, name: plain.n || null, mime: plain.m || null, size: plain.s || 0, fk: plain.fk || null,
       w: plain.w || 0, h: plain.h || 0, replyId: r ? r.id || 0 : 0, replyUser: r ? r.u || null : null, replyText: r ? r.x || null : null, status: 0,
@@ -434,6 +436,39 @@ async function handleChange(o) {
     } catch { }
   }
   if (o.seq > S.cseq) { S.cseq = o.seq; await store.kvSet('cseq', S.cseq); }
+}
+
+// ---------------- location ----------------
+/**
+ * A location travels as a text message with an extra "loc" field, so apps before 1.4 still show it as
+ * text with a map link. Only the point is sent (no live updates).
+ */
+function locOf(plain) {
+  const l = plain && plain.t === 'text' && plain.loc;
+  if (!l || !isFinite(l.lat) || !isFinite(l.lon) || Math.abs(l.lat) > 90 || Math.abs(l.lon) > 180) return null;
+  return { lat: +l.lat, lon: +l.lon, acc: Math.max(0, Math.round(+l.acc || 0)) };
+}
+export const fmtCoord = (l) => l.lat.toFixed(5) + ', ' + l.lon.toFixed(5);
+const locText = (l) => '📍 موقعیت مکانی: https://www.openstreetmap.org/?mlat=' + l.lat.toFixed(6) + '&mlon=' + l.lon.toFixed(6) + '#map=17/' + l.lat.toFixed(6) + '/' + l.lon.toFixed(6);
+const locJson = (m) => (m.type === 'location' && m.loc ? { t: 'text', x: locText(m.loc), loc: { lat: m.loc.lat, lon: m.loc.lon, acc: m.loc.acc || 0 } } : {});
+
+/** Reads this device's position (asks for permission the first time). Resolves to { lat, lon, acc }. */
+export function currentLocation() {
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) return reject(userError('این مرورگر موقعیت مکانی ندارد'));
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lon: p.coords.longitude, acc: Math.round(p.coords.accuracy || 0) }),
+      (e) => reject(userError(e.code === 1 ? 'اجازهٔ دسترسی به موقعیت مکانی داده نشد' : 'موقعیت مکانی پیدا نشد؛ GPS را روشن کنید و دوباره امتحان کنید')),
+      { enableHighAccuracy: true, timeout: 20000, maximumAge: 30000 });
+  });
+}
+export async function sendLocation(convo, loc, reply) {
+  const m = { id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'location', text: '', loc, status: 1, ...replyOf(reply) };
+  addLocal(m);
+  await store.putMsg(m);
+  markRead(convo);
+  emit('msg', m);
+  flush();
 }
 
 // ---------------- delivered / seen ticks ----------------
@@ -619,6 +654,7 @@ const fileJson = (m) => ({
 });
 function plainOf(m, text = m.text) {
   const p = { t: m.type, x: text, ...replyJson(m), ...forwardJson(m) };
+  if (m.type === 'location') return { ...p, ...locJson(m) };
   if (m.type !== 'text') Object.assign(p, fileJson(m));
   return p;
 }
@@ -667,11 +703,12 @@ export async function forward(msgs, targets, hideSender) {
         id: localId(), convo: t, sender: S.me, mine: true, ts: Date.now() + n++, type: src.type, text: src.text || '',
         name: src.name || null, mime: src.mime || null, size: src.size || 0, fk: src.fk || null, w: src.w || 0, h: src.h || 0,
         ...(src.type === 'voice' ? { dur: src.dur || 0, wave: src.wave || [] } : {}),
+        ...(src.type === 'location' ? { loc: src.loc } : {}),
         status: 1, replyId: 0, replyUser: null, replyText: null,
         fwFrom: fw, fwName: fw ? src.fwName || nameOf(src.sender) : null,
       };
       addLocal(m);
-      if (m.type === 'text') await store.putMsg(m);
+      if (m.type === 'text' || m.type === 'location') await store.putMsg(m);
       else {
         Object.defineProperty(m, '_fileId', { value: src.fileId, enumerable: false, writable: true });
         const blob = blobs.get(src.fileId);
@@ -751,10 +788,10 @@ export async function flush() {
   if (flushing || !api.getToken()) return;
   flushing = true;
   try {
-    const pending = [...S.convos.values()].flat().filter((m) => m.status === 1 && m.type === 'text').sort((a, b) => a.ts - b.ts);
+    const pending = [...S.convos.values()].flat().filter((m) => m.status === 1 && (m.type === 'text' || m.type === 'location')).sort((a, b) => a.ts - b.ts);
     for (const m of pending) {
       try {
-        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m) });
+        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m), ...locJson(m) });
         const r = await api.send(m.convo, payload);
         await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0 });
       } catch (e) {
@@ -780,7 +817,7 @@ async function swapLocal(local, real) {
 
 export function retry(m) {
   S.failures.delete(m.id);
-  if (m.type === 'text') { m.status = 1; store.putMsg(m); emit('msg', m); flush(); }
+  if (m.type === 'text' || m.type === 'location') { m.status = 1; store.putMsg(m); emit('msg', m); flush(); }
   else if (m._file) { m.status = 1; emit('msg', m); uploadFile(m); }
 }
 

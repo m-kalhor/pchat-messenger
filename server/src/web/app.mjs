@@ -198,6 +198,19 @@ function readersSheet(m) {
   document.body.append(v);
 }
 
+/** Opens a shared location in a map app of the phone (the server never sees the point). */
+function openMap(l) {
+  const ll = l.lat.toFixed(6) + ',' + l.lon.toFixed(6);
+  const open = (url) => { const a = h('a', { href: url, target: '_blank', rel: 'noopener' }); document.body.append(a); a.click(); a.remove(); };
+  sheet(E.fmtCoord(l), [
+    isIOS && { label: 'Apple Maps', run: () => open('https://maps.apple.com/?ll=' + ll + '&q=' + encodeURIComponent('موقعیت')) },
+    { label: 'Google Maps', run: () => open('https://www.google.com/maps/search/?api=1&query=' + ll) },
+    { label: 'نشان', run: () => open('https://neshan.org/maps/@' + ll + ',17z') },
+    { label: 'OpenStreetMap', run: () => open('https://www.openstreetmap.org/?mlat=' + l.lat.toFixed(6) + '&mlon=' + l.lon.toFixed(6) + '#map=17/' + l.lat.toFixed(6) + '/' + l.lon.toFixed(6)) },
+    { label: 'کپی مختصات', run: () => navigator.clipboard.writeText(ll).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
+  ]);
+}
+
 /** Who reacted with what; my own reaction can be removed here. */
 function reactorsSheet(m) {
   const mine = (m.reactions || {})[S.me];
@@ -577,7 +590,21 @@ function ChatScreen(convo) {
   const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, '➤');
   const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, '🎤');
   const recBar = h('div', { class: 'recbar hidden' });
-  const attachBtn = h('button', { class: 'icon', title: 'فایل یا عکس', onclick: () => fileIn.click() }, '📎');
+  const attachBtn = h('button', { class: 'icon', title: 'پیوست', onclick: () => sheet(null, [
+    { label: '🖼 عکس یا فایل', run: () => fileIn.click() },
+    { label: '📍 موقعیت مکانی', run: shareLocation },
+  ]) }, '📎');
+  async function shareLocation() {
+    toast('در حال پیدا کردن موقعیت…');
+    let loc;
+    try { loc = await E.currentLocation(); } catch (e) { toast(E.errText(e)); return; }
+    document.querySelectorAll('.toast').forEach((t) => t.remove());
+    const ok = await confirmBox('ارسال موقعیت مکانی', E.fmtCoord(loc) + (loc.acc ? ' (دقت حدود ' + faNum(loc.acc) + ' متر)' : '') + ' برای ' + E.titleOf(convo) + ' فرستاده شود؟', 'ارسال');
+    if (!ok) return;
+    forceBottom = true;
+    await E.sendLocation(convo, loc, reply);
+    setReply(null);
+  }
   const emojiBtn = h('button', { class: 'icon', title: 'شکلک' }, '🙂');
 
   const el = h('div', { class: 'chat', style: { display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' } },
@@ -716,10 +743,17 @@ function ChatScreen(convo) {
     return el;
   }
 
+  function locationPart(l) {
+    return h('div', { class: 'loc', onclick: (e) => { e.stopPropagation(); openMap(l); } },
+      h('div', { class: 'fi' }, '📍'),
+      h('div', { style: { minWidth: '0' } }, h('div', { class: 'fn' }, 'موقعیت مکانی'),
+        h('div', { class: 'fs ltr' }, E.fmtCoord(l)), l.acc ? h('div', { class: 'fs' }, 'دقت حدود ' + faNum(l.acc) + ' متر') : null));
+  }
+
   function reactionRow(m) {
     const rx = E.reactionsOf(m);
     if (!rx.length) return null;
-    return h('div', { class: 'rx' }, rx.map(([e, us]) => h('button', { class: 'rchip' + (us.includes(S.me) ? ' mine' : ''), onclick: (ev) => { ev.stopPropagation(); reactorsSheet(m); } },
+    return h('div', { class: 'rxn' }, rx.map(([e, us]) => h('button', { class: 'rchip' + (us.includes(S.me) ? ' mine' : ''), onclick: (ev) => { ev.stopPropagation(); reactorsSheet(m); } },
       e, us.length > 1 ? h('span', null, faNum(us.length)) : null)));
   }
 
@@ -734,6 +768,7 @@ function ChatScreen(convo) {
         h('div', { class: 'ru' }, m.replyUser === S.me ? 'شما' : E.nameOf(m.replyUser || '')), h('div', { class: 'rx' }, m.replyText || '')) : null,
       m.type === 'image' || m.type === 'file' ? mediaPart(m) : null,
       m.type === 'voice' ? voicePart(m) : null,
+      m.type === 'location' && m.loc ? locationPart(m.loc) : null,
       m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, highlight(m.text)) : null,
       m.mine && prog != null && m.status === 1 ? h('div', { class: 'bar-prog' }, h('i', { style: { width: Math.round(prog * 100) + '%' } })) : null,
       m.status === 2 ? h('div', { class: 'fail' }, '⚠️ ' + (S.failures.get(m.id) || 'ارسال نشد'), h('button', { onclick: (e) => { e.stopPropagation(); E.retry(m); } }, 'تلاش دوباره')) : null,
