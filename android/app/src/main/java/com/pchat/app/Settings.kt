@@ -184,6 +184,19 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
 
             // ---- privacy and security ----
             SectionTitle("حریم خصوصی و امنیت")
+            val hideSeen by Engine.hideSeen.collectAsState()
+            val hideLast by Engine.hideLastSeen.collectAsState()
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            SwitchRow(
+                "نمایش «دیده شد» (دو تیک آبی)",
+                "اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.",
+                !hideSeen
+            ) { v -> scope.launch { Engine.setPrivacy(!v, hideLast)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
+            SwitchRow(
+                "نمایش آنلاین و آخرین بازدید",
+                "اگر خاموش کنید، دیگران فقط «اخیراً آنلاین بوده» می‌بینند و شما هم آخرین بازدید دیگران را نمی‌بینید.",
+                !hideLast
+            ) { v -> scope.launch { Engine.setPrivacy(hideSeen, !v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
             SettingRow("قفل برنامه", if (lockOn) "روشن" else "خاموش") { showLock = true }
             SettingRow("اثرانگشت کلیدها", "مقایسهٔ کلید امنیتی با مخاطبان") { showKeys = true }
             SettingRow("رمز کلید", when (backedUp) {
@@ -193,7 +206,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
 
             // ---- data and storage ----
             SectionTitle("داده و حافظه")
-            Text("دانلود خودکار عکس‌ها", fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+            Text("دانلود خودکار عکس‌ها و پیام‌های صوتی", fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             val auto = Prefs.autoDownload.also { notifTick }
             for ((v, label) in listOf(Prefs.AUTO_ALWAYS to "همیشه", Prefs.AUTO_WIFI to "فقط با وای‌فای", Prefs.AUTO_NEVER to "هرگز (با ضربه دانلود شود)")) {
                 RadioRow(label, auto == v) { Prefs.autoDownload = v }
@@ -338,7 +351,8 @@ fun ContactProfileDialog(user: String, onClose: () -> Unit) {
                 Box(Modifier.clip(CircleShape).clickable(enabled = (u?.avatarVer ?: 0) > 0) { showPhoto = true }) { Avatar(user, false, 120) }
                 Spacer(Modifier.height(12.dp))
                 Text(Engine.nameOf(user), fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                Text("@$user" + if (u?.online == true) " · آنلاین" else "", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                Text("@$user", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                if (u != null) Text(U.lastSeen(u), fontSize = 13.sp, color = if (u.online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 val bio = u?.bio
                 if (!bio.isNullOrBlank()) {
                     Spacer(Modifier.height(14.dp))

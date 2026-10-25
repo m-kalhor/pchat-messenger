@@ -47,7 +47,37 @@ object U {
     fun preview(m: Msg): String = when (m.type) {
         "image" -> "🖼 عکس"
         "file" -> "📎 " + (m.fileName ?: "فایل")
+        "voice" -> "🎤 پیام صوتی" + if (m.dur > 0) " (" + dur(m.dur) + ")" else ""
+        "location" -> "📍 موقعیت مکانی"
         else -> m.text
+    }
+
+    /** 0:07, 1:25, 12:03 */
+    fun dur(ms: Long): String {
+        val s = (ms / 1000).coerceAtLeast(0)
+        return "%d:%02d".format(Locale.US, s / 60, s % 60)
+    }
+
+    /** «آنلاین», «۵ دقیقه پیش آنلاین بود», «آخرین بازدید دیروز ۱۴:۲۰», or «اخیراً آنلاین بوده» when hidden. */
+    fun lastSeen(u: UserInfo?): String {
+        if (u == null) return ""
+        if (u.online) return "آنلاین"
+        val ls = u.lastSeen
+        if (ls != null) {
+            val d = System.currentTimeMillis() - ls
+            if (d < 60_000) return "لحظاتی پیش آنلاین بود"
+            if (d < 3600_000) return "${d / 60_000} دقیقه پیش آنلاین بود"
+            val today = dayKey(System.currentTimeMillis())
+            val dk = dayKey(ls)
+            val yesterday = dayKey(System.currentTimeMillis() - 86_400_000L)
+            return when (dk) {
+                today -> "آخرین بازدید امروز " + time(ls)
+                yesterday -> "آخرین بازدید دیروز " + time(ls)
+                else -> "آخرین بازدید " + day(ls)
+            }
+        }
+        if (u.hidden) return if (u.recently) "اخیراً آنلاین بوده" else "مدت‌ها پیش آنلاین بوده"
+        return "آفلاین"
     }
 
     fun fileName(ctx: Context, uri: Uri): String {

@@ -19,7 +19,11 @@ import javax.net.ssl.X509TrustManager
 
 data class UserInfo(
     val username: String, val pubkey: String?, val online: Boolean,
-    val displayName: String? = null, val avatarVer: Int = 0, val dm: Boolean = true, val bio: String? = null
+    val displayName: String? = null, val avatarVer: Int = 0, val dm: Boolean = true, val bio: String? = null,
+    /** when they were last online (null = online now, unknown or hidden) */
+    val lastSeen: Long? = null,
+    /** "last seen" is hidden between us (either side hides it); then only [recently] (within 3 days) is known */
+    val hidden: Boolean = false, val recently: Boolean = false
 )
 data class ContactRequest(val username: String, val displayName: String?, val status: String, val ts: Long)
 data class GroupInfo(val key: String, val name: String, val members: List<String>)
@@ -33,7 +37,9 @@ fun parseUsers(raw: String): List<UserInfo> {
         UserInfo(
             o.getString("username"), if (o.isNull("pubkey")) null else o.getString("pubkey"), o.getBoolean("online"),
             if (o.isNull("display_name")) null else o.getString("display_name"), o.optInt("avatar_ver", 0), o.optBoolean("dm", true),
-            if (o.isNull("bio")) null else o.optString("bio", "").ifEmpty { null }
+            if (o.isNull("bio")) null else o.optString("bio", "").ifEmpty { null },
+            if (o.isNull("last_seen")) null else o.optLong("last_seen").takeIf { it > 0 },
+            o.optBoolean("hidden", false), o.optBoolean("recently", false)
         )
     }
 }
@@ -186,6 +192,38 @@ object Api {
         return (0 until a.length()).map { a.getJSONObject(it).let { v -> v.getString("payload") to v.getLong("ts") } }
     }
 
+    /** {hide_seen, hide_last_seen, ...} of my account. */
+    fun me(): JSONObject = JSONObject(exec(req("/api/me").get().build()))
+
+    /** Saves my privacy switches; returns the stored values. */
+    fun privacy(hideSeen: Boolean, hideLastSeen: Boolean): JSONObject {
+        val b = JSONObject().put("hide_seen", hideSeen).put("hide_last_seen", hideLastSeen)
+        return JSONObject(exec(req("/api/privacy").post(b.toString().toRequestBody(JSON)).build()))
+    }
+
+    /** This device's app came to the screen (active) or left it. */
+    fun presence(dev: String, active: Boolean) {
+        exec(req("/api/presence").post(JSONObject().put("dev", dev).put("active", active).toString().toRequestBody(JSON)).build())
+    }
+
+    /** Delivered / seen watermarks: target -> (delivered, seen). */
+    fun receipts(items: Map<String, Pair<Long, Long>>) {
+        val arr = JSONArray()
+        for ((t, v) in items) arr.put(JSONObject().put("target", t).put("delivered", v.first).put("seen", v.second))
+        exec(req("/api/receipts").post(JSONObject().put("items", arr).toString().toRequestBody(JSON)).build())
+    }
+
+    /** "typing…" in a group. */
+    fun typing(target: String) {
+        exec(req("/api/typing").post(JSONObject().put("target", target).toString().toRequestBody(JSON)).build())
+    }
+
+    /** Sets my reaction to a message; null removes it. */
+    fun react(id: Long, emoji: String?) {
+        val b = JSONObject().put("id", id).put("emoji", emoji ?: JSONObject.NULL)
+        exec(req("/api/react").post(b.toString().toRequestBody(JSON)).build())
+    }
+
     /** Returns true if the other side was online and received the signal. */
     fun signal(target: String, kind: String, payload: String): Boolean {
         val b = JSONObject().put("target", target).put("kind", kind).put("payload", payload)
@@ -241,9 +279,11 @@ object Api {
     fun cancelStream() { streamCall?.cancel() }
 
     /** Blocks while connected. Server sends a ping every 15 s, so a 45 s read timeout detects dead links. */
-    /** csince = last edit/delete number seen (-1 = none yet: the server only reports the current number). */
-    fun stream(since: Long, csince: Long, onOpen: () -> Unit, onEvent: (String, String) -> Unit) {
-        val call = streamClient.newCall(req("/api/events?since=$since&csince=$csince").header("Accept", "text/event-stream").get().build())
+    /** csince / rsince = last edit-delete / reaction number seen (-1 = none yet: the server only reports the current number). */
+    /** dev identifies this phone; active = the app is on screen (others see "online" only then). */
+    fun stream(since: Long, csince: Long, rsince: Long, dev: String, active: Boolean, onOpen: () -> Unit, onEvent: (String, String) -> Unit) {
+        val q = "since=$since&csince=$csince&rsince=$rsince&dev=$dev&active=${if (active) 1 else 0}"
+        val call = streamClient.newCall(req("/api/events?$q").header("Accept", "text/event-stream").get().build())
         streamCall = call
         call.execute().use { resp ->
             if (!resp.isSuccessful) throw HttpError(resp.code, "stream")

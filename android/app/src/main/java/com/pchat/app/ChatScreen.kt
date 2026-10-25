@@ -8,9 +8,19 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
+import android.Manifest
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.widget.Toast
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Size
+import androidx.core.content.ContextCompat
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -128,6 +138,9 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     val progress by Engine.progress.collectAsState()
     val failures by Engine.failures.collectAsState()
     val pins by Engine.pins.collectAsState()
+    val receipts by Engine.receipts.collectAsState()
+    val gtyping by Engine.gtyping.collectAsState()
+    val hideSeen by Engine.hideSeen.collectAsState()
     var limit by remember(convo) { mutableStateOf(400) }
     var searching by remember(convo) { mutableStateOf(false) }
     var query by remember(convo) { mutableStateOf("") }
@@ -137,8 +150,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     }
     val msgs = results ?: allMsgs
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
-    var text by remember { mutableStateOf("") }
-    var field by remember { mutableStateOf(TextFieldValue("")) }
+    var text by remember(convo) { mutableStateOf(Prefs.draft(convo)) }
+    var field by remember(convo) { mutableStateOf(TextFieldValue(text, TextRange(text.length))) }
     var emojiOpen by remember { mutableStateOf(false) }
     val keyboard = LocalSoftwareKeyboardController.current
     val inputFocus = remember { FocusRequester() }
@@ -174,7 +187,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     }
     LaunchedEffect(tick) { Engine.markReadSilently(convo) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
-    LaunchedEffect(text) { if (text.isNotEmpty()) Engine.sendTyping(convo) }
+    // the unsent text stays as a draft («پیش‌نویس» in the chat list)
+    val draftNow by rememberUpdatedState(if (editing == null) text else null)
+    LaunchedEffect(text, editing) { if (editing == null) { delay(400); Prefs.setDraft(convo, text) } }
+    DisposableEffect(convo) { onDispose { draftNow?.let { Prefs.setDraft(convo, it) } } }
 
     val rowsList = remember(msgs) {
         val out = ArrayList<Any>()
@@ -218,16 +234,78 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
         }
     }
 
+    // ---- voice messages: hold the mic to record, release to send, slide sideways to cancel, up to lock ----
+    var recorder by remember { mutableStateOf<VoiceRecorder?>(null) }
+    var recLocked by remember { mutableStateOf(false) }
+    var recElapsed by remember { mutableStateOf(0L) }
+    var recDrag by remember { mutableStateOf(0f) }
+    val micPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        error = if (ok) "اجازه داده شد؛ برای ضبط، دکمهٔ میکروفون را نگه دارید" else "برای ضبط پیام صوتی اجازهٔ میکروفون لازم است"
+    }
+    LaunchedEffect(recorder) { while (recorder != null) { recElapsed = recorder?.elapsed() ?: 0L; delay(100) } }
+    DisposableEffect(convo) { onDispose { recorder?.cancel(); recorder = null } }
+    fun startRec(): Boolean {
+        if (ContextCompat.checkSelfPermission(ctxForToast, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            micPerm.launch(Manifest.permission.RECORD_AUDIO)
+            return false
+        }
+        if (recorder != null) return false
+        VoicePlayer.stop()
+        val r = VoiceRecorder(ctxForToast, Engine.newRecordingFile())
+        return try { r.start(); recorder = r; recLocked = false; recDrag = 0f; true } catch (e: Exception) {
+            r.cancel(); error = "ضبط صدا شروع نشد"; false
+        }
+    }
+    fun finishRec(send: Boolean) {
+        val r = recorder ?: return
+        recorder = null; recLocked = false; recDrag = 0f
+        if (!send) { r.cancel(); return }
+        val res = r.stop()
+        if (res == null || res.first < 700) { r.file.delete(); return }
+        Engine.sendVoice(convo, r.file, res.first, res.second, replyTo)
+        replyTo = null
+    }
+    val onRecStart by rememberUpdatedState(::startRec)
+    val endRec: (Int) -> Unit = { result -> if (result == 2) recLocked = true else finishRec(result == 1) }
+    val onRecEnd by rememberUpdatedState(endRec)
+
+    // ---- location: one point, after asking ----
+    var locating by remember { mutableStateOf(false) }
+    var locConfirm by remember { mutableStateOf<Loc?>(null) }
+    fun fetchLocation() {
+        locating = true
+        scope.launch {
+            val l = GeoLocation.current(ctxForToast)
+            locating = false
+            if (l == null) error = "موقعیت مکانی پیدا نشد؛ مکان (GPS) گوشی را روشن کنید و دوباره امتحان کنید" else locConfirm = l
+        }
+    }
+    val locPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { res ->
+        if (res.values.any { it }) fetchLocation() else error = "اجازهٔ دسترسی به موقعیت مکانی داده نشد"
+    }
+    fun shareLocation() {
+        val has = listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+            .any { ContextCompat.checkSelfPermission(ctxForToast, it) == PackageManager.PERMISSION_GRANTED }
+        if (has) fetchLocation() else locPerm.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+    }
+
+    var reactFor by remember { mutableStateOf<Msg?>(null) }
+    var reactorsOf by remember { mutableStateOf<Msg?>(null) }
+    var seenBy by remember { mutableStateOf<Msg?>(null) }
+    fun react(m: Msg, e: String?) { scope.launch { Engine.react(m, e)?.let { error = it } } }
+
     val peer = users.firstOrNull { it.username == convo }
     val group = groups.firstOrNull { it.key == convo }
+    val groupTyping = remember(gtyping, now) { if (isGroup) Engine.typingIn(convo, now) else emptyList() }
     val subtitle = when {
+        isGroup && groupTyping.isNotEmpty() ->
+            (if (groupTyping.size == 1) Engine.nameOf(groupTyping[0]) else "${groupTyping.size} نفر") + " در حال نوشتن…"
         isGroup -> {
             val members = group?.members ?: emptyList()
             "${members.size} عضو، ${members.count { m -> users.firstOrNull { it.username == m }?.online == true }} آنلاین"
         }
         (typing[convo] ?: 0L) > now - 4000 -> "در حال نوشتن…"
-        peer?.online == true -> "آنلاین"
-        else -> "آفلاین"
+        else -> U.lastSeen(peer)
     }
     var showProfile by remember { mutableStateOf(false) }
     var muteMenu by remember { mutableStateOf(false) }
@@ -325,7 +403,9 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                             if (it is Msg) {
                                 Bubble(
                                     m = it, group = isGroup, progress = progress[it.id], failure = failures[it.id],
-                                    pinned = pinnedId == it.id,
+                                    pinned = pinnedId == it.id, tick = Engine.tickOf(it, receipts).also { hideSeen },
+                                    onReact = { e -> react(it, e) }, onMoreReactions = { reactFor = it },
+                                    onReactors = { reactorsOf = it }, onSeenBy = { seenBy = it },
                                     onImage = { p -> viewer = p },
                                     onReply = { replyTo = it },
                                     onPin = { scope.launch { error = Engine.pinMessage(convo, if (pinnedId == it.id) null else it.id) } },
@@ -375,8 +455,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     }
                 }
             }
-            if (sending) {
-                Text("در حال آماده‌سازی فایل…", fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp))
+            if (sending || locating) {
+                Text(if (locating) "در حال پیدا کردن موقعیت مکانی…" else "در حال آماده‌سازی فایل…", fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp))
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             }
             error?.let {
@@ -416,11 +496,28 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
             } else Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
               Column {
                 Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
+                  val rec = recorder
+                  if (rec != null) {
+                    // recording: elapsed time and how to cancel / lock
+                    val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
+                    Row(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFE53935).copy(alpha = blink)))
+                        Spacer(Modifier.width(8.dp))
+                        Text(U.dur(recElapsed), fontSize = 16.sp)
+                        Spacer(Modifier.weight(1f))
+                        if (recLocked) TextButton(onClick = { finishRec(false) }) { Text("لغو", color = MaterialTheme.colorScheme.error) }
+                        else Text(
+                            "برای لغو به کنار بکشید · برای قفل بالا",
+                            fontSize = 12.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = (0.6f - kotlin.math.abs(recDrag) / 400f).coerceAtLeast(0.15f))
+                        )
+                    }
+                  } else {
                     Box {
                         IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
                         DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
                             DropdownMenuItem(text = { Text("🖼  عکس (بدون فشرده‌سازی)") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
                             DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
+                            DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
                         }
                     }
                     IconButton(onClick = {
@@ -430,10 +527,48 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     OutlinedTextField(
                         // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
                         value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
-                        onValueChange = { if (it.text.length <= 4000) { field = it; text = it.text } },
+                        onValueChange = {
+                            if (it.text.length <= 4000) {
+                                if (it.text != text && it.text.isNotEmpty() && editing == null) Engine.sendTyping(convo)
+                                field = it; text = it.text
+                            }
+                        },
                         placeholder = { Text("پیام…") }, interactionSource = inputTouch,
                         shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
                     )
+                  }
+                  if (rec != null && recLocked) {
+                    IconButton(onClick = { finishRec(true) }) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary)
+                    }
+                  } else if (rec != null || (text.isBlank() && editing == null)) {
+                    Box(
+                        Modifier.size(48.dp).clip(CircleShape)
+                            .background(if (rec != null) Color(0xFFE53935) else Color.Transparent)
+                            .pointerInput(convo) {
+                                val cancelPx = 90.dp.toPx()
+                                val lockPx = 70.dp.toPx()
+                                awaitEachGesture {
+                                    val down = awaitFirstDown()
+                                    if (!onRecStart()) return@awaitEachGesture
+                                    down.consume()
+                                    var result = 1 // 1 = send, 0 = cancel, 2 = locked
+                                    while (true) {
+                                        val ev = awaitPointerEvent()
+                                        val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                        if (!ch.pressed) { ch.consume(); break }
+                                        val d = ch.position - down.position
+                                        recDrag = d.x
+                                        if (kotlin.math.abs(d.x) > cancelPx) { result = 0; break }
+                                        if (-d.y > lockPx) { result = 2; break }
+                                        ch.consume()
+                                    }
+                                    onRecEnd(result)
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) { Text("🎤", fontSize = 22.sp) }
+                  } else
                     IconButton(
                         enabled = text.isNotBlank(),
                         onClick = {
@@ -450,7 +585,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                         }
                     ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
                 }
-                if (emojiOpen) EmojiPanel { e ->
+                if (emojiOpen && recorder == null) EmojiPanel { e ->
                     val cur = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
                     val a = minOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
                     val b = maxOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
@@ -482,6 +617,26 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
         )
     }
     if (showProfile) ContactProfileDialog(convo) { showProfile = false }
+    reactFor?.let { m -> ReactionPickerDialog(onClose = { reactFor = null }) { e -> reactFor = null; react(m, e) } }
+    reactorsOf?.let { m ->
+        val fresh = remember(tick, m.id) { Engine.db.get(m.id) ?: m }
+        ReactorsDialog(fresh, onClose = { reactorsOf = null }) { reactorsOf = null; react(fresh, null) }
+    }
+    seenBy?.let { m -> SeenByDialog(m) { seenBy = null } }
+    locConfirm?.let { l ->
+        AlertDialog(
+            onDismissRequest = { locConfirm = null },
+            title = { Text("ارسال موقعیت مکانی") },
+            text = {
+                Text(
+                    "موقعیت فعلی شما (" + GeoLocation.coords(l) + (if (l.acc > 0) "، دقت حدود ${l.acc} متر" else "") + ") برای " +
+                        Engine.titleOf(convo) + " فرستاده شود؟ فقط همین یک نقطه، رمزنگاری‌شده، فرستاده می‌شود."
+                )
+            },
+            confirmButton = { TextButton(onClick = { locConfirm = null; Engine.sendLocation(convo, l, replyTo); replyTo = null }) { Text("ارسال") } },
+            dismissButton = { TextButton(onClick = { locConfirm = null }) { Text("انصراف") } }
+        )
+    }
     if (showKeys) KeysDialog(if (isGroup) (group?.members ?: users.map { it.username }).filter { it != Engine.me } else listOf(convo)) { showKeys = false }
 }
 
@@ -498,7 +653,10 @@ fun Bubble(
     m: Msg, group: Boolean, progress: Float?, failure: String?, pinned: Boolean,
     onImage: (String) -> Unit, onReply: () -> Unit, onPin: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit,
     selecting: Boolean = false, selected: Boolean = false, onSelect: () -> Unit = {}, onEdit: () -> Unit = {},
-    onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {}
+    onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {},
+    /** "sent" / "delivered" / "seen" for my messages */
+    tick: String? = null, onReact: (String?) -> Unit = {}, onMoreReactions: () -> Unit = {},
+    onReactors: () -> Unit = {}, onSeenBy: () -> Unit = {}
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -511,10 +669,13 @@ fun Bubble(
     val textSize by Prefs.textSize.collectAsState()
     val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
+    val autoVoice = m.type == "voice" && m.localPath == null && m.fileId != null && autoAllowed
+    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF2AA5E8)
+    val reactable = m.id > 0 && m.status == 0 && m.type != "call" && m.text != LOCKED_TEXT
     val bigEmoji = remember(m.text, m.type, m.replyId) { m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0 }
 
     LaunchedEffect(m.id, m.localPath) {
-        if (autoImage) Engine.downloadMedia(m)
+        if (autoImage || autoVoice) Engine.downloadMedia(m)
     }
 
     Row(
@@ -584,8 +745,24 @@ fun Bubble(
                             }
                             if (progress != null) ProgressBar(progress, Modifier.fillMaxWidth().padding(top = 4.dp))
                         }
+                        "voice" -> VoiceContent(m, progress, sub)
+                        "location" -> m.loc?.let { LocationContent(it, fg, sub) } ?: Text(m.text, color = fg, fontSize = textSize.sp)
                         "call" -> Text(m.text, color = sub, fontSize = 14.sp)
                         else -> if (bigEmoji) BigEmoji(m.text, m.id, textSize * 2) else Text(m.text, color = fg, fontSize = textSize.sp, style = TextStyle(textDirection = TextDirection.Content))
+                    }
+                    val rx = remember(m.reactions) { Engine.reactionsOf(m) }
+                    if (rx.isNotEmpty()) {
+                        Row(Modifier.padding(top = 4.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            for ((e, us) in rx) {
+                                val mineR = Engine.me in us
+                                Box(
+                                    Modifier.clip(RoundedCornerShape(12.dp))
+                                        .background(if (mineR) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
+                                        .clickable(enabled = !selecting) { onReactors() }
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                ) { Text(e + if (us.size > 1) " ${us.size}" else "", fontSize = 14.sp, color = if (mineR) Color.White else fg) }
+                            }
+                        }
                     }
                     if (m.status == 2) {
                         Text(failure ?: "ارسال نشد", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
@@ -602,19 +779,36 @@ fun Bubble(
                             when (m.status) {
                                 1 -> Text(" 🕓", color = sub, fontSize = 11.sp)
                                 2 -> Text(" ⚠", color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
-                                else -> Text(" ✓", color = MaterialTheme.colorScheme.primary, fontSize = 11.sp)
+                                else -> when (tick) {
+                                    "seen" -> Text(" ✓✓", color = tickBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    "delivered" -> Text(" ✓", color = tickBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    else -> Text(" ✓", color = sub, fontSize = 11.sp)
+                                }
                             }
                         }
                     }
                 }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                if (reactable) {
+                    val myR = m.reactions[Engine.me]
+                    Row(Modifier.padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                        for (e in Engine.QUICK_REACTIONS) {
+                            Box(
+                                Modifier.clip(CircleShape).background(if (e == myR) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent)
+                                    .clickable { menu = false; onReact(if (e == myR) null else e) }.padding(5.dp)
+                            ) { Text(e, fontSize = 21.sp) }
+                        }
+                        Box(Modifier.clip(CircleShape).clickable { menu = false; onMoreReactions() }.padding(5.dp)) { Text("➕", fontSize = 18.sp) }
+                    }
+                }
                 if (m.status == 0) DropdownMenuItem(text = { Text("پاسخ") }, onClick = { menu = false; onReply() })
                 if (Engine.canEdit(m)) DropdownMenuItem(text = { Text("ویرایش") }, onClick = { menu = false; onEdit() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("فوروارد") }, onClick = { menu = false; onForward() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
                 if (m.type == "text") DropdownMenuItem(text = { Text("کپی") }, onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) })
                 if (m.id > 0) DropdownMenuItem(text = { Text("اطلاعات پیام") }, onClick = { menu = false; onInfo() })
+                if (group && m.mine && m.id > 0 && m.status == 0) DropdownMenuItem(text = { Text("دیده شده توسط…") }, onClick = { menu = false; onSeenBy() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text(if (pinned) "برداشتن پین" else "پین کردن") }, onClick = { menu = false; onPin() })
                 if (m.status == 2) DropdownMenuItem(text = { Text("تلاش دوباره") }, onClick = { menu = false; onRetry() })
                 if (m.mine && m.status == 0 && m.id > 0) DropdownMenuItem(
@@ -626,6 +820,75 @@ fun Bubble(
                     onClick = { menu = false; onDelete() }
                 )
             }
+        }
+    }
+}
+
+/** Play button, waveform (tap to jump) and length of a voice message. */
+@Composable
+private fun VoiceContent(m: Msg, progress: Float?, sub: Color) {
+    val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val ps by VoicePlayer.state.collectAsState()
+    val current = ps.id == m.id
+    val playing = current && ps.playing
+    val total = if (current && ps.dur > 0) ps.dur else m.dur
+    val frac = if (current && total > 0) (ps.pos.toFloat() / total).coerceIn(0f, 1f) else 0f
+    val accent = MaterialTheme.colorScheme.primary
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            Modifier.size(44.dp).clip(CircleShape).background(accent).clickable {
+                val p = m.localPath
+                if (p != null && File(p).exists()) VoicePlayer.toggle(m.id, p)
+                else if (progress == null && m.fileId != null) scope.launch {
+                    val path = Engine.downloadMedia(m)
+                    if (path != null) VoicePlayer.toggle(m.id, path)
+                    else Toast.makeText(ctx, "دریافت پیام صوتی ناموفق بود؛ دوباره بزنید", Toast.LENGTH_SHORT).show()
+                }
+            },
+            contentAlignment = Alignment.Center
+        ) {
+            if (progress != null && m.localPath == null) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
+            else Text(if (playing) "❚❚" else "▶", color = Color.White, fontSize = 16.sp)
+        }
+        Column(Modifier.padding(start = 8.dp)) {
+            val bars = if (m.wave.isNotEmpty()) m.wave else List(50) { 3 }
+            Canvas(
+                Modifier.width(160.dp).height(30.dp).pointerInput(m.id) {
+                    detectTapGestures { o -> VoicePlayer.seek(m.id, o.x / size.width) }
+                }
+            ) {
+                val n = bars.size
+                val w = size.width / n
+                val bw = (w * 0.62f).coerceAtLeast(1.5f)
+                val minH = 2.dp.toPx()
+                for (i in 0 until n) {
+                    val h = maxOf(minH, bars[i] / 31f * size.height)
+                    drawRoundRect(
+                        color = if ((i + 0.5f) / n <= frac) accent else sub.copy(alpha = 0.45f),
+                        topLeft = Offset(i * w + (w - bw) / 2, (size.height - h) / 2),
+                        size = Size(bw, h), cornerRadius = CornerRadius(bw / 2, bw / 2)
+                    )
+                }
+            }
+            Text(U.dur(if (current && ps.pos > 0) ps.pos else total), color = sub, fontSize = 11.sp)
+        }
+    }
+}
+
+/** A shared location: tap opens it in the phone's map app (no map picture, so no request leaves the phone). */
+@Composable
+private fun LocationContent(l: Loc, fg: Color, sub: Color) {
+    val ctx = LocalContext.current
+    Row(
+        Modifier.clip(RoundedCornerShape(10.dp)).clickable { GeoLocation.openMap(ctx, l) }.padding(4.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(Modifier.size(46.dp).clip(CircleShape).background(Color(0xFFE53935)), contentAlignment = Alignment.Center) { Text("📍", fontSize = 22.sp) }
+        Column(Modifier.padding(horizontal = 10.dp)) {
+            Text("موقعیت مکانی", color = fg, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
+            Text(GeoLocation.coords(l) + if (l.acc > 0) " · ±${l.acc} م" else "", color = sub, fontSize = 12.sp)
+            Text("باز کردن در نقشه", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp)
         }
     }
 }

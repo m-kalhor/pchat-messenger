@@ -15,6 +15,8 @@ import android.os.Build
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
+import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +31,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedInputStream
 import java.io.DataInputStream
@@ -37,6 +40,7 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.io.IOException
 import java.io.RandomAccessFile
+import java.util.Locale
 
 class UserError(msg: String) : Exception(msg)
 
@@ -64,6 +68,13 @@ object Engine {
     /** conversation key -> pinned message id */
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
+    /** group key -> member -> when they last typed there */
+    val gtyping = MutableStateFlow<Map<String, Map<String, Long>>>(emptyMap())
+    /** Delivered / seen watermarks: conversation -> user -> (delivered, seen) message ids (see the server's receipts). */
+    val receipts = MutableStateFlow<Map<String, Map<String, Pair<Long, Long>>>>(emptyMap())
+    /** My privacy switches (both work both ways: who hides it does not see it from others either). */
+    val hideSeen = MutableStateFlow(false)
+    val hideLastSeen = MutableStateFlow(false)
     val loggedIn = MutableStateFlow(false)
     /** null = unknown yet, true = the server holds a key-password backup of this device's identity key, false = it does not */
     val keyBackedUp = MutableStateFlow<Boolean?>(null)
@@ -81,7 +92,7 @@ object Engine {
 
     @Volatile var currentConvo: String? = null
     @Volatile var appVisible = false
-    private var lastTypingSent = 0L
+    private val lastTypingSent = HashMap<String, Long>()
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val textLock = Mutex()
     private val fileLock = Mutex()
@@ -90,6 +101,12 @@ object Engine {
     private val lastProgressAt = HashMap<Long, Long>()
 
     val me: String get() = prefs.getString("me", "") ?: ""
+
+    /** Random id of this phone, so the server can tell which of my devices has the app on screen. */
+    val deviceId: String by lazy {
+        prefs.getString("dev", null) ?: ByteArray(8).also { java.security.SecureRandom().nextBytes(it) }
+            .joinToString("") { "%02x".format(it) }.also { prefs.edit().putString("dev", it).apply() }
+    }
 
     fun isGroup(convo: String) = convo == "all" || convo.startsWith("g:")
 
@@ -114,6 +131,9 @@ object Engine {
         try { users.value = parseUsers(prefs.getString("users_raw", "[]") ?: "[]") } catch (e: Exception) { }
         try { groups.value = parseGroups(prefs.getString("groups_raw", "[]") ?: "[]") } catch (e: Exception) { }
         Prefs.load()
+        receipts.value = parseReceipts(prefs.getString("receipts_raw", null))
+        hideSeen.value = prefs.getBoolean("hide_seen", false)
+        hideLastSeen.value = prefs.getBoolean("hide_last_seen", false)
         CallManager.init(app)
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = app.getSystemService(NotificationManager::class.java)
@@ -150,7 +170,15 @@ object Engine {
         dlDir().listFiles()?.forEach { it.delete() }
         avatarDir().listFiles()?.forEach { it.delete() }
         avatarMem.evictAll()
-        prefs.edit().putLong("last_id", 0).putLong("cseq", -1).remove("users_raw").remove("groups_raw").apply()
+        prefs.edit().putLong("last_id", 0).putLong("cseq", -1).putLong("rseq", -1).remove("users_raw").remove("groups_raw")
+            .remove("receipts_raw").remove("hide_seen").remove("hide_last_seen").apply()
+        Prefs.clearChatPrefs()
+        receipts.value = emptyMap()
+        gtyping.value = emptyMap()
+        hideSeen.value = false
+        hideLastSeen.value = false
+        synchronized(acks) { acks.clear(); acked.clear() }
+        synchronized(notifLines) { notifLines.clear() }
         users.value = emptyList()
         groups.value = emptyList()
         incomingRequests.value = emptyList()
@@ -463,13 +491,16 @@ object Engine {
                 if (keyStep.value == KeyStep.CHOOSE) continue
                 try { refreshGroups() } catch (e: Api.HttpError) { if (e.code == 401) throw e }
                 try { refreshRequests() } catch (e: Exception) { }
+                try { refreshMe() } catch (e: Exception) { }
                 Api.stream(
-                    prefs.getLong("last_id", 0), prefs.getLong("cseq", -1),
+                    prefs.getLong("last_id", 0), prefs.getLong("cseq", -1), prefs.getLong("rseq", -1), deviceId, appVisible,
                     onOpen = {
                         connected.value = true
                         backoff = 1000L
                         pins.value = emptyMap() // the server re-sends every current pin right after connecting
                         flushAll()
+                        synchronized(acks) { acked.clear() }
+                        scope.launch { delay(2500); syncReceipts() }
                     },
                     onEvent = { ev, data -> try { handleEvent(ev, data) } catch (e: Exception) { } }
                 )
@@ -495,8 +526,23 @@ object Engine {
                 if (users.value.none { it.username == u } || on) {
                     try { refreshUsers() } catch (e: Exception) { }
                 }
-                users.value = users.value.map { if (it.username == u) it.copy(online = on) else it }
+                val ls = if (o.isNull("last_seen")) null else o.optLong("last_seen").takeIf { it > 0 }
+                users.value = users.value.map {
+                    if (it.username == u) it.copy(online = on, lastSeen = ls, hidden = o.optBoolean("hidden", false), recently = o.optBoolean("recently", false)) else it
+                }
             }
+            "typing" -> {
+                val c = o.getString("convo")
+                gtyping.value = gtyping.value + (c to ((gtyping.value[c] ?: emptyMap()) + (o.getString("from") to System.currentTimeMillis())))
+            }
+            "receipt" -> { setReceipt(o); saveReceipts() }
+            "receipts" -> {
+                val a = o.optJSONArray("list") ?: JSONArray()
+                for (i in 0 until a.length()) setReceipt(a.getJSONObject(i))
+                saveReceipts()
+            }
+            "react" -> handleReact(o)
+            "rseq" -> prefs.edit().putLong("rseq", o.getLong("seq")).apply()
             "profile" -> {
                 val u = o.getString("username")
                 val dn = if (o.isNull("display_name")) null else o.getString("display_name")
@@ -546,22 +592,32 @@ object Engine {
             val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, target, pub, payload), Charsets.UTF_8))
             val r = plain.optJSONObject("r")
             val f = plain.optJSONObject("f")
+            val t = plain.optString("t", "text")
+            // a voice message travels as a file with v:1, a location as text with "loc" (older apps show a file / a map link)
+            val voice = t == "file" && plain.optInt("v", 0) == 1
+            val loc = locOf(plain)
+            val wf = plain.optJSONArray("wf")
             Msg(
                 id, convo, from, mine, ts,
-                plain.optString("t", "text"), plain.optString("x", ""),
+                if (voice) "voice" else if (loc != null) "location" else t, plain.optString("x", ""),
                 fileId, if (plain.has("n")) plain.getString("n") else null, if (plain.has("m")) plain.getString("m") else null,
                 plain.optLong("s", 0), if (plain.has("fk")) plain.getString("fk") else null,
                 plain.optInt("w", 0), plain.optInt("h", 0),
                 r?.optLong("id", 0) ?: 0L, r?.optString("u"), r?.optString("x"),
                 null, mine || visible,
                 edited = o.optLong("edited", 0),
-                fwFrom = f?.optString("u")?.ifEmpty { null }, fwName = f?.optString("n")?.ifEmpty { null }
+                fwFrom = f?.optString("u")?.ifEmpty { null }, fwName = f?.optString("n")?.ifEmpty { null },
+                dur = if (voice) plain.optLong("d", 0).coerceAtLeast(0) else 0,
+                wave = if (voice && wf != null) (0 until minOf(wf.length(), 100)).map { wf.optInt(it).coerceIn(0, 31) } else emptyList(),
+                loc = loc, reactions = reactionMap(o.optJSONObject("reactions"))
             )
         } catch (e: Exception) {
             Msg(id, convo, from, mine, ts, "text", LOCKED_TEXT,
                 null, null, null, 0, null, 0, 0, 0L, null, null, null, true)
         }
         val isNew = db.insert(msg)
+        if (!isNew && msg.reactions.isNotEmpty()) db.setReactions(id, msg.reactions)
+        if (!mine) ack(convo, id, if (msg.read) id else 0)
         if (isNew && !msg.read) postNotification(msg)
         if (id > prefs.getLong("last_id", 0)) prefs.edit().putLong("last_id", id).apply()
         if (isNew) tick.value++
@@ -586,30 +642,94 @@ object Engine {
         tick.value++
     }
 
-    private fun postNotification(m: Msg) {
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
-        ) return
-        val group = isGroup(m.convo)
-        if (!Prefs.shouldNotify(m.convo, group)) return
-        val title = if (group) groupName(m.convo) else nameOf(m.sender)
-        val body = (if (group) nameOf(m.sender) + ": " else "") + U.preview(m)
+    private fun notifAllowed(): Boolean = Build.VERSION.SDK_INT < 33 ||
+        ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+
+    private fun openIntent(convo: String): PendingIntent {
         val i = Intent(app, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra("convo", m.convo)
+            putExtra("convo", convo)
         }
-        val pi = PendingIntent.getActivity(app, m.convo.hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return PendingIntent.getActivity(app, convo.hashCode(), i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    /** Unread messages shown in each chat's notification (oldest first), so they stack like a conversation. */
+    private class NotifLine(val sender: String, val text: String, val ts: Long)
+    private val notifLines = HashMap<String, ArrayList<NotifLine>>()
+
+    /** One notification per chat (MessagingStyle) with an inline «پاسخ» and a «خوانده شد» button. */
+    private fun postNotification(m: Msg) {
+        if (!notifAllowed()) return
+        val group = isGroup(m.convo)
+        if (!Prefs.shouldNotify(m.convo, group)) return
+        val lines = synchronized(notifLines) {
+            notifLines.getOrPut(m.convo) { ArrayList() }.apply { add(NotifLine(m.sender, U.preview(m), m.ts)); while (size > 8) removeAt(0) }.toList()
+        }
+        val style = NotificationCompat.MessagingStyle(Person.Builder().setName("شما").setKey(me).build())
+        if (group) style.setConversationTitle(groupName(m.convo)).setGroupConversation(true)
+        for (l in lines) style.addMessage(l.text, l.ts, Person.Builder().setName(nameOf(l.sender)).setKey(l.sender).build())
+        val reply = NotificationCompat.Action.Builder(android.R.drawable.ic_menu_send, "پاسخ", NotifActions.pending(app, NotifActions.REPLY, m.convo))
+            .addRemoteInput(RemoteInput.Builder(NotifActions.KEY_TEXT).setLabel("پاسخ…").build())
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setShowsUserInterface(false)
+            .setAllowGeneratedReplies(true)
+            .build()
+        val read = NotificationCompat.Action.Builder(android.R.drawable.ic_menu_view, "خوانده شد", NotifActions.pending(app, NotifActions.READ, m.convo))
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .setShowsUserInterface(false)
+            .build()
         val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentTitle(if (group) groupName(m.convo) else nameOf(m.sender))
+            .setContentText((if (group) nameOf(m.sender) + ": " else "") + U.preview(m))
+            .setStyle(style)
+            .addAction(reply)
+            .addAction(read)
             .setAutoCancel(true)
-            .setContentIntent(pi)
+            .setContentIntent(openIntent(m.convo))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .build()
         NotificationManagerCompat.from(app).notify(m.convo.hashCode(), n)
+    }
+
+    /** Removes a chat's message notification (it was read here, on another device or from the notification). */
+    private fun clearNotif(convo: String) {
+        synchronized(notifLines) { notifLines.remove(convo) }
+        NotificationManagerCompat.from(app).cancel(convo.hashCode())
+    }
+
+    private fun postReactionNotification(m: Msg, user: String, emoji: String) {
+        if (appVisible && currentConvo == m.convo) return
+        if (!notifAllowed() || !Prefs.shouldNotify(m.convo, isGroup(m.convo))) return
+        val body = "${nameOf(user)} به پیام شما واکنش $emoji نشان داد: " + U.preview(m).take(60)
+        val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
+            .setSmallIcon(android.R.drawable.stat_notify_chat)
+            .setContentTitle(titleOf(m.convo))
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setContentIntent(openIntent(m.convo))
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .build()
+        NotificationManagerCompat.from(app).notify(("react:" + m.id).hashCode(), n)
+    }
+
+    /** «پاسخ» typed in a notification: send it, mark the chat read and wait (briefly) until it is out. */
+    suspend fun replyFromNotification(convo: String, text: String) {
+        sendText(convo, text, null)
+        readFromNotification(convo)
+        withTimeoutOrNull(8000) { flushTexts() }
+    }
+
+    /** «خوانده شد» in a notification. */
+    suspend fun readFromNotification(convo: String) = withContext(Dispatchers.IO) {
+        db.markRead(convo)
+        clearNotif(convo)
+        tick.value++
+        val last = db.lastIncoming(convo)
+        ack(convo, last, last)
+        sendAcks()
     }
 
     // ---------------- calls support ----------------
@@ -662,11 +782,15 @@ object Engine {
 
     fun openConvo(convo: String) {
         db.markRead(convo)
-        NotificationManagerCompat.from(app).cancel(convo.hashCode())
+        clearNotif(convo)
+        if (appVisible) ack(convo, 0, db.lastIncoming(convo))
         tick.value++
     }
 
-    fun markReadSilently(convo: String) { db.markRead(convo) }
+    fun markReadSilently(convo: String) {
+        db.markRead(convo)
+        if (appVisible) ack(convo, 0, db.lastIncoming(convo))
+    }
 
     fun deleteLocal(m: Msg) {
         db.delete(m.id)
@@ -676,11 +800,191 @@ object Engine {
     }
 
     fun sendTyping(convo: String) {
-        if (isGroup(convo)) return
         val t = System.currentTimeMillis()
-        if (t - lastTypingSent < 3000) return
-        lastTypingSent = t
-        scope.launch { try { Api.signal(convo, "sig_typing", "1") } catch (e: Exception) { } }
+        if (t - (lastTypingSent[convo] ?: 0L) < 3000) return
+        lastTypingSent[convo] = t
+        scope.launch {
+            try { if (isGroup(convo)) Api.typing(convo) else Api.signal(convo, "sig_typing", "1") } catch (e: Exception) { }
+        }
+    }
+
+    /** Who is typing in a group right now. */
+    fun typingIn(convo: String, now: Long = System.currentTimeMillis()): List<String> =
+        gtyping.value[convo]?.filter { it.key != me && now - it.value < 4500 }?.keys?.toList() ?: emptyList()
+
+    // ---------------- delivered / seen ticks ----------------
+
+    private fun parseReceipts(raw: String?): Map<String, Map<String, Pair<Long, Long>>> = try {
+        val o = JSONObject(raw ?: "{}")
+        o.keys().asSequence().associateWith { c ->
+            val u = o.getJSONObject(c)
+            u.keys().asSequence().associateWith { k -> u.getJSONArray(k).let { it.getLong(0) to it.getLong(1) } }
+        }
+    } catch (e: Exception) { emptyMap() }
+
+    private var saveReceiptsJob: Job? = null
+    private fun saveReceipts() {
+        if (saveReceiptsJob?.isActive == true) return
+        saveReceiptsJob = scope.launch {
+            delay(1000)
+            val o = JSONObject()
+            for ((c, us) in receipts.value) o.put(c, JSONObject().apply { for ((u, v) in us) put(u, JSONArray().put(v.first).put(v.second)) })
+            prefs.edit().putString("receipts_raw", o.toString()).apply()
+        }
+    }
+
+    /** Receipts are watermarks: everything up to `delivered` reached a device of that user, up to `seen` was read. */
+    private fun setReceipt(o: JSONObject) {
+        val convo = o.getString("convo")
+        val user = o.getString("user")
+        val d = o.optLong("delivered", 0)
+        val s = o.optLong("seen", 0)
+        val c = receipts.value[convo] ?: emptyMap()
+        val old = c[user] ?: (0L to 0L)
+        val nw = maxOf(old.first, d) to maxOf(old.second, s)
+        if (nw != old) receipts.value = receipts.value + (convo to (c + (user to nw)))
+        // read on another device of mine: read here too
+        if (user == me && s > 0 && db.markReadUpTo(convo, s)) {
+            if (db.summary(convo).unread == 0) clearNotif(convo)
+            tick.value++
+        }
+    }
+
+    private fun groupMembers(convo: String): List<String> = groups.value.firstOrNull { it.key == convo }?.members ?: emptyList()
+
+    /** "sent" (grey ✓), "delivered" (blue ✓) or "seen" (blue ✓✓) for my message, null for others. In a group: every member. */
+    fun tickOf(m: Msg, rc: Map<String, Map<String, Pair<Long, Long>>> = receipts.value): String? {
+        if (!m.mine || m.id <= 0 || m.status != 0 || m.type == "call") return null
+        val c = rc[m.convo] ?: emptyMap()
+        fun d(u: String) = c[u]?.let { maxOf(it.first, it.second) } ?: 0L
+        fun s(u: String) = c[u]?.second ?: 0L
+        if (isGroup(m.convo)) {
+            val others = groupMembers(m.convo).filter { it != me }
+            if (others.isEmpty()) return "sent"
+            if (others.all { s(it) >= m.id }) return "seen"
+            return if (others.all { d(it) >= m.id }) "delivered" else "sent"
+        }
+        if (!hideSeen.value && s(m.convo) >= m.id) return "seen"
+        return if (d(m.convo) >= m.id) "delivered" else "sent"
+    }
+
+    /** Group members by how far they got with my message: (seen, delivered, not yet delivered). */
+    fun readersOf(m: Msg): Triple<List<String>, List<String>, List<String>> {
+        val c = receipts.value[m.convo] ?: emptyMap()
+        val seen = ArrayList<String>(); val delivered = ArrayList<String>(); val sent = ArrayList<String>()
+        for (u in groupMembers(m.convo).filter { it != me }) {
+            val r = c[u] ?: (0L to 0L)
+            when {
+                r.second >= m.id -> seen.add(u)
+                maxOf(r.first, r.second) >= m.id -> delivered.add(u)
+                else -> sent.add(u)
+            }
+        }
+        return Triple(seen, delivered, sent)
+    }
+
+    /** Acks waiting to be sent (conversation -> [delivered, seen]) and the ones the server already has. */
+    private val acks = HashMap<String, LongArray>()
+    private val acked = HashMap<String, LongArray>()
+    private var ackJob: Job? = null
+
+    private fun ack(convo: String, delivered: Long, seen: Long, delayMs: Long = 700) {
+        synchronized(acks) {
+            val done = acked[convo]
+            val d = if (done != null && delivered <= done[0]) 0L else delivered
+            val s = if (done != null && seen <= done[1]) 0L else seen
+            if (d <= 0 && s <= 0) return
+            val a = acks.getOrPut(convo) { LongArray(2) }
+            if (d > a[0]) a[0] = d
+            if (s > a[1]) a[1] = s
+            if (ackJob?.isActive == true) return
+            ackJob = scope.launch { delay(delayMs); sendAcks() }
+        }
+    }
+
+    private fun sendAcks() {
+        val items = synchronized(acks) {
+            ackJob = null
+            val m = acks.mapValues { it.value[0] to it.value[1] }
+            acks.clear()
+            m
+        }
+        if (items.isEmpty() || Api.token == null) return
+        try {
+            Api.receipts(items)
+            synchronized(acks) {
+                for ((c, v) in items) {
+                    val a = acked.getOrPut(c) { LongArray(2) }
+                    a[0] = maxOf(a[0], v.first); a[1] = maxOf(a[1], v.second)
+                }
+            }
+        } catch (e: Exception) {
+            for ((c, v) in items) ack(c, v.first, v.second, 10_000)
+        }
+    }
+
+    /** After (re)connecting: report what this phone has, so lost acks and messages from before 1.4 get ticks too. */
+    private fun syncReceipts() {
+        for (c in db.convos()) ack(c, db.lastIncoming(c), db.lastIncoming(c, true))
+    }
+
+    // ---------------- reactions ----------------
+
+    val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "😮", "😢", "🙏")
+
+    private fun reactionMap(o: JSONObject?): Map<String, String> =
+        o?.keys()?.asSequence()?.associateWith { o.getString(it) } ?: emptyMap()
+
+    private fun handleReact(o: JSONObject) {
+        val seq = o.optLong("seq", 0)
+        if (seq > prefs.getLong("rseq", -1)) prefs.edit().putLong("rseq", seq).apply()
+        val m = db.get(o.getLong("id")) ?: return
+        val u = o.getString("user")
+        val e = if (o.isNull("emoji")) null else o.getString("emoji")
+        val before = m.reactions[u]
+        db.setReactions(m.id, if (e != null) m.reactions + (u to e) else m.reactions - u)
+        tick.value++
+        if (m.mine && u != me && e != null && e != before) postReactionNotification(m, u, e)
+    }
+
+    /** Sets (or with null removes) my reaction to m. Returns an error text or null. */
+    suspend fun react(m: Msg, emoji: String?): String? = withContext(Dispatchers.IO) {
+        val before = db.get(m.id)?.reactions ?: m.reactions
+        db.setReactions(m.id, if (emoji != null) before + (me to emoji) else before - me)
+        tick.value++
+        try { Api.react(m.id, emoji); null } catch (e: Exception) {
+            db.setReactions(m.id, before)
+            tick.value++
+            if (e is Api.HttpError && e.code == 404) "این پیام دیگر وجود ندارد" else errText(e)
+        }
+    }
+
+    /** (emoji, who) pairs, most used first. */
+    fun reactionsOf(m: Msg): List<Pair<String, List<String>>> =
+        m.reactions.entries.groupBy({ it.value }, { it.key }).toList().sortedByDescending { it.second.size }
+
+    // ---------------- presence / privacy ----------------
+
+    /** The app came to the screen or left it (others see "online" / "last seen" from this). */
+    fun setActive(active: Boolean) {
+        if (Api.token == null) return
+        scope.launch { try { Api.presence(deviceId, active) } catch (e: Exception) { } }
+    }
+
+    private fun setPrivacyLocal(o: JSONObject) {
+        hideSeen.value = o.optBoolean("hide_seen", false)
+        hideLastSeen.value = o.optBoolean("hide_last_seen", false)
+        prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
+    }
+
+    private fun refreshMe() = setPrivacyLocal(Api.me())
+
+    suspend fun setPrivacy(hideSeen: Boolean, hideLastSeen: Boolean): String? = withContext(Dispatchers.IO) {
+        try {
+            setPrivacyLocal(Api.privacy(hideSeen, hideLastSeen))
+            try { refreshUsers() } catch (e: Exception) { }
+            null
+        } catch (e: Exception) { errText(e) }
     }
 
     // ---------------- profile ----------------
@@ -751,14 +1055,68 @@ object Engine {
     fun canEdit(m: Msg): Boolean =
         m.mine && m.type == "text" && m.id > 0 && m.status == 0 && System.currentTimeMillis() - m.ts < EDIT_WINDOW_MS
 
-    /** The plaintext JSON a message was sent with (rebuilt from what we stored). */
+    /** The plaintext JSON a message is sent with (also rebuilt from what we stored, for edits). */
     private fun plainOf(m: Msg, text: String = m.text): JSONObject {
-        val p = JSONObject().put("t", m.type).put("x", text)
-        if (m.type != "text") p.put("n", m.fileName ?: "file").put("m", m.mime ?: "application/octet-stream")
-            .put("s", m.size).put("fk", m.fkey ?: "").put("w", m.w).put("h", m.h)
+        val l = m.loc
+        val p = when {
+            m.type == "text" || (m.type == "location" && l == null) -> JSONObject().put("t", "text").put("x", text)
+            m.type == "location" && l != null -> JSONObject().put("t", "text").put("x", locText(l))
+                .put("loc", JSONObject().put("lat", l.lat).put("lon", l.lon).put("acc", l.acc))
+            else -> JSONObject().put("t", if (m.type == "voice") "file" else m.type).put("n", m.fileName ?: "file")
+                .put("m", m.mime ?: "application/octet-stream").put("s", m.size).put("fk", m.fkey ?: "").put("w", m.w).put("h", m.h)
+                .also { if (m.type == "voice") it.put("v", 1).put("d", m.dur).put("wf", JSONArray(m.wave)) }
+        }
         replyJson(p, m)
         forwardJson(p, m)
         return p
+    }
+
+    // ---------------- location ----------------
+
+    /** A location is a text message with an extra "loc" field, so apps before 1.4 show it as a map link. */
+    private fun locOf(plain: JSONObject): Loc? {
+        if (plain.optString("t", "text") != "text") return null
+        val l = plain.optJSONObject("loc") ?: return null
+        val lat = l.optDouble("lat", Double.NaN)
+        val lon = l.optDouble("lon", Double.NaN)
+        if (lat.isNaN() || lon.isNaN() || kotlin.math.abs(lat) > 90 || kotlin.math.abs(lon) > 180) return null
+        return Loc(lat, lon, l.optDouble("acc", 0.0).toInt().coerceAtLeast(0))
+    }
+
+    fun locText(l: Loc): String {
+        val a = "%.6f".format(Locale.US, l.lat)
+        val b = "%.6f".format(Locale.US, l.lon)
+        return "📍 موقعیت مکانی: https://www.openstreetmap.org/?mlat=$a&mlon=$b#map=17/$a/$b"
+    }
+
+    /** Queues my current position (one point, end-to-end encrypted like any message). */
+    fun sendLocation(convo: String, loc: Loc, reply: Msg?) {
+        db.insert(
+            Msg(-System.nanoTime(), convo, me, true, System.currentTimeMillis(), "location", locText(loc), null, null, null, 0, null, 0, 0,
+                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1, loc = loc)
+        )
+        tick.value++
+        scope.launch { flushTexts() }
+    }
+
+    // ---------------- voice messages ----------------
+
+    /** Where VoiceRecorder writes a new recording. */
+    fun newRecordingFile(): File = File(mediaDir(), "rec_${System.nanoTime()}.m4a")
+
+    /** Queues a recorded voice message (AAC in MP4) for the same encrypted upload as files. */
+    fun sendVoice(convo: String, rec: File, durMs: Long, wave: List<Int>, reply: Msg?) {
+        val localId = -System.nanoTime()
+        val f = File(mediaDir(), "out_${-localId}")
+        if (!rec.renameTo(f)) { rec.copyTo(f, overwrite = true); rec.delete() }
+        val now = System.currentTimeMillis()
+        db.insert(
+            Msg(localId, convo, me, true, now, "voice", "", null, "voice-$now.m4a", "audio/mp4", f.length(), Crypto.newFileKey(), 0, 0,
+                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, f.absolutePath, true,
+                status = 1, dur = durMs, wave = wave)
+        )
+        tick.value++
+        scope.launch { flushFiles() }
     }
 
     private fun forwardJson(plain: JSONObject, m: Msg) {
@@ -816,9 +1174,10 @@ object Engine {
             val copy = Msg(
                 -System.nanoTime(), t, me, true, now + n++, m.type, m.text, null, m.fileName, m.mime, m.size, m.fkey, m.w, m.h,
                 0L, null, null, m.localPath?.takeIf { File(it).exists() }, true, status = 1,
-                uploadId = m.fileId?.let { "f:$it" }, fwFrom = fw, fwName = if (fw != null) originName else null
+                uploadId = m.fileId?.let { "f:$it" }, fwFrom = fw, fwName = if (fw != null) originName else null,
+                dur = m.dur, wave = m.wave, loc = m.loc
             )
-            if (m.type != "text" && m.fileId == null) continue
+            if (m.type != "text" && m.type != "location" && m.fileId == null) continue
             db.insert(copy)
         }
         tick.value++
@@ -940,7 +1299,7 @@ object Engine {
         if (Api.token == null) return
         textLock.withLock {
             for (m in db.outbox()) {
-                if (m.type != "text" || Api.token == null) continue
+                if ((m.type != "text" && m.type != "location") || Api.token == null) continue
                 try {
                     sendQueuedText(m)
                 } catch (e: Exception) {
@@ -952,10 +1311,7 @@ object Engine {
     }
 
     private fun sendQueuedText(m: Msg) {
-        val plain = JSONObject().put("t", "text").put("x", m.text)
-        replyJson(plain, m)
-        forwardJson(plain, m)
-        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plain.toString().toByteArray()), null)
+        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plainOf(m).toString().toByteArray()), null)
         db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, read = true))
         db.delete(m.id)
         tick.value++
@@ -965,7 +1321,7 @@ object Engine {
         if (Api.token == null) return
         fileLock.withLock {
             for (m in db.outbox()) {
-                if (m.type == "text" || Api.token == null) continue
+                if (m.type == "text" || m.type == "location" || Api.token == null) continue
                 try {
                     sendQueuedFile(m)
                 } catch (e: Exception) {
@@ -1038,11 +1394,7 @@ object Engine {
             db.setUploadId(m.id, "f:$fileId")
         }
 
-        val plain = JSONObject().put("t", m.type).put("n", m.fileName ?: "file").put("m", m.mime ?: "application/octet-stream")
-            .put("s", m.size).put("fk", fkey).put("w", m.w).put("h", m.h)
-        replyJson(plain, m)
-        forwardJson(plain, m)
-        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plain.toString().toByteArray()), fileId)
+        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plainOf(m.copy(fkey = fkey)).toString().toByteArray()), fileId)
         val dest = File(mediaDir(), fileId!!)
         if (f != null && f.exists() && f.absolutePath != dest.absolutePath) {
             if (known) { if (!dest.exists()) f.copyTo(dest) } else if (!f.renameTo(dest)) { f.copyTo(dest, overwrite = true); f.delete() }

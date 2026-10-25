@@ -22,6 +22,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -106,6 +107,70 @@ fun MessageInfoDialog(m: Msg, onClose: () -> Unit) {
                                 Text(text, fontSize = 14.sp)
                                 Text("تا " + U.fullDate(ts), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                             }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("بستن") } }
+    )
+}
+
+/** «➕» next to the quick reactions: any emoji. */
+@Composable
+fun ReactionPickerDialog(onClose: () -> Unit, onPick: (String) -> Unit) {
+    androidx.compose.ui.window.Dialog(onDismissRequest = onClose) {
+        androidx.compose.material3.Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp)) {
+            Column(Modifier.padding(8.dp)) {
+                Text("واکنش", fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(8.dp))
+                EmojiPanel(onPick)
+            }
+        }
+    }
+}
+
+/** Who reacted with what (tap a reaction chip under a message); my own one can be removed here. */
+@Composable
+fun ReactorsDialog(m: Msg, onClose: () -> Unit, onRemoveMine: () -> Unit) {
+    val list = Engine.reactionsOf(m).flatMap { (e, us) -> us.map { it to e } }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("واکنش‌ها") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(list, key = { it.first }) { (u, e) ->
+                    Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(u, false, 34)
+                        Spacer(Modifier.width(10.dp))
+                        Text(if (u == Engine.me) "شما" else Engine.nameOf(u), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(e, fontSize = 22.sp)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClose) { Text("بستن") } },
+        dismissButton = if (m.reactions.containsKey(Engine.me)) ({ TextButton(onClick = onRemoveMine) { Text("برداشتن واکنش من") } }) else null
+    )
+}
+
+/** «دیده شده توسط…» for my message in a group. */
+@Composable
+fun SeenByDialog(m: Msg, onClose: () -> Unit) {
+    val receipts by Engine.receipts.collectAsState()
+    val (seen, delivered, sent) = remember(receipts, m.id) { Engine.readersOf(m) }
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("وضعیت پیام") },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 380.dp)) {
+                for ((label, users) in listOf("✓✓ دیده‌اند" to seen, "✓ رسیده، هنوز ندیده‌اند" to delivered, "هنوز نرسیده" to sent)) {
+                    if (users.isEmpty()) continue
+                    item(key = label) { Text("$label (${users.size})", fontWeight = FontWeight.SemiBold, fontSize = 14.sp, modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)) }
+                    items(users, key = { label + it }) { u ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Avatar(u, false, 30)
+                            Spacer(Modifier.width(10.dp))
+                            Text(Engine.nameOf(u), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                     }
                 }
