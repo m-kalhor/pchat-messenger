@@ -238,6 +238,20 @@ async function route(ctx, req, res, secure) {
     } catch (e) { return json(res, 400, { error: e.message }); }
   }
 
+  // ---- public intro page shown when the web app is opened by a domain name ----
+  if (sub === '/site' && req.method === 'GET') {
+    return json(res, 200, { title: getSetting('site_title', ''), about: getSetting('site_about', ''), contact: getSetting('site_contact', '') });
+  }
+  if (sub === '/site' && req.method === 'POST') {
+    const b = await readJson(req, 16384);
+    for (const [k, max] of [['title', 100], ['about', 3000], ['contact', 1000]]) {
+      if (b[k] === undefined) continue;
+      if (typeof b[k] !== 'string' || b[k].length > max) return json(res, 400, { error: 'bad_text' });
+      setSetting('site_' + k, b[k].trim());
+    }
+    return json(res, 200, { ok: true });
+  }
+
   // ---- sign-in: sms.ir settings, password login on/off, SMS state ----
   if (sub === '/auth' && req.method === 'GET') return json(res, 200, authInfo(ctx));
   if (sub === '/auth' && req.method === 'POST') {

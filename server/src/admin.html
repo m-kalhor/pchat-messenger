@@ -90,7 +90,7 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_api_key:'کلید API نامعتبر است',bad_template_id:'شناسهٔ قالب باید عدد باشد',bad_param:'نام پارامتر فقط حروف لاتین، رقم و _',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',sms_not_configured:'کلید API یا شناسهٔ قالب تنظیم نشده',timeout:'سرور به sms.ir نرسید (پایان مهلت)'};
+var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_api_key:'کلید API نامعتبر است',bad_template_id:'شناسهٔ قالب باید عدد باشد',bad_param:'نام پارامتر فقط حروف لاتین، رقم و _',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'کلید API یا شناسهٔ قالب تنظیم نشده',timeout:'سرور به sms.ir نرسید (پایان مهلت)'};
 function msg2(e){return e?(ERR[e]||e):'';}
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
@@ -395,6 +395,18 @@ async function loginTab(box){
     h('div',{class:'row'},h('button',{class:'sec',onclick:async function(){cr.textContent='…';
       try{var j=await api('GET','/auth/credit');cr.textContent=j.error?'✗ '+msg2(j.error):'اعتبار: '+Number(j.credit).toLocaleString('fa-IR');}catch(e){cr.textContent='✗ '+msg(e);}}},'اعتبار حساب sms.ir'),cr),
     h('div',{class:'mut',style:'white-space:normal'},'اگر پیامک نرسد (قطعی، تمام شدن اعتبار)، کاربر روی دستگاه دیگری که واردش است از «تنظیمات ← ورود دستگاه تازه» یک کد می‌گیرد، یا شما از زبانهٔ کاربران دکمهٔ «کد ورود» را می‌زنید.')));
+  var W;try{W=await api('GET','/site');}catch(e){W={title:'',about:'',contact:''};}
+  var stt=h('input',{value:W.title,placeholder:'پیام‌رسان سپن',style:'min-width:320px'});
+  var sab=h('textarea',{rows:4,style:'width:100%',placeholder:'سپن یک پیام‌رسان امن است که روی سرور خود مجموعه نصب می‌شود…'});sab.value=W.about;
+  var sct=h('textarea',{rows:2,style:'width:100%',placeholder:'ایمیل، تلفن یا نشانی'});sct.value=W.contact;
+  var ser=h('div',{class:'err'});
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'صفحهٔ معرفی (وقتی سایت با دامنه باز شود)'),
+    h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'اگر یک دامنه (مثلاً sepan.example.ir) به IP این سرور اشاره کند، صفحهٔ اول آن یک معرفی عمومی است با دکمهٔ «ورود به پیام‌رسان» و لینک دانلود اپ. امکانات، کاربرد پیامک (فقط کد ورود) و حریم خصوصی خودکار نوشته می‌شوند. ورود با IP مثل قبل مستقیم به برنامه می‌رود.'),
+    h('div',{class:'row'},h('span',{style:'width:130px'},'عنوان'),stt),
+    h('div',null,'معرفی (خالی بماند = متن پیش‌فرض)'),sab,
+    h('div',{style:'margin-top:8px'},'تماس با ما'),sct,
+    h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){ser.textContent='';
+      try{await api('POST','/site',{title:stt.value,about:sab.value,contact:sct.value});alert('ذخیره شد');}catch(e){ser.textContent=msg(e);}}},'ذخیره')),ser));
   var file=h('input',{type:'file',accept:'.apk,application/vnd.android.package-archive'}),up=h('span');
   box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'فایل برنامهٔ اندروید برای دانلود'),
     h('div',{style:'margin-bottom:8px'},A.apk?['فایل فعلی: ',fmtB(A.apk.size),' — ',fmtDate(A.apk.mtime),'  ',h('a',{href:'#',style:'color:#ff8b8b',onclick:guard(async function(e){e.preventDefault();if(!confirm('فایل APK حذف شود؟'))return;await api('DELETE','/apk');render();})},'حذف')]:h('span',{class:'mut'},'هنوز فایلی نیست')),

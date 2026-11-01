@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, DATA_DIR, hashPassword, checkPassword } = require('./db');
+const { db, DATA_DIR, hashPassword, checkPassword, getSetting } = require('./db');
 const core = require('./core');
 const contacts = require('./contacts');
 const { sanitizeWebp } = require('./webp');
@@ -1035,7 +1035,10 @@ const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isO
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------
-require('./web').start(handler, { plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST, serveApk, apkInfo });
+const siteInfo = () => ({ title: getSetting('site_title', ''), about: getSetting('site_about', ''), contact: getSetting('site_contact', '') });
+require('./web').start(handler, {
+  plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST, serveApk, apkInfo, site: siteInfo, acmeDir: path.join(DATA_DIR, 'acme'),
+});
 
 server.listen(PORT, '0.0.0.0', () => console.log(`messenger listening on ${PORT} (${PLAIN ? 'PLAIN HTTP - test only' : 'TLS'})`));
 for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { server.close(); process.exit(0); });

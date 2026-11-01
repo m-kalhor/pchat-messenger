@@ -8,6 +8,11 @@
  *
  * A small plain-HTTP listener (WEB_HTTP_PORT, default 80) serves only the setup page and the CA
  * profile (public data) and redirects everything else to https.
+ *
+ * A domain name (1.6.1): a visitor who comes by a name (not the IP) stays on that name, sees a public intro
+ * page at / (the app is at /app) and gets the Let's Encrypt certificate of that name when domain.sh has
+ * issued one (certs/le/<name>/cert.pem + key.pem, picked by SNI); everyone else keeps the private CA
+ * certificate. Let's Encrypt checks the name through /.well-known/acme-challenge/ on the plain-HTTP port.
  */
 const https = require('node:https');
 const http = require('node:http');
@@ -15,7 +20,42 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const tlsMod = require('node:tls');
 const qrcode = require('./vendor/qrcode');
+
+/** The host the visitor typed, without the port; '' when it is not a plain host name or IP. */
+const reqHost = (req) => String(req.headers.host || '').replace(/:\d+$/, '').toLowerCase().replace(/[^\w.\-[\]:]/g, '');
+/** A DNS name (has a letter, at least one dot), not an IP address. */
+const isName = (h) => /^(?=.*[a-z])[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(h || '') && h.length <= 253;
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+
+/** The public intro page shown on a domain name (what the service is, what SMS is used for, contact). */
+function introPage(site, hasApk) {
+  const title = site.title || 'پیام‌رسان سپن';
+  const about = site.about || 'سپن یک پیام‌رسان امن است که روی سرور خود مجموعه نصب می‌شود. پیام‌ها، تماس‌ها و فایل‌ها با رمزنگاری سرتاسری فرستاده می‌شوند و داده‌ها از سرور مجموعه بیرون نمی‌روند.';
+  const para = (t) => esc(t).split(/\n+/).filter(Boolean).map((l) => `<p>${l}</p>`).join('');
+  return `<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title><meta name="description" content="${esc(about.slice(0, 160))}">
+<link rel="icon" href="/icon-192.png"><link rel="stylesheet" href="/welcome.css"></head>
+<body><main>
+<header><img src="/icon-192.png" alt="" width="72" height="72"><h1>${esc(title)}</h1></header>
+<section>${para(about)}</section>
+<nav><a class="btn" href="/app">ورود به پیام‌رسان</a>${hasApk ? '<a class="btn alt" href="/download/sepan.apk">دانلود اپ اندروید</a>' : ''}</nav>
+<section><h2>امکانات</h2><ul>
+<li>گفتگوی خصوصی و گروهی با رمزنگاری سرتاسری</li>
+<li>تماس صوتی و تصویری، پیام صوتی، ارسال فایل و موقعیت مکانی</li>
+<li>نصب روی سرور خود مجموعه؛ در قطعی اینترنت بین‌الملل هم کار می‌کند</li>
+<li>اپ اندروید و نسخهٔ وب برای آیفون و رایانه</li>
+</ul></section>
+<section><h2>ورود و پیامک</h2>
+<p>ورود به حساب با شمارهٔ موبایل است. پیامک فقط برای فرستادن کد یک‌بارمصرف ورود و تأیید شمارهٔ موبایل استفاده می‌شود و هیچ پیامک تبلیغاتی فرستاده نمی‌شود.</p></section>
+<section><h2>حریم خصوصی</h2>
+<p>متن پیام‌ها فقط روی گوشی فرستنده و گیرنده باز می‌شود و سرور هم آن را نمی‌تواند بخواند. شمارهٔ موبایل هر کاربر به کاربران دیگر نشان داده نمی‌شود و به هیچ کس داده نمی‌شود.</p></section>
+${site.contact ? `<section><h2>تماس با ما</h2>${para(site.contact)}</section>` : ''}
+<footer>${esc(title)}</footer>
+</main></body></html>`;
+}
 
 const WEB_DIR = path.join(__dirname, 'web');
 const TYPES = {
@@ -168,7 +208,7 @@ function readTls(certDir) {
  * apiHandler: the messenger's request handler (same /api as the Android port).
  * plain: serve plain HTTP instead of TLS (tests only).
  */
-function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, apkInfo } = {}) {
+function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, apkInfo, site = () => ({}), acmeDir = '' } = {}) {
   if (process.env.WEB_DISABLE === '1') return null;
   const port = +(process.env.WEB_PORT || 443);
   const httpPort = +(process.env.WEB_HTTP_PORT ?? 80);
@@ -182,7 +222,11 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
     if (p.startsWith('/api/') && p !== '/api/web/ca') return apiHandler(req, res);
     if (setupRoute(req, res, p, files, certDir)) return;
     if (serveApk && apkRoute(req, res, p, apk)) return;
-    const f = (req.method === 'GET' || req.method === 'HEAD') && files.get(p);
+    if (p === '/' && isName(reqHost(req)) && (req.method === 'GET' || req.method === 'HEAD')) {
+      const body = Buffer.from(introPage(site() || {}, !!(apkInfo && apkInfo())));
+      return serveFile(req, res, { body, type: TYPES['.html'], etag: '"' + crypto.createHash('sha1').update(body).digest('hex').slice(0, 16) + '"' });
+    }
+    const f = (req.method === 'GET' || req.method === 'HEAD') && files.get(p === '/app' ? '/index.html' : p);
     if (f) return serveFile(req, res, f);
     res.writeHead(404, { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff' });
     res.end('not found');
@@ -196,6 +240,26 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
       console.log(`web app: no certificate in ${certDir} (${e.code || e.message}), web version disabled. Re-run install.sh to create it.`);
       return null;
     }
+    // a domain with its own (Let's Encrypt) certificate; looked at again at most once a minute
+    const leDir = path.join(certDir, '..', 'le');
+    const sni = new Map();
+    tls.SNICallback = (name, cb) => {
+      name = String(name || '').toLowerCase();
+      if (!isName(name)) return cb(null, null);
+      let e = sni.get(name);
+      if (!e || Date.now() - e.checked > 60e3) {
+        let ctx = e ? e.ctx : null, mtime = e ? e.mtime : 0;
+        try {
+          const d = path.join(leDir, name);
+          const m = fs.statSync(path.join(d, 'cert.pem')).mtimeMs;
+          if (m !== mtime) { ctx = tlsMod.createSecureContext(readTls(d)); mtime = m; }
+        } catch { ctx = null; mtime = 0; }
+        e = { ctx, mtime, checked: Date.now() };
+        if (sni.size > 50) sni.clear();
+        sni.set(name, e);
+      }
+      cb(null, e.ctx || null);
+    };
     srv = https.createServer(tls, handler);
     // pick up a renewed or replaced certificate without a restart
     let last = tls.cert.toString() + tls.key.toString();
@@ -216,9 +280,17 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
   if (httpPort) {
     redirect = http.createServer((req, res) => {
       const p = new URL(req.url, 'http://x').pathname;
+      if (acmeDir && /^\/\.well-known\/acme-challenge\/[\w-]{10,200}$/.test(p)) {
+        let body = null;
+        try { body = fs.readFileSync(path.join(acmeDir, '.well-known', 'acme-challenge', p.split('/').pop())); } catch { }
+        res.writeHead(body ? 200 : 404, { 'Content-Type': 'text/plain' });
+        return res.end(body || 'not found');
+      }
       if (setupRoute(req, res, p, files, certDir)) return;
       if (serveApk && apkRoute(req, res, p, apk)) return;
-      const host = publicHost || String(req.headers.host || '').replace(/:\d+$/, '').replace(/[^\w.\-[\]:]/g, '');
+      // a visitor who typed a domain name stays on it (sms.ir and browsers want the name, not the IP)
+      const typed = reqHost(req);
+      const host = isName(typed) ? typed : (publicHost || typed);
       if (!host) { res.writeHead(400); return res.end(); }
       res.writeHead(302, { Location: `https://${host}${port === 443 ? '' : ':' + port}/`, 'Cache-Control': 'no-store' });
       res.end();
@@ -229,4 +301,4 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
   return { srv, redirect };
 }
 
-module.exports = { start, caInfo, qrSvg };
+module.exports = { start, caInfo, qrSvg, isName, introPage };
