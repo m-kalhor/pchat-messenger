@@ -46,6 +46,8 @@ class UserError(msg: String) : Exception(msg)
 
 enum class KeyStep { CHOOSE, SET_PASSWORD }
 
+/** Engine.codeLogin answer: the number is new and open sign-up asks for a username. */
+const val SIGNUP = "\u0000signup"
 const val SMS_DOWN = "پیامک در دسترس نیست. کد را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید و «کد را دارم» را بزنید."
 const val LOCKED_TEXT = "🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)"
 
@@ -76,6 +78,8 @@ object Engine {
     /** My privacy switches (both work both ways: who hides it does not see it from others either). */
     val hideSeen = MutableStateFlow(false)
     val hideLastSeen = MutableStateFlow(false)
+    /** Others who have my mobile number may find me in Sepan (Settings › privacy). */
+    val findable = MutableStateFlow(true)
     val loggedIn = MutableStateFlow(false)
     /** null = unknown yet, true = the server holds a key-password backup of this device's identity key, false = it does not */
     val keyBackedUp = MutableStateFlow<Boolean?>(null)
@@ -249,6 +253,8 @@ object Engine {
             val prev = identity!!
             val prevMe = prefs.getString("me", null)
             val r = Api.codeLogin(phone.trim(), code.trim(), if (prevMe == null) prev.pubB64 else null)
+            // a new number with open sign-up: the login screen asks for a username next (signup())
+            if (r.optBoolean("signup")) { signupTicket = r.getString("ticket"); return@withContext SIGNUP }
             val local = if (prevMe != null && prevMe != r.getString("username")) Crypto.generateIdentity() else prev
             finishLogin(r, local, "")
             null
@@ -261,6 +267,30 @@ object Engine {
         } catch (e: Exception) {
             "اتصال به سرور برقرار نشد"
         }
+    }
+
+    @Volatile private var signupTicket: String? = null
+
+    /** Open sign-up, second step: opens the account with the chosen username. Returns an error or null. */
+    suspend fun signup(username: String, displayName: String): String? = withContext(Dispatchers.IO) {
+        val t = signupTicket ?: return@withContext "زمان ثبت‌نام گذشت؛ دوباره کد بگیرید"
+        try {
+            val u = username.trim().lowercase()
+            val prevMe = prefs.getString("me", null)
+            val local = if (prevMe != null && prevMe != u) Crypto.generateIdentity() else identity!!
+            finishLogin(Api.signup(t, u, displayName.trim(), local.pubB64), local, "")
+            signupTicket = null
+            null
+        } catch (e: Api.HttpError) {
+            when (e.error) {
+                "user_exists" -> "این نام کاربری گرفته شده؛ نام دیگری انتخاب کنید"
+                "invalid_username" -> "نام کاربری: ۲ تا ۲۰ حرف انگلیسی کوچک، رقم یا _ (فقط رقم نباشد)"
+                "bad_ticket" -> { signupTicket = null; "زمان ثبت‌نام گذشت؛ دوباره کد بگیرید" }
+                "phone_taken" -> "این شماره همین حالا حساب دارد؛ دوباره وارد شوید"
+                "rate_limited" -> "از این شبکه امروز ثبت‌نام زیادی انجام شده؛ بعداً امتحان کنید"
+                else -> "خطای سرور (${e.code})"
+            }
+        } catch (e: Exception) { "اتصال به سرور برقرار نشد" }
     }
 
     /** Asks for an SMS login code. Returns null when sent, else an error (and how many seconds to wait). */
@@ -1061,10 +1091,51 @@ object Engine {
     private fun setPrivacyLocal(o: JSONObject) {
         hideSeen.value = o.optBoolean("hide_seen", false)
         hideLastSeen.value = o.optBoolean("hide_last_seen", false)
+        if (o.has("findable")) findable.value = o.optBoolean("findable", true)
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 
     private fun refreshMe() = setPrivacyLocal(Api.me())
+
+    suspend fun setFindable(on: Boolean): String? = withContext(Dispatchers.IO) {
+        try { setPrivacyLocal(Api.setFindable(on)); null } catch (e: Exception) { errText(e) }
+    }
+
+    /** A member found by mobile number. */
+    data class Found(val phone: String, val name: String?, val username: String, val displayName: String?, val connected: Boolean)
+
+    /** Matches (phone, name in the phone's contacts) against the members; Pair(found, error). */
+    suspend fun lookup(numbers: List<Pair<String, String?>>): Pair<List<Found>?, String?> = withContext(Dispatchers.IO) {
+        try {
+            val a = Api.lookup(numbers.map { it.first })
+            // the server answers with normalized numbers: match them back to the contact names by their last 10 digits
+            val names = numbers.associate { it.first.filter(Char::isDigit).takeLast(10) to it.second }
+            val out = (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                val ph = o.getString("phone")
+                Found(ph, names[ph.filter(Char::isDigit).takeLast(10)], o.getString("username"),
+                    if (o.isNull("display_name")) null else o.optString("display_name"), o.optBoolean("connected"))
+            }
+            out to null
+        } catch (e: Api.HttpError) {
+            null to (if (e.code == 429) "امروز بیش از حد جستجو کرده‌اید؛ فردا دوباره امتحان کنید" else errText(e))
+        } catch (e: Exception) { null to errText(e) }
+    }
+
+    /** Mobile numbers in the phone's contacts (needs READ_CONTACTS): (number, contact name). */
+    fun phoneContacts(): List<Pair<String, String?>> {
+        val out = LinkedHashMap<String, String?>()
+        val uri = android.provider.ContactsContract.CommonDataKinds.Phone.CONTENT_URI
+        val cols = arrayOf(android.provider.ContactsContract.CommonDataKinds.Phone.NUMBER, android.provider.ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME)
+        app.contentResolver.query(uri, cols, null, null, null)?.use { c ->
+            while (c.moveToNext()) {
+                val n = c.getString(0) ?: continue
+                val digits = n.filter { it.isDigit() || it == '+' }
+                if (digits.count { it.isDigit() } >= 7) out.putIfAbsent(digits, c.getString(1))
+            }
+        }
+        return out.entries.take(2000).map { it.key to it.value }
+    }
 
     suspend fun setPrivacy(hideSeen: Boolean, hideLastSeen: Boolean): String? = withContext(Dispatchers.IO) {
         try {

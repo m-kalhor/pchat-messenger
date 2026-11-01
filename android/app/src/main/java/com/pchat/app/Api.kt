@@ -130,6 +130,19 @@ object Api {
     /** A one-time code for signing in on another device: {code, ttl, phone}. */
     fun deviceCode(): JSONObject = JSONObject(exec(req("/api/auth/devicecode").post("{}".toRequestBody(JSON)).build()))
 
+    /** Open sign-up: opens the account for a number proven by SMS (ticket from codeLogin); same answer as login(). */
+    fun signup(ticket: String, username: String, displayName: String, pub: String): JSONObject = JSONObject(postPublic("/api/auth/signup",
+        JSONObject().put("ticket", ticket).put("username", username).put("display_name", displayName).put("pubkey", pub).put("device", "Android")))
+
+    /** Members with these mobile numbers (who allow being found): [{phone, username, display_name, connected}]. */
+    fun lookup(phones: List<String>): JSONArray {
+        val b = JSONObject().put("phones", JSONArray(phones))
+        return JSONObject(exec(req("/api/contacts/lookup").post(b.toString().toRequestBody(JSON)).build())).getJSONArray("matches")
+    }
+
+    fun setFindable(on: Boolean): JSONObject =
+        JSONObject(exec(req("/api/privacy").post(JSONObject().put("findable", on).toString().toRequestBody(JSON)).build()))
+
     /** Sends an SMS code that stands in for the login password when the key backup changes. */
     fun reauthSms() { exec(req("/api/auth/reauth").post("{}".toRequestBody(JSON)).build()) }
 

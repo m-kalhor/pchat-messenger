@@ -108,6 +108,10 @@ fun LoginScreen() {
     val scope = rememberCoroutineScope()
     var cfgSms by remember { mutableStateOf(true) }
     var cfgPassword by remember { mutableStateOf(true) }
+    var cfgSignup by remember { mutableStateOf(false) }
+    var signupStep by remember { mutableStateOf(false) }
+    var newUser by remember { mutableStateOf("") }
+    var newName by remember { mutableStateOf("") }
     var byPassword by remember { mutableStateOf(false) }
     var codeStep by remember { mutableStateOf(false) }
     var phone by remember { mutableStateOf("") }
@@ -122,6 +126,7 @@ fun LoginScreen() {
         Engine.authConfig()?.let { c ->
             cfgSms = c.optBoolean("sms", true)
             cfgPassword = c.optBoolean("password", true)
+            cfgSignup = c.optBoolean("signup", false)
             if (!cfgSms) { codeStep = true; info = "کد ۶ رقمی را که روی دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر گرفته‌اید وارد کنید." }
         }
     }
@@ -155,13 +160,55 @@ fun LoginScreen() {
             Text("✉", color = Color.White, fontSize = 44.sp)
         }
         Spacer(Modifier.height(20.dp))
-        Text("ورود به سپن", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Text(if (signupStep) "ساخت حساب تازه" else "ورود به سپن", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(6.dp))
         Text(
-            if (byPassword) "نام کاربری و رمز را مدیر سرور به شما داده است" else "با شمارهٔ موبایلی که مدیر برای شما ثبت کرده",
+            when {
+                signupStep -> "شمارهٔ ${phone.trim()} تأیید شد. یک نام کاربری برای خودتان انتخاب کنید."
+                byPassword -> "نام کاربری و رمز را مدیر سرور به شما داده است"
+                cfgSignup -> "با شمارهٔ موبایل وارد شوید؛ اگر حساب ندارید، همین‌جا ساخته می‌شود"
+                else -> "با شمارهٔ موبایلی که مدیر برای شما ثبت کرده"
+            },
             fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
         )
         Spacer(Modifier.height(24.dp))
+        if (signupStep) {
+            OutlinedTextField(
+                value = newUser, onValueChange = { v -> newUser = v.trim().lowercase().filter { it in 'a'..'z' || it in '0'..'9' || it == '_' }.take(20) },
+                singleLine = true, label = { Text("نام کاربری (انگلیسی)") },
+                supportingText = { Text("حروف انگلیسی، عدد و _ ، ۲ تا ۲۰ نویسه") },
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedTextField(
+                value = newName, onValueChange = { newName = it.take(40) }, singleLine = true, label = { Text("نام نمایشی") },
+                modifier = Modifier.fillMaxWidth()
+            )
+            error?.let {
+                Spacer(Modifier.height(10.dp))
+                Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, textAlign = TextAlign.Center)
+            }
+            Spacer(Modifier.height(20.dp))
+            Button(
+                onClick = {
+                    busy = true; error = null
+                    scope.launch {
+                        error = Engine.signup(newUser, newName.trim().ifEmpty { newUser })
+                        busy = false
+                    }
+                },
+                enabled = !busy && newUser.length >= 2 && !newUser.all { it.isDigit() },
+                modifier = Modifier.fillMaxWidth().height(50.dp)
+            ) {
+                if (busy) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+                else Text("ساخت حساب")
+            }
+            Spacer(Modifier.height(8.dp))
+            link("انصراف") { signupStep = false; codeStep = false; code = ""; info = null }
+            Spacer(Modifier.height(24.dp))
+            return@Column
+        }
         if (byPassword) {
             OutlinedTextField(
                 value = user, onValueChange = { user = it }, singleLine = true, label = { Text("نام کاربری") },
@@ -206,7 +253,8 @@ fun LoginScreen() {
                 else {
                     busy = true; error = null
                     scope.launch {
-                        error = if (byPassword) Engine.login(user, pass) else Engine.codeLogin(phone, code)
+                        val r = if (byPassword) Engine.login(user, pass) else Engine.codeLogin(phone, code)
+                        if (r == SIGNUP) { signupStep = true; error = null; info = null } else error = r
                         busy = false
                     }
                 }

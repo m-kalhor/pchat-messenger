@@ -198,6 +198,12 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 "اگر خاموش کنید، دیگران فقط «اخیراً آنلاین بوده» می‌بینند و شما هم آخرین بازدید دیگران را نمی‌بینید.",
                 !hideLast
             ) { v -> scope.launch { Engine.setPrivacy(hideSeen, !v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
+            val findable by Engine.findable.collectAsState()
+            SwitchRow(
+                "پیدا شدن با شمارهٔ موبایل",
+                "کسانی که شمارهٔ شما را دارند می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به هیچ‌کس نشان داده نمی‌شود.",
+                findable
+            ) { v -> scope.launch { Engine.setFindable(v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
             SettingRow("قفل برنامه", if (lockOn) "روشن" else "خاموش") { showLock = true }
             SettingRow("اثرانگشت کلیدها", "مقایسهٔ کلید امنیتی با مخاطبان") { showKeys = true }
             SettingRow("رمز کلید", when (backedUp) {

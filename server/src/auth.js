@@ -1,7 +1,7 @@
 'use strict';
 /**
- * Sign-in by mobile number (1.5.0). A user is found by the mobile number the admin entered in the panel;
- * there is no open sign-up. One-time codes come from three places, so a dead SMS service never locks
+ * Sign-in by mobile number (1.5.0). A user is found by the mobile number on the account (entered by the admin, or confirmed by SMS at open sign-up);
+ * one-time codes come from three places, so a dead SMS service never locks
  * anybody out:
  *   'sms'    5 digits by SMS (sms.ir), 2 minutes;
  *   'device' 6 digits shown on one of the user's devices that is already signed in, 5 minutes;

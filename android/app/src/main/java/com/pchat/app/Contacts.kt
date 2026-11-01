@@ -1,5 +1,13 @@
 package com.pchat.app
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -33,38 +41,100 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
-/** Ask another user (by exact username) to connect; once they accept, both can chat. */
+/**
+ * Ask another user to connect, by exact username or by mobile number; or find the members among the
+ * phone's contacts (the numbers are only matched on the server, never kept). Once they accept, both can chat.
+ */
 @Composable
 fun AddContactDialog(onClose: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val ctx = LocalContext.current
     var name by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var msg by remember { mutableStateOf<String?>(null) }
+    var found by remember { mutableStateOf<List<Engine.Found>?>(null) }
+    var sent by remember { mutableStateOf(setOf<String>()) }
+
+    fun request(user: String) {
+        busy = true; msg = null
+        scope.launch {
+            val (err, result) = Engine.contactAction("request", user)
+            busy = false
+            if (err == null) sent = sent + user
+            msg = err ?: if (result == "connected") "متصل شدید؛ $user هم برای شما درخواست فرستاده بود." else "درخواست برای $user فرستاده شد."
+        }
+    }
+    fun scanContacts() {
+        busy = true; msg = null
+        scope.launch {
+            val nums = withContext(Dispatchers.IO) { try { Engine.phoneContacts() } catch (e: Exception) { emptyList() } }
+            if (nums.isEmpty()) { busy = false; msg = "شماره‌ای در مخاطبان گوشی پیدا نشد."; return@launch }
+            val (list, err) = Engine.lookup(nums)
+            busy = false
+            if (err != null) msg = err
+            else { found = list; if (list.isNullOrEmpty()) msg = "هیچ‌کدام از مخاطبان گوشی (یا کسی که پیدا شدن با شماره را روشن گذاشته) در سپن نیست." }
+        }
+    }
+    val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) scanContacts() else msg = "بدون اجازهٔ دسترسی به مخاطبان نمی‌شود آن‌ها را جستجو کرد."
+    }
+    val isPhone = name.isNotEmpty() && name.all { it.isDigit() || it == '+' || it in '۰'..'۹' || it == ' ' }
+
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text("افزودن مخاطب") },
         text = {
-            Column {
-                Text("نام کاربری دقیق شخص را وارد کنید. بعد از اینکه او درخواست را بپذیرد، می‌توانید با هم گفتگو کنید.", fontSize = 13.sp)
-                Spacer(Modifier.height(10.dp))
-                OutlinedTextField(
-                    value = name, onValueChange = { name = it.trim().lowercase().take(20) }, singleLine = true,
-                    label = { Text("نام کاربری") }, modifier = Modifier.fillMaxWidth(),
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii)
-                )
-                if (busy) CircularProgressIndicator(Modifier.padding(top = 8.dp).size(22.dp), strokeWidth = 2.dp)
-                msg?.let { Text(it, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+            LazyColumn {
+                item {
+                    Text("نام کاربری یا شمارهٔ موبایل شخص را وارد کنید. بعد از اینکه او درخواست را بپذیرد، می‌توانید با هم گفتگو کنید.", fontSize = 13.sp)
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = name, onValueChange = { name = it.trim().lowercase().take(20) }, singleLine = true,
+                        label = { Text("نام کاربری یا شمارهٔ موبایل") }, modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii)
+                    )
+                    TextButton(enabled = !busy, onClick = {
+                        val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED
+                        if (granted) scanContacts() else permission.launch(Manifest.permission.READ_CONTACTS)
+                    }) { Text("پیدا کردن از مخاطبان گوشی") }
+                    if (busy) CircularProgressIndicator(Modifier.padding(top = 4.dp).size(22.dp), strokeWidth = 2.dp)
+                    msg?.let { Text(it, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+                }
+                found?.let { list ->
+                    if (list.isNotEmpty()) item {
+                        Text("در سپن هستند", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp))
+                    }
+                    items(list, key = { "f:" + it.username }) { f ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text(f.name ?: f.displayName ?: f.username, fontWeight = FontWeight.SemiBold)
+                                Text(listOfNotNull(f.displayName?.takeIf { it != f.name }, f.username).joinToString(" · "), fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                            when {
+                                f.connected -> Text("مخاطب شماست", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                                f.username in sent -> Text("فرستاده شد", fontSize = 12.sp)
+                                else -> TextButton(enabled = !busy, onClick = { request(f.username) }) { Text("درخواست ارتباط") }
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             TextButton(enabled = name.length >= 2 && !busy, onClick = {
+                if (!isPhone) { request(name); return@TextButton }
                 busy = true; msg = null
                 scope.launch {
-                    val (err, result) = Engine.contactAction("request", name)
+                    val (list, err) = Engine.lookup(listOf(name to null))
                     busy = false
-                    msg = err ?: if (result == "connected") "متصل شدید؛ $name هم برای شما درخواست فرستاده بود." else "درخواست برای $name فرستاده شد."
+                    when {
+                        err != null -> msg = err
+                        list.isNullOrEmpty() -> msg = "کسی با این شماره در سپن پیدا نشد (یا پیدا شدن با شماره را خاموش کرده)."
+                        else -> found = list
+                    }
                 }
-            }) { Text("ارسال درخواست") }
+            }) { Text(if (isPhone) "جستجو" else "ارسال درخواست") }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("بستن") } }
     )
