@@ -1,6 +1,6 @@
 {
   "name": "pchat-messenger",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Tests for the PChat server (no npm dependencies; Node.js 22+)",
   "engines": { "node": ">=22.5" },

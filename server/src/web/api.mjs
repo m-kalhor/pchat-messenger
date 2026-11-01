@@ -33,6 +33,8 @@ export const smsCode = (phone) => call('POST', '/api/auth/sms', { phone });
 export const codeLogin = (phone, code, device) => call('POST', '/api/auth/code', { phone, code, device });
 export const deviceCode = () => call('POST', '/api/auth/devicecode', {});
 export const reauthSms = () => call('POST', '/api/auth/reauth', {});
+export const signup = (ticket, username, display_name, device) => call('POST', '/api/auth/signup', { ticket, username, display_name, device });
+export const lookup = (phones) => call('POST', '/api/contacts/lookup', { phones });
 export const getKeyBackup = () => call('GET', '/api/keybackup');
 export const saveKeyBackup = (key_backup, password) => call('POST', '/api/keybackup', { key_backup, password });
 export const logout = () => call('POST', '/api/logout', {});

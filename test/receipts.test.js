@@ -112,7 +112,7 @@ test('groups: every member reports separately; all of them see each other\'s rec
 
 test('hiding "seen" works both ways in private chats, and never in groups', async () => {
   const id = await send(ali, 'bob');
-  assert.deepEqual((await S.api(bob, 'POST', '/api/privacy', { hide_seen: true })).data, { hide_seen: true, hide_last_seen: false });
+  assert.deepEqual((await S.api(bob, 'POST', '/api/privacy', { hide_seen: true })).data, { hide_seen: true, hide_last_seen: false, findable: true });
   assert.equal((await S.api(bob, 'GET', '/api/me')).data.hide_seen, true);
   const before = rcptRow('bob', 'dm:ali:bob').seen;
   await receipts(bob, [{ target: 'ali', seen: id }]);

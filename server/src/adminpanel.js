@@ -68,6 +68,7 @@ function authInfo(ctx) {
   return {
     api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
     enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
+    open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
   };
 }
 
@@ -259,6 +260,12 @@ async function route(ctx, req, res, secure) {
     }
     if (typeof b.enabled === 'boolean') setSetting('sms_enabled', b.enabled ? '1' : '0');
     if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
+    if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
+    if (b.signup_category !== undefined) {
+      const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);
+      if (c && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(Number(c))) return json(res, 400, { error: 'bad_category' });
+      setSetting('signup_category', c);
+    }
     return json(res, 200, authInfo(ctx));
   }
   // sends one real SMS with a test code, to check the key, the template and that the server reaches sms.ir

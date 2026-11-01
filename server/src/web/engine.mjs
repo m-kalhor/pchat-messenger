@@ -16,7 +16,7 @@ export const S = {
   gtyping: {},                // group -> { username: when they last typed }
   receipts: {},               // convo -> { username: { d: delivered up to id, s: seen up to id } }
   rseq: -1,                   // last reaction change seen (-1 = none yet)
-  privacy: { hide_seen: false, hide_last_seen: false },
+  privacy: { hide_seen: false, hide_last_seen: false, findable: true },
   convos: new Map(),          // convo -> array of messages, oldest first
   lastId: 0,
   cseq: -1,                   // last edit/delete number seen (-1 = none yet)
@@ -120,11 +120,32 @@ export async function login(username, password) {
 
 /** Signs in with a one-time code (SMS, another device of the user, or the admin). */
 export async function codeLogin(phone, code) {
-  const r = await api.codeLogin(phone.trim(), code.trim(), isIOS ? 'iPhone (وب)' : 'مرورگر (وب)');
+  const r = await api.codeLogin(phone.trim(), code.trim(), DEVICE);
+  // a new number with open sign-up: the caller asks for a username and calls signup(ticket, …)
+  if (r.signup) return { signup: true, ticket: r.ticket, phone: r.phone };
   // no login password here: right after a code sign-in the server accepts the key backup without one
   return finishLogin(r, '');
 }
+
+/** Open sign-up: opens the account for a number proven by SMS. Returns null or an error text. */
+export async function signup(ticket, username, displayName) {
+  try { await finishLogin(await api.signup(ticket, username.trim().toLowerCase(), displayName.trim(), DEVICE), ''); return null; }
+  catch (e) {
+    const err = e instanceof api.HttpError ? e.body.error : null;
+    if (err === 'user_exists') return 'این نام کاربری گرفته شده؛ نام دیگری انتخاب کنید';
+    if (err === 'invalid_username') return 'نام کاربری: ۲ تا ۲۰ حرف انگلیسی کوچک، رقم یا _ (فقط رقم نباشد)';
+    if (err === 'bad_ticket') return 'زمان ثبت‌نام گذشت؛ دوباره کد بگیرید';
+    if (err === 'phone_taken') return 'این شماره همین حالا حساب دارد؛ دوباره وارد شوید';
+    return errText(e);
+  }
+}
+
+/** Members with these mobile numbers (who allow it): [{ phone, username, display_name, connected }]. */
+export async function lookup(phones) {
+  try { return { matches: (await api.lookup(phones)).matches }; } catch (e) { return { error: errText(e) }; }
+}
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const DEVICE = isIOS ? 'iPhone (وب)' : 'مرورگر (وب)';
 
 async function finishLogin(r, password) {
   let id = S.identity || (await C.newIdentity());
@@ -284,7 +305,7 @@ export async function refreshRequests() {
 }
 export async function refreshMe() {
   const r = await api.me();
-  S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen };
+  S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false };
   await store.kvSet('privacy', S.privacy);
   emit('privacy');
 }

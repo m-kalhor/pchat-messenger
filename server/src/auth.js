@@ -6,7 +6,8 @@
  *   'sms'    5 digits by SMS (sms.ir), 2 minutes;
  *   'device' 6 digits shown on one of the user's devices that is already signed in, 5 minutes;
  *   'admin'  6 digits made by the admin in the panel and passed on in person or by phone, 10 minutes;
- *   'reauth' 5 digits by SMS to confirm the account before the key backup changes (no login password).
+ *   'reauth' 5 digits by SMS to confirm the account before the key backup changes (no login password);
+ *   'signup' 5 digits by SMS to a number that has no account yet (open sign-up, 1.6), kept under 'tel:<number>'.
  * Every code is single-use, stored only as an HMAC and dies after 3 wrong tries. A code opens the account
  * only; the messages still need the key password, which only the user knows.
  */
@@ -14,8 +15,8 @@ const crypto = require('node:crypto');
 const { db, getSetting, setSetting } = require('./db');
 
 const MIN = 60e3;
-const TTL = { sms: 2 * MIN, device: 5 * MIN, admin: 10 * MIN, reauth: 5 * MIN };
-const DIGITS = { sms: 5, device: 6, admin: 6, reauth: 5 };
+const TTL = { sms: 2 * MIN, device: 5 * MIN, admin: 10 * MIN, reauth: 5 * MIN, signup: 2 * MIN };
+const DIGITS = { sms: 5, device: 6, admin: 6, reauth: 5, signup: 5 };
 const MAX_TRIES = 3;
 const SMS_URL = process.env.SMS_API_URL || 'https://api.sms.ir/v1';
 
@@ -106,6 +107,15 @@ const smsConfig = () => ({
 });
 const smsReady = () => { const c = smsConfig(); return c.enabled && !!c.api_key && /^\d+$/.test(c.template_id); };
 const passwordLogin = () => getSetting('password_login', '1') === '1';
+/** Open sign-up: anybody with a mobile number confirmed by SMS gets an account (off unless the admin turns it on). */
+const openSignup = () => getSetting('open_signup', '0') === '1' && smsReady();
+const signupCategory = () => { const v = getSetting('signup_category', ''); return /^\d+$/.test(v) ? Number(v) : null; };
+/** Phone numbers in use (normalized) -> username. */
+function phoneMap() {
+  const m = new Map();
+  for (const u of q.phones.all()) { const p = normPhone(u.phone); if (p) m.set(p, u.username); }
+  return m;
+}
 
 function smsState(ok, error) {
   if (ok) setSetting('sms_last_ok', Date.now());
@@ -150,5 +160,6 @@ const smsCredit = () => smsCall('/credit', 'GET', undefined, smsConfig().api_key
 function cleanup() { q.dead.run(Date.now(), MAX_TRIES); }
 
 module.exports = {
-  TTL, normPhone, findUser, phoneOf, issue, consume, smsConfig, smsReady, passwordLogin, smsStatus, sendSms, smsCredit, cleanup,
+  TTL, normPhone, findUser, phoneOf, phoneMap, issue, consume, smsConfig, smsReady, passwordLogin, openSignup, signupCategory, smsStatus,
+  sendSms, smsCredit, cleanup,
 };

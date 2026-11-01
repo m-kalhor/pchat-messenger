@@ -71,6 +71,7 @@ const q = {
   allPins: db.prepare('SELECT * FROM pins'),
   setLastSeen: db.prepare('UPDATE users SET last_seen=? WHERE username=?'),
   setPrivacy: db.prepare('UPDATE users SET hide_seen=?, hide_last_seen=? WHERE username=?'),
+  setFindable: db.prepare('UPDATE users SET findable=? WHERE username=?'),
   rcpt: db.prepare('SELECT delivered, seen FROM receipts WHERE username=? AND convo=?'),
   setRcpt: db.prepare('INSERT INTO receipts(username,convo,delivered,seen) VALUES(?,?,?,?) ON CONFLICT(username,convo) DO UPDATE SET delivered=excluded.delivered, seen=excluded.seen'),
   maxFrom: db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE sender=? AND target=?'),
@@ -364,6 +365,16 @@ function pinsFor(user) {
 }
 
 const smsSent = new Map(); // phone -> time of the last SMS code (one per minute)
+const signupTickets = new Map(); // ticket -> { phone, t }: a number proven by SMS, waiting for its username
+const signupsByIp = new Map();   // ip -> { n, t }: accounts opened from this address in the last day
+const SIGNUPS_PER_IP = +(process.env.SIGNUPS_PER_IP || 5);
+const lookups = new Map(); // username -> { n, t }: numbers looked up today
+const LOOKUP_DAY = +(process.env.LOOKUP_PER_DAY || 3000);
+setInterval(() => {
+  const t = now();
+  for (const [k, v] of signupTickets) if (t - v.t > 15 * 60e3) signupTickets.delete(k);
+  for (const [k, v] of signupsByIp) if (t - v.t > DAY) signupsByIp.delete(k);
+}, 600e3).unref();
 const DEVICE_RE = /[^\p{L}\p{N} .,()\-_/]/gu;
 
 /**
@@ -428,7 +439,7 @@ async function route(req, res) {
   // ---- sign-in by mobile number (see auth.js) ----
   // what the login screen offers: SMS codes, the old username + password, the Android app download
   if (p === '/api/auth/config' && req.method === 'GET') {
-    return send(res, 200, { sms: auth.smsReady(), password: auth.passwordLogin(), apk: !!apkInfo() });
+    return send(res, 200, { sms: auth.smsReady(), password: auth.passwordLogin(), apk: !!apkInfo(), signup: auth.openSignup() });
   }
   // sends a login code by SMS. An unknown number gets the same answer as a known one (no way to probe numbers).
   if (p === '/api/auth/sms' && req.method === 'POST') {
@@ -443,8 +454,10 @@ async function route(req, res) {
     addFail('smsip:' + ip); addFail('sms:' + phone);
     smsSent.set(phone, now());
     const username = auth.findUser(phone);
-    if (username) {
-      const { code } = auth.issue(username, 'sms');
+    // with open sign-up a new number gets a code too; it opens the sign-up form instead of an account
+    const holder = username || (auth.openSignup() && !auth.phoneMap().has(phone) ? 'tel:' + phone : null);
+    if (holder) {
+      const { code } = auth.issue(holder, username ? 'sms' : 'signup');
       try { await auth.sendSms(phone, code); } catch { smsSent.delete(phone); return send(res, 503, { error: 'sms_unavailable' }); }
     }
     return send(res, 200, { ok: true, ttl: auth.TTL.sms / 1000 });
@@ -458,9 +471,39 @@ async function route(req, res) {
     if (limited('ip:' + ip, 20) || limited(key, 5)) return send(res, 429, { error: 'rate_limited' });
     const username = auth.findUser(ident);
     const via = username && auth.consume(username, b.code, ['sms', 'device', 'admin']);
-    if (!via) { addFail('ip:' + ip); addFail(key); return send(res, 401, { error: 'bad_code' }); }
+    if (!via) {
+      // a new number with open sign-up: the code proves the number, the client then asks for a username
+      const phone = !username && auth.openSignup() && auth.normPhone(ident);
+      if (phone && auth.consume('tel:' + phone, b.code, ['signup'])) {
+        fails.delete(key);
+        const ticket = crypto.randomBytes(24).toString('hex');
+        signupTickets.set(ticket, { phone, t: now() });
+        return send(res, 200, { signup: true, ticket, phone });
+      }
+      addFail('ip:' + ip); addFail(key); return send(res, 401, { error: 'bad_code' });
+    }
     fails.delete(key);
     return send(res, 200, newSession(core.q.user.get(username), via, b));
+  }
+  // open sign-up, second step: the number was proven by SMS (ticket from /api/auth/code), now the account
+  if (p === '/api/auth/signup' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    const tk = signupTickets.get(String(b.ticket || ''));
+    if (!tk || now() - tk.t > 15 * 60e3 || !auth.openSignup()) return send(res, 400, { error: 'bad_ticket' });
+    const username = String(b.username || '').trim().toLowerCase();
+    if (!core.NAME_RE.test(username) || username === 'all' || /^\d+$/.test(username)) return send(res, 400, { error: 'invalid_username' });
+    if (core.q.user.get(username)) return send(res, 409, { error: 'user_exists' });
+    if (auth.phoneMap().has(tk.phone)) { signupTickets.delete(b.ticket); return send(res, 409, { error: 'phone_taken' }); }
+    const ip = req.socket.remoteAddress;
+    const day = signupsByIp.get(ip);
+    if (day && now() - day.t < DAY && day.n >= SIGNUPS_PER_IP) return send(res, 429, { error: 'rate_limited' });
+    const cat = auth.signupCategory();
+    core.createUser(username, b.display_name, cat ? [cat] : []);
+    db.prepare('UPDATE users SET phone=? WHERE username=?').run(tk.phone, username);
+    signupTickets.delete(b.ticket);
+    signupsByIp.set(ip, day && now() - day.t < DAY ? { n: day.n + 1, t: day.t } : { n: 1, t: now() });
+    if (cat) refreshAll(); // the default group gained a member
+    return send(res, 200, { ...newSession(core.q.user.get(username), 'sms', b), created: true });
   }
 
   const a = authInfo(req);
@@ -492,7 +535,7 @@ async function route(req, res) {
     const u = core.q.user.get(user);
     return send(res, 200, {
       username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
-      hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen,
+      hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
     });
   }
 
@@ -508,12 +551,14 @@ async function route(req, res) {
     const u = core.q.user.get(user);
     const hs = typeof b.hide_seen === 'boolean' ? b.hide_seen : !!u.hide_seen;
     const hl = typeof b.hide_last_seen === 'boolean' ? b.hide_last_seen : !!u.hide_last_seen;
+    const fd = typeof b.findable === 'boolean' ? b.findable : !!u.findable;
     q.setPrivacy.run(hs ? 1 : 0, hl ? 1 : 0, user);
+    q.setFindable.run(fd ? 1 : 0, user);
     if (hl !== !!u.hide_last_seen) {
       const nu = core.q.user.get(user);
       for (const v of audienceOf(user)) if (v !== user) emit(v, 'presence', { user, ...presenceOf(nu, v) });
     }
-    return send(res, 200, { hide_seen: hs, hide_last_seen: hl });
+    return send(res, 200, { hide_seen: hs, hide_last_seen: hl, findable: fd });
   }
 
   // the app went to the foreground / background on device `dev`
@@ -772,6 +817,28 @@ async function route(req, res) {
     if (tr.type === 'group') for (const u of core.membersOf(tr.cat.id)) emit(u, 'pin', { convo: key, messageId: mid, by: user });
     else { emit(tr.peer, 'pin', { convo: user, messageId: mid, by: user }); emit(user, 'pin', { convo: tr.peer, messageId: mid, by: user }); }
     return send(res, 200, { ok: true });
+  }
+
+  // ---- finding members by mobile number (the phone's contacts, or one number typed in) ----
+  // The list is matched and forgotten. The answer holds only members who allow it (name and username, no
+  // more), at most LOOKUP_DAY numbers per user per day, so the directory cannot be harvested.
+  if (p === '/api/contacts/lookup' && req.method === 'POST') {
+    const b = await readJson(req, 262144);
+    const list = (Array.isArray(b.phones) ? b.phones : []).slice(0, 2000).map((x) => auth.normPhone(x)).filter(Boolean);
+    const uniq = [...new Set(list)];
+    const used = lookups.get(user);
+    const day = used && now() - used.t < DAY ? used : { n: 0, t: now() };
+    if (day.n + uniq.length > LOOKUP_DAY) return send(res, 429, { error: 'rate_limited' });
+    lookups.set(user, { n: day.n + uniq.length, t: day.t });
+    const want = new Set(uniq);
+    const known = core.contacts(user);
+    const out = [];
+    for (const r of db.prepare("SELECT username, display_name, phone FROM users WHERE disabled=0 AND findable=1 AND phone IS NOT NULL AND phone<>''").all()) {
+      const ph = auth.normPhone(r.phone);
+      if (!ph || !want.has(ph) || r.username === user || core.isBlocked(user, r.username)) continue;
+      out.push({ phone: ph, username: r.username, display_name: r.display_name || null, connected: contacts.connected(user, r.username), known: known.has(r.username) });
+    }
+    return send(res, 200, { matches: out });
   }
 
   // ---- connection requests between users (fill the visibility matrix without the admin) ----

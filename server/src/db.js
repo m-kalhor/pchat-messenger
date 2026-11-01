@@ -70,6 +70,7 @@ if (!userCols.includes('key_backup')) db.exec('ALTER TABLE users ADD COLUMN key_
 if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT');
 if (!userCols.includes('last_seen')) db.exec('ALTER TABLE users ADD COLUMN last_seen INTEGER');
 if (!userCols.includes('hide_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_seen INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('findable')) db.exec('ALTER TABLE users ADD COLUMN findable INTEGER NOT NULL DEFAULT 1');
 if (!userCols.includes('hide_last_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_last_seen INTEGER NOT NULL DEFAULT 0');
 const sessCols = db.prepare('PRAGMA table_info(sessions)').all().map((r) => r.name);
 if (!sessCols.includes('via')) db.exec("ALTER TABLE sessions ADD COLUMN via TEXT NOT NULL DEFAULT 'password'");

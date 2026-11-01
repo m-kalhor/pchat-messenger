@@ -39,7 +39,7 @@ test.after(async () => { if (S) await S.stop(); if (sms) sms.close(); });
 
 test('without sms.ir settings the login screen offers no SMS and sending says so', async () => {
   const c = (await S.api(null, 'GET', '/api/auth/config')).data;
-  assert.deepEqual(c, { sms: false, password: true, apk: false });
+  assert.deepEqual(c, { sms: false, password: true, apk: false, signup: false });
   const r = await post('/api/auth/sms', { phone: '09121112233' });
   assert.equal(r.status, 503);
   assert.equal(r.data.error, 'sms_unavailable');

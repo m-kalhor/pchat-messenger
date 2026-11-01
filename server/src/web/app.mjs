@@ -7,7 +7,7 @@ import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
 
-const VERSION = '1.5.0';
+const VERSION = '1.6.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -372,7 +372,9 @@ function LoginScreen() {
   const info = h('div', { class: 'hint', style: { margin: 0 } });
   const box = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } });
   const apkBox = h('div');
-  let cfg = { sms: true, password: true, apk: false }, mode = 'phone', step = 'phone', timer = null;
+  let cfg = { sms: true, password: true, apk: false, signup: false }, mode = 'phone', step = 'phone', timer = null, ticket = null;
+  const uname = input('نام کاربری (انگلیسی)', { autocomplete: 'username', maxLength: 20 });
+  const dname = h('input', { type: 'text', placeholder: 'نام نمایشی', maxLength: 40 });
 
   const busy = async (btn, fn) => {
     btn.disabled = true; err.textContent = '';
@@ -419,8 +421,15 @@ function LoginScreen() {
       return busy(loginBtn, () => E.login(user.value, pass.value));
     }
     if (step === 'phone') return cfg.sms ? sendSms(sendBtn) : null;
+    if (step === 'signup') {
+      if (!uname.value.trim()) { err.textContent = 'یک نام کاربری انتخاب کنید'; return; }
+      return busy(loginBtn, async () => { const e2 = await E.signup(ticket, uname.value, dname.value); if (e2) err.textContent = e2; });
+    }
     if (!phone.value.trim() || !code.value.trim()) { err.textContent = 'شمارهٔ موبایل و کد را وارد کنید'; return; }
-    return busy(loginBtn, () => E.codeLogin(phone.value, code.value));
+    return busy(loginBtn, async () => {
+      const r = await E.codeLogin(phone.value, code.value);
+      if (r && r.signup) { ticket = r.ticket; step = 'signup'; clearInterval(timer); render(); uname.focus(); }
+    });
   }
 
   function render() {
@@ -429,9 +438,18 @@ function LoginScreen() {
       return;
     }
     const noSms = !cfg.sms;
+    if (step === 'signup') {
+      loginBtn.textContent = 'ساخت حساب';
+      fill(box,
+        h('div', { class: 'hint', style: { margin: 0 } }, 'شمارهٔ ' + phone.value.trim() + ' تأیید شد و هنوز حسابی ندارد. یک نام کاربری انتخاب کنید؛ دیگران با همین نام شما را پیدا می‌کنند.'),
+        uname, dname, err, loginBtn,
+        link('انصراف', () => { step = 'phone'; ticket = null; loginBtn.textContent = 'ورود'; render(); }));
+      return;
+    }
     fill(box,
       phone,
       step === 'code' ? [code, info] : null,
+      step === 'phone' && cfg.signup ? h('div', { class: 'hint', style: { margin: 0 } }, 'حساب ندارید؟ با همین شماره و کد پیامکی ثبت‌نام می‌شوید.') : null,
       step === 'phone' && noSms ? h('div', { class: 'hint', style: { margin: 0 } }, 'ورود با پیامک روی این سرور فعال نیست. کد ورود را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید.') : null,
       err,
       step === 'phone' && !noSms ? sendBtn : loginBtn,
@@ -627,7 +645,7 @@ function ContactsScreen() {
 
 // ---------------- connection requests ----------------
 function RequestsScreen() {
-  const name = h('input', { type: 'text', placeholder: 'نام کاربری دقیق', class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+  const name = h('input', { type: 'text', placeholder: 'نام کاربری یا شمارهٔ موبایل', class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
   const msg = h('div', { class: 'err' });
   const btn = h('button', { class: 'btn', type: 'submit' }, 'فرستادن درخواست');
   const lists = h('div');
@@ -636,7 +654,22 @@ function RequestsScreen() {
     e.preventDefault();
     if (!name.value.trim()) return;
     btn.disabled = true;
-    const r = await E.contactAction('request', name.value);
+    let who = name.value.trim();
+    // a mobile number: find the member it belongs to (only members who allow being found by number)
+    if (/^[+\d\s\-()۰-۹٠-٩]{7,}$/.test(who)) {
+      const f = await E.lookup([who]);
+      if (f.error || !f.matches.length) {
+        btn.disabled = false;
+        msg.className = 'err';
+        msg.textContent = f.error || 'کسی با این شماره در سپن پیدا نشد (یا پیدا شدن با شماره را خاموش کرده)';
+        return;
+      }
+      const m = f.matches[0];
+      if (m.connected) { btn.disabled = false; msg.className = 'ok'; msg.textContent = (m.display_name || m.username) + ' از قبل در مخاطبان شماست'; return; }
+      if (!(await confirmBox('درخواست ارتباط', 'این شماره متعلق به ' + (m.display_name ? m.display_name + ' ' : '') + '(@' + m.username + ') است. درخواست ارتباط فرستاده شود؟', 'فرستادن'))) { btn.disabled = false; return; }
+      who = m.username;
+    }
+    const r = await E.contactAction('request', who);
     btn.disabled = false;
     msg.className = r.error ? 'err' : 'ok';
     msg.textContent = r.error || (r.result === 'connected' ? 'ارتباط برقرار شد' : 'درخواست فرستاده شد؛ بعد از پذیرفتن او به مخاطبان اضافه می‌شود');
@@ -646,7 +679,7 @@ function RequestsScreen() {
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
     h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, '→'), h('h1', null, 'درخواست‌های ارتباط')),
     h('div', { class: 'scroll' },
-      h('form', { class: 'form', onsubmit: add }, h('div', { class: 'field' }, h('label', null, 'افزودن مخاطب با نام کاربری'), name), msg, btn),
+      h('form', { class: 'form', onsubmit: add }, h('div', { class: 'field' }, h('label', null, 'افزودن مخاطب با نام کاربری یا شمارهٔ موبایل'), name), msg, btn),
       lists));
   const render = batched(() => {
     const { incoming, outgoing } = S.requests;
@@ -1214,6 +1247,15 @@ function SettingsScreen() {
       pushBox,
       h('div', { class: 'section' }, 'حریم خصوصی'),
       privacy('hide_seen', 'نمایش «دیده شد» (دو تیک آبی)', 'اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.'),
+      setting('پیدا شدن با شمارهٔ موبایل', 'کسانی که شمارهٔ شما را دارند، می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به کسی نشان داده نمی‌شود.', (() => {
+        const c = h('input', { type: 'checkbox', checked: S.privacy.findable !== false, onchange: async () => {
+          c.disabled = true;
+          const e = await E.setPrivacy({ findable: c.checked });
+          c.disabled = false;
+          if (e) { toast(e); c.checked = S.privacy.findable !== false; }
+        } });
+        return c;
+      })()),
       privacy('hide_last_seen', 'نمایش آنلاین و آخرین بازدید', 'اگر خاموش کنید، دیگران فقط «اخیراً آنلاین بوده» می‌بینند و شما هم آخرین بازدید دیگران را نمی‌بینید.'),
       h('div', { class: 'section' }, 'داده و فضا'),
       setting('دانلود خودکار عکس‌ها و پیام‌های صوتی', 'تا ۲۵ مگابایت', toggle('autoImages', true)),
