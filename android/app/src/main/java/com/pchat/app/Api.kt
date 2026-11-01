@@ -54,7 +54,11 @@ fun parseGroups(raw: String): List<GroupInfo> {
 }
 
 object Api {
-    class HttpError(val code: Int, msg: String) : IOException(msg)
+    class HttpError(val code: Int, msg: String) : IOException(msg) {
+        /** The server's error code ({"error": "..."}), or "" when the body is not JSON. */
+        val error: String get() = try { JSONObject(message ?: "").optString("error") } catch (e: Exception) { "" }
+        val wait: Int get() = try { JSONObject(message ?: "").optInt("wait", 60) } catch (e: Exception) { 60 }
+    }
 
     private lateinit var client: OkHttpClient
     private lateinit var streamClient: OkHttpClient
@@ -106,6 +110,28 @@ object Api {
         val r = Request.Builder().url(Config.BASE + "/api/login").post(body.toRequestBody(JSON)).build()
         return JSONObject(exec(r))
     }
+
+    private fun postPublic(path: String, body: JSONObject): String =
+        exec(Request.Builder().url(Config.BASE + path).post(body.toString().toRequestBody(JSON)).build())
+
+    /** What the login screen offers: {sms, password, apk}. */
+    fun authConfig(): JSONObject = JSONObject(exec(Request.Builder().url(Config.BASE + "/api/auth/config").get().build()))
+
+    /** Asks for a login code by SMS. */
+    fun smsCode(phone: String) { postPublic("/api/auth/sms", JSONObject().put("phone", phone)) }
+
+    /** Signs in with a one-time code (SMS, another device, or the admin); same answer as login(). */
+    fun codeLogin(phone: String, code: String, pub: String?): JSONObject {
+        val b = JSONObject().put("phone", phone).put("code", code).put("device", "Android")
+        if (pub != null) b.put("pubkey", pub)
+        return JSONObject(postPublic("/api/auth/code", b))
+    }
+
+    /** A one-time code for signing in on another device: {code, ttl, phone}. */
+    fun deviceCode(): JSONObject = JSONObject(exec(req("/api/auth/devicecode").post("{}".toRequestBody(JSON)).build()))
+
+    /** Sends an SMS code that stands in for the login password when the key backup changes. */
+    fun reauthSms() { exec(req("/api/auth/reauth").post("{}".toRequestBody(JSON)).build()) }
 
     /** Stores the password-encrypted identity key on the server (also makes its pub the account's key). */
     fun uploadKeyBackup(kb: JSONObject, pass: String) {

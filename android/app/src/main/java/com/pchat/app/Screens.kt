@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -57,6 +59,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -96,57 +99,148 @@ fun Avatar(name: String, online: Boolean, size: Int = 48) {
     }
 }
 
+/**
+ * Sign-in by mobile number: an SMS code, or (SMS down / no internet) a code from another signed-in
+ * device of the user or from the admin. Username + password stays as a second way while the admin allows it.
+ */
 @Composable
 fun LoginScreen() {
     val scope = rememberCoroutineScope()
+    var cfgSms by remember { mutableStateOf(true) }
+    var cfgPassword by remember { mutableStateOf(true) }
+    var byPassword by remember { mutableStateOf(false) }
+    var codeStep by remember { mutableStateOf(false) }
+    var phone by remember { mutableStateOf("") }
+    var code by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    var info by remember { mutableStateOf<String?>(null) }
+    var wait by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) {
+        Engine.authConfig()?.let { c ->
+            cfgSms = c.optBoolean("sms", true)
+            cfgPassword = c.optBoolean("password", true)
+            if (!cfgSms) { codeStep = true; info = "کد ۶ رقمی را که روی دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر گرفته‌اید وارد کنید." }
+        }
+    }
+    LaunchedEffect(wait) { if (wait > 0) { delay(1000); wait-- } }
+
+    fun sendSms() {
+        if (phone.isBlank()) { error = "شمارهٔ موبایل را وارد کنید"; return }
+        busy = true; error = null
+        scope.launch {
+            val (err, w) = Engine.requestSms(phone)
+            busy = false
+            when {
+                err == null -> { codeStep = true; wait = w; info = "کد ۵ رقمی به ${phone.trim()} پیامک شد." }
+                w > 0 -> { codeStep = true; wait = w; error = err }
+                err == SMS_DOWN -> { codeStep = true; error = err }
+                else -> error = err
+            }
+        }
+    }
+    val link: @Composable (String, () -> Unit) -> Unit = { text, onClick ->
+        TextButton(onClick = { error = null; onClick() }, enabled = !busy) { Text(text, fontSize = 14.sp) }
+    }
 
     Column(
-        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).padding(28.dp),
+        Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background).verticalScroll(rememberScrollState()).padding(28.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
+        Spacer(Modifier.height(24.dp))
         Box(Modifier.size(96.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
             Text("✉", color = Color.White, fontSize = 44.sp)
         }
         Spacer(Modifier.height(20.dp))
         Text("ورود به سپن", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(6.dp))
-        Text("نام کاربری و رمز را مدیر سرور به شما داده است", fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f))
+        Text(
+            if (byPassword) "نام کاربری و رمز را مدیر سرور به شما داده است" else "با شمارهٔ موبایلی که مدیر برای شما ثبت کرده",
+            fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f)
+        )
         Spacer(Modifier.height(24.dp))
-        OutlinedTextField(
-            value = user, onValueChange = { user = it }, singleLine = true, label = { Text("نام کاربری") },
-            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii),
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = pass, onValueChange = { pass = it }, singleLine = true, label = { Text("رمز عبور") },
-            visualTransformation = PasswordVisualTransformation(),
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-            modifier = Modifier.fillMaxWidth()
-        )
+        if (byPassword) {
+            OutlinedTextField(
+                value = user, onValueChange = { user = it }, singleLine = true, label = { Text("نام کاربری") },
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = pass, onValueChange = { pass = it }, singleLine = true, label = { Text("رمز عبور") },
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            OutlinedTextField(
+                value = phone, onValueChange = { phone = it }, singleLine = true, label = { Text("شمارهٔ موبایل") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (codeStep) {
+                Spacer(Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = code, onValueChange = { v -> code = v.filter { it.isDigit() }.take(8) }, singleLine = true, label = { Text("کد") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            info?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f), textAlign = TextAlign.Center)
+            }
+        }
         error?.let {
             Spacer(Modifier.height(10.dp))
-            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+            Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, textAlign = TextAlign.Center)
         }
         Spacer(Modifier.height(20.dp))
+        val sendStep = !byPassword && !codeStep
         Button(
             onClick = {
-                busy = true; error = null
-                scope.launch {
-                    error = Engine.login(user, pass)
-                    busy = false
+                if (sendStep) sendSms()
+                else {
+                    busy = true; error = null
+                    scope.launch {
+                        error = if (byPassword) Engine.login(user, pass) else Engine.codeLogin(phone, code)
+                        busy = false
+                    }
                 }
             },
-            enabled = !busy && user.isNotBlank() && pass.isNotEmpty(),
+            enabled = !busy && when {
+                byPassword -> user.isNotBlank() && pass.isNotEmpty()
+                sendStep -> phone.isNotBlank()
+                else -> phone.isNotBlank() && code.length >= 5
+            },
             modifier = Modifier.fillMaxWidth().height(50.dp)
         ) {
-            if (busy) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp) else Text("ورود")
+            if (busy) CircularProgressIndicator(Modifier.size(22.dp), color = Color.White, strokeWidth = 2.dp)
+            else Text(if (sendStep) "ارسال کد پیامکی" else "ورود")
         }
+        Spacer(Modifier.height(8.dp))
+        if (!byPassword) {
+            if (codeStep && cfgSms) {
+                TextButton(onClick = { sendSms() }, enabled = !busy && wait <= 0) {
+                    Text(if (wait > 0) "ارسال دوباره ($wait)" else "ارسال دوباره", fontSize = 14.sp)
+                }
+                link("پیامک نرسید؟") {
+                    info = "اگر پیامک نمی‌رسد، روی دستگاه دیگری که واردش هستید «تنظیمات › ورود دستگاه تازه» را بزنید و کد ۶ رقمی آن را همین‌جا وارد کنید، یا از مدیر سرور «کد ورود» بخواهید."
+                }
+                link("تغییر شماره") { codeStep = false; code = ""; info = null }
+            }
+            if (!codeStep) link("کد را دارم (از دستگاه دیگر یا مدیر)") {
+                codeStep = true
+                info = "کد ۶ رقمی را که روی دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر گرفته‌اید وارد کنید."
+            }
+            if (cfgPassword) link("ورود با نام کاربری و رمز") { byPassword = true }
+        } else if (cfgSms || !cfgPassword) {
+            link("ورود با شمارهٔ موبایل") { byPassword = false }
+        }
+        Spacer(Modifier.height(24.dp))
     }
 }
 

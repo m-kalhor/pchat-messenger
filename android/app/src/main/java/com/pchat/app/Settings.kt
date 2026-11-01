@@ -83,6 +83,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     val notifTick by Prefs.notifTick.collectAsState()
     var showLock by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
+    var showDevCode by remember { mutableStateOf(false) }
     val backedUp by Engine.keyBackedUp.collectAsState()
     var lockOn by remember { mutableStateOf(AppLock.enabled) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -203,6 +204,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 false -> "تنظیم نشده · برای تنظیم بزنید"
                 else -> "کلید رمزنگاری روی سرور با این رمز قفل است · تغییر"
             }, color = if (backedUp == false) MaterialTheme.colorScheme.error else Color.Unspecified) { showBackup = true }
+            SettingRow("ورود دستگاه تازه", "کد یک‌بارمصرف برای ورود روی گوشی یا مرورگر دیگر، بدون پیامک و حتی بدون اینترنت") { showDevCode = true }
 
             // ---- data and storage ----
             SectionTitle("داده و حافظه")
@@ -223,6 +225,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     if (showPhoto) PhotoDialog(Engine.me) { showPhoto = false }
     if (showLock) LockSettingsDialog { showLock = false; lockOn = AppLock.enabled }
     if (showBackup) KeyPasswordDialog { showBackup = false }
+    if (showDevCode) DeviceCodeDialog { showDevCode = false }
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },
         title = { Text("پاک کردن فایل‌ها") },
