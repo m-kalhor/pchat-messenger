@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>پنل مدیریت سپن</title>
 <style>
+.masked{-webkit-text-security:disc;text-security:disc}
 :root{--bg:#0f1720;--card:#17212b;--line:#243140;--text:#e8eef5;--mut:#8aa0b5;--pri:#3390ec;--red:#e5484d;--grn:#30a46c}
 *{box-sizing:border-box}
 body{margin:0;font-family:Tahoma,system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px}
@@ -368,7 +369,7 @@ function monitor(box){
 // ---------------- sign-in: sms.ir, password login, Android app download ----------------
 async function loginTab(box){
   var A;try{A=await api('GET','/auth');}catch(e){return;}
-  var key=h('input',{type:'password',autocomplete:'off',placeholder:A.api_key_set?'ثبت شده ('+A.api_key_hint+') — برای تغییر، کلید تازه را بزنید':'کلید API از app.sms.ir',style:'direction:ltr;min-width:320px'});
+  var key=h('input',{type:'text',name:'sms-api-key',autocomplete:'off',spellcheck:'false',autocapitalize:'off','data-lpignore':'true',class:'masked',placeholder:A.api_key_set?'ثبت شده ('+A.api_key_hint+') — برای تغییر، کلید تازه را بزنید':'کلید API از app.sms.ir',style:'direction:ltr;min-width:320px'});
   var tid=h('input',{value:A.template_id,placeholder:'مثلاً 123456',style:'direction:ltr;width:130px',inputmode:'numeric'});
   var par=h('input',{value:A.param,style:'direction:ltr;width:110px'});
   var en=h('input',{type:'checkbox',checked:A.enabled}),pw=h('input',{type:'checkbox',checked:A.password_login});
