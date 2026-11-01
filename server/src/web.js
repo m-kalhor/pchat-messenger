@@ -32,7 +32,7 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 /** The public intro page shown on a domain name (what the service is, what SMS is used for, contact). */
 function introPage(site, hasApk) {
   const title = site.title || 'پیام‌رسان سپن';
-  const about = site.about || 'سپن یک پیام‌رسان امن است که روی سرور خود مجموعه نصب می‌شود. پیام‌ها، تماس‌ها و فایل‌ها با رمزنگاری سرتاسری فرستاده می‌شوند و داده‌ها از سرور مجموعه بیرون نمی‌روند.';
+  const about = site.about || 'سپن یک پیام‌رسان امن است که روی سرور خود مجموعه نصب می‌شود. پیام‌ها، تماس‌ها و فایل‌ها با رمزنگاری سرتاسری فرستاده می‌شوند و روی سرور خود مجموعه نگه داشته می‌شوند.';
   const para = (t) => esc(t).split(/\n+/).filter(Boolean).map((l) => `<p>${l}</p>`).join('');
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -51,7 +51,7 @@ function introPage(site, hasApk) {
 <section><h2>ورود و پیامک</h2>
 <p>ورود به حساب با شمارهٔ موبایل است. پیامک فقط برای فرستادن کد یک‌بارمصرف ورود و تأیید شمارهٔ موبایل استفاده می‌شود و هیچ پیامک تبلیغاتی فرستاده نمی‌شود.</p></section>
 <section><h2>حریم خصوصی</h2>
-<p>متن پیام‌ها فقط روی گوشی فرستنده و گیرنده باز می‌شود و سرور هم آن را نمی‌تواند بخواند. شمارهٔ موبایل هر کاربر به کاربران دیگر نشان داده نمی‌شود و به هیچ کس داده نمی‌شود.</p></section>
+<p>متن پیام‌ها فقط روی گوشی فرستنده و گیرنده باز می‌شود و سرور هم آن را نمی‌تواند بخواند. شمارهٔ موبایل هر کاربر به کاربران دیگر نشان داده نمی‌شود و فقط برای فرستادن کد ورود به سامانهٔ پیامکی (sms.ir) فرستاده می‌شود.</p></section>
 ${site.contact ? `<section><h2>تماس با ما</h2>${para(site.contact)}</section>` : ''}
 <footer>${esc(title)}</footer>
 </main></body></html>`;
