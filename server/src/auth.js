@@ -155,7 +155,10 @@ async function sendSms(phone, code) {
     throw e;
   }
 }
-const smsCredit = () => smsCall('/credit', 'GET', undefined, smsConfig().api_key);
+/** Account credit; a good answer also proves the key, so it clears an old 'SMS down' warning. */
+async function smsCredit() {
+  try { const d = await smsCall('/credit', 'GET', undefined, smsConfig().api_key); smsState(true); return d; } catch (e) { smsState(false, e.name === 'TimeoutError' ? 'timeout' : e.message); throw e; }
+}
 
 function cleanup() { q.dead.run(Date.now(), MAX_TRIES); }
 

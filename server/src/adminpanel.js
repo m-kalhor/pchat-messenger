@@ -246,6 +246,7 @@ async function route(ctx, req, res, secure) {
       const k = b.api_key.trim();
       if (k.length > 200 || /[^\x21-\x7e]/.test(k)) return json(res, 400, { error: 'bad_api_key' });
       setSetting('sms_api_key', k);
+      setSetting('sms_last_error', 'null'); // a new key: the old failure no longer says anything
     }
     if (b.api_key === null) setSetting('sms_api_key', '');
     if (b.template_id !== undefined) {
