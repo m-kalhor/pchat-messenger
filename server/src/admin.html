@@ -89,7 +89,8 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)'};
+var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_api_key:'کلید API نامعتبر است',bad_template_id:'شناسهٔ قالب باید عدد باشد',bad_param:'نام پارامتر فقط حروف لاتین، رقم و _',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',sms_not_configured:'کلید API یا شناسهٔ قالب تنظیم نشده',timeout:'سرور به sms.ir نرسید (پایان مهلت)'};
+function msg2(e){return e?(ERR[e]||e):'';}
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
 function fmtDur(s){s=Math.floor(s);var d=Math.floor(s/86400),hh=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);return (d?d+' روز ':'')+hh+' ساعت '+m+' دقیقه';}
@@ -158,7 +159,7 @@ async function reload(){S=await api('GET','/state');prune();render();}
 
 function render(){
   clearInterval(timer);
-  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
+  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود و پیامک'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
   var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
   var box=h('main');
   var cnt=h('span',{class:'cnt'}),save=h('button',{class:'grn',onclick:saveAll},'ذخیرهٔ همهٔ تغییرات');
@@ -166,9 +167,18 @@ function render(){
   bar={el:h('div',{class:'savebar'},h('div',{class:'in'},cnt,undo,save)),cnt:cnt,save:save,undo:undo};
   app.replaceChildren(
     h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},links:{},backup:null};showLogin();}},'خروج')),
-    nav,box,bar.el);
-  ({users:users,cats:cats,links:links,mon:monitor,bak:backups,acct:account})[tab](box);
+    nav,smsAlert,box,bar.el);
+  ({users:users,cats:cats,links:links,login:loginTab,mon:monitor,bak:backups,acct:account})[tab](box);
+  checkSms();
   updateBar();
+}
+// a red line under the tabs while the newest SMS attempt failed (users then need a device or admin code)
+var smsAlert=h('div');
+async function checkSms(){
+  try{var A=await api('GET','/auth');
+    smsAlert.replaceChildren(A.ready&&A.status.down?h('div',{class:'card',style:'margin:0 18px 14px;border-color:var(--red);background:#3a1d22'},
+      '⚠️ ارسال پیامک ناموفق است ('+msg2(A.status.last_error.error)+' — '+fmtDate(A.status.last_error.t)+'). کاربران می‌توانند با کد از دستگاه دیگرشان یا با «کد ورود» از همین پنل (زبانهٔ کاربران) وارد شوند.'):'');
+  }catch(e){}
 }
 function guard(fn){return async function(){try{await fn();}catch(e){alert(msg(e));}};}
 
@@ -202,12 +212,14 @@ function users(box){
       h('td',{title:u.bio||''},h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null,u.bio?h('div',{class:'mut',style:'font-size:12px;white-space:normal;max-width:220px'},u.bio):null),
       h('td',null,name),h('td',null,ph),cells,
       h('td',null,
+        h('button',{class:'pri',title:'کد یک‌بارمصرف ۱۰ دقیقه‌ای برای ورود، وقتی پیامک نمی‌رسد و دستگاه دیگری وارد نیست',onclick:guard(async function(){var j=await api('POST','/users/'+u.username+'/logincode');
+          alert('کد ورود '+u.username+': '+j.code+'\n\nتا ۱۰ دقیقه و فقط یک بار معتبر است. کاربر در صفحهٔ ورود '+(j.phone?'شمارهٔ موبایلش ('+j.phone+')':'نام کاربری‌اش ('+u.username+')')+' را می‌زند و بعد «کد را دارم» و همین کد را وارد می‌کند. کد را فقط حضوری یا تلفنی به خود او بدهید.');})},'کد ورود'),' ',
         h('button',{class:'sec',onclick:guard(async function(){if(!confirm('رمز جدید برای '+u.username+' ساخته شود؟'))return;var j=await api('POST','/users/'+u.username+'/reset');prompt('رمز جدید '+u.username+':',j.password);await reload();})},'ریست رمز'),' ',
         h('button',{class:u.disabled?'grn':'sec',onclick:guard(async function(){await api('POST','/users/'+u.username+'/update',{disabled:!u.disabled});await reload();})},u.disabled?'فعال‌سازی':'غیرفعال'),' ',
         h('button',{class:'red',onclick:guard(async function(){if(!confirm('کاربر '+u.username+' حذف شود؟'))return;await api('POST','/users/'+u.username+'/delete');await reload();})},'حذف')));
   });
   box.appendChild(h('div',{class:'card'},h('h3',null,'کاربران ('+S.users.length+')'),
-    h('div',{class:'mut',style:'margin-bottom:8px'},'نام نمایشی، موبایل (برای ورود با پیامک در نسخه‌های بعد) و عضویت در دسته‌ها با دکمهٔ «ذخیرهٔ همهٔ تغییرات» پایین صفحه ثبت می‌شود. ریست رمز، غیرفعال‌سازی و حذف همان لحظه انجام می‌شوند.'),
+    h('div',{class:'mut',style:'margin-bottom:8px'},'نام نمایشی، موبایل (برای ورود با پیامک؛ هر شماره فقط برای یک کاربر) و عضویت در دسته‌ها با دکمهٔ «ذخیرهٔ همهٔ تغییرات» پایین صفحه ثبت می‌شود. ریست رمز، غیرفعال‌سازی و حذف همان لحظه انجام می‌شوند.'),
     h('table',null,head,rows)));
 }
 
@@ -351,6 +363,42 @@ function monitor(box){
     chart(dsk.c,[{data:s.map(function(x){return x.dr;}),color:'#3390ec'},{data:s.map(function(x){return x.dw;}),color:'#e5484d'}],dm,function(v){return fmtB(v)+'/s';});
   }
   tick();timer=setInterval(tick,2000);
+}
+
+// ---------------- sign-in: sms.ir, password login, Android app download ----------------
+async function loginTab(box){
+  var A;try{A=await api('GET','/auth');}catch(e){return;}
+  var key=h('input',{type:'password',autocomplete:'off',placeholder:A.api_key_set?'ثبت شده ('+A.api_key_hint+') — برای تغییر، کلید تازه را بزنید':'کلید API از app.sms.ir',style:'direction:ltr;min-width:320px'});
+  var tid=h('input',{value:A.template_id,placeholder:'مثلاً 123456',style:'direction:ltr;width:130px',inputmode:'numeric'});
+  var par=h('input',{value:A.param,style:'direction:ltr;width:110px'});
+  var en=h('input',{type:'checkbox',checked:A.enabled}),pw=h('input',{type:'checkbox',checked:A.password_login});
+  var er=h('div',{class:'err'});
+  var st=A.status,state=!A.ready?h('span',{class:'mut'},'تنظیم نشده'):st.down?h('span',{style:'color:var(--red)'},'⚠️ آخرین ارسال ناموفق: '+msg2(st.last_error.error)+' ('+fmtDate(st.last_error.t)+')'):h('span',{style:'color:var(--grn)'},'✓ آماده'+(st.last_ok?' — آخرین ارسال موفق: '+fmtDate(st.last_ok):''));
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'ورود با شمارهٔ موبایل (sms.ir)'),
+    h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'در app.sms.ir یک قالب «ارسال سریع / Verify» بسازید که متنش یک پارامتر دارد، مثلاً «کد ورود سپن: #CODE#». شناسهٔ قالب و نام پارامتر (بدون #) و کلید API را این‌جا بزنید. فقط به شماره‌هایی که در زبانهٔ کاربران ثبت شده‌اند کد فرستاده می‌شود.'),
+    h('div',{class:'row'},h('span',{style:'width:130px'},'کلید API'),key),
+    h('div',{class:'row'},h('span',{style:'width:130px'},'شناسهٔ قالب'),tid,h('span',null,'نام پارامتر'),par),
+    h('div',{class:'row'},h('label',null,en,' ورود با پیامک فعال باشد')),
+    h('div',{class:'row'},h('label',null,pw,' ورود با نام کاربری و رمز هم مجاز باشد'),h('span',{class:'mut'},'(برای سرور بدون اینترنت یا تا وقتی موبایل همه ثبت نشده)')),
+    h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){er.textContent='';
+      try{await api('POST','/auth',{api_key:key.value,template_id:tid.value,param:par.value,enabled:en.checked,password_login:pw.checked});alert('ذخیره شد');render();}catch(e){er.textContent=msg(e);}}},'ذخیره'),h('span',null,'وضعیت: '),state),er));
+  var tp=h('input',{placeholder:'09…',style:'direction:ltr;width:150px',inputmode:'tel'}),tr=h('span');
+  var cr=h('span');
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'آزمایش'),
+    h('div',{class:'row'},'پیامک آزمایشی به',tp,h('button',{class:'pri',onclick:async function(){tr.textContent='در حال ارسال…';
+      try{var j=await api('POST','/auth/test',{phone:tp.value});tr.textContent=j.ok?'✓ فرستاده شد':'✗ '+msg2(j.error);}catch(e){tr.textContent='✗ '+msg(e);}}},'ارسال'),tr),
+    h('div',{class:'row'},h('button',{class:'sec',onclick:async function(){cr.textContent='…';
+      try{var j=await api('GET','/auth/credit');cr.textContent=j.error?'✗ '+msg2(j.error):'اعتبار: '+Number(j.credit).toLocaleString('fa-IR');}catch(e){cr.textContent='✗ '+msg(e);}}},'اعتبار حساب sms.ir'),cr),
+    h('div',{class:'mut',style:'white-space:normal'},'اگر پیامک نرسد (قطعی، تمام شدن اعتبار)، کاربر روی دستگاه دیگری که واردش است از «تنظیمات ← ورود دستگاه تازه» یک کد می‌گیرد، یا شما از زبانهٔ کاربران دکمهٔ «کد ورود» را می‌زنید.')));
+  var file=h('input',{type:'file',accept:'.apk,application/vnd.android.package-archive'}),up=h('span');
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'فایل برنامهٔ اندروید برای دانلود'),
+    h('div',{style:'margin-bottom:8px'},A.apk?['فایل فعلی: ',fmtB(A.apk.size),' — ',fmtDate(A.apk.mtime),'  ',h('a',{href:'#',style:'color:#ff8b8b',onclick:guard(async function(e){e.preventDefault();if(!confirm('فایل APK حذف شود؟'))return;await api('DELETE','/apk');render();})},'حذف')]:h('span',{class:'mut'},'هنوز فایلی نیست')),
+    h('div',{class:'row'},file,h('button',{class:'pri',onclick:async function(){
+      if(!file.files[0])return;up.textContent='در حال بارگذاری…';
+      try{var r=await fetch('/admin/api/apk',{method:'POST',credentials:'same-origin',headers:{'X-CSRF':csrf||'','Content-Type':'application/octet-stream'},body:file.files[0]});
+        var j={};try{j=await r.json();}catch(e){}
+        if(!r.ok)throw new Error(j.error||('HTTP '+r.status));up.textContent='✓';render();}catch(e){up.textContent='✗ '+msg(e);}}},'بارگذاری'),up),
+    h('div',{class:'mut',style:'white-space:normal'},'این فایل در صفحهٔ ورود نسخهٔ وب (آیفون) با لینک و QR نشان داده می‌شود و از نشانی http://<سرور>/download/sepan.apk هم دانلود می‌شود، حتی بدون اینترنت بین‌الملل.')));
 }
 
 // ---------------- backups ----------------

@@ -63,6 +63,12 @@ export function errText(e) {
     case 'storage_full': case 'disk_full': return 'فضای سرور پر است';
     case 'avatar_too_large': case 'bad_avatar': return 'عکس پروفایل پذیرفته نشد';
     case 'unauthorized': return 'نشست شما منقضی شده؛ دوباره وارد شوید';
+    case 'bad_code': return 'کد درست نیست یا منقضی شده';
+    case 'bad_phone': return 'شمارهٔ موبایل درست نیست';
+    case 'sms_unavailable': return 'پیامک در دسترس نیست. کد را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید و «کد را دارم» را بزنید.';
+    case 'password_login_disabled': return 'ورود با رمز خاموش است؛ با شمارهٔ موبایل وارد شوید';
+    case 'no_phone': return 'برای حساب شما شمارهٔ موبایل ثبت نشده؛ از مدیر بخواهید';
+    case 'wait': return 'کمی صبر کنید و دوباره بخواهید';
     default: break;
   }
   if (e instanceof api.HttpError) return 'خطای سرور (' + e.status + ')';
@@ -109,11 +115,22 @@ export async function init() {
  */
 export async function login(username, password) {
   username = username.trim().toLowerCase();
+  return finishLogin(await api.login(username, password), password);
+}
+
+/** Signs in with a one-time code (SMS, another device of the user, or the admin). */
+export async function codeLogin(phone, code) {
+  const r = await api.codeLogin(phone.trim(), code.trim(), isIOS ? 'iPhone (وب)' : 'مرورگر (وب)');
+  // no login password here: right after a code sign-in the server accepts the key backup without one
+  return finishLogin(r, '');
+}
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+async function finishLogin(r, password) {
   let id = S.identity || (await C.newIdentity());
-  const r = await api.login(username, password);
   api.setToken(r.token);
   // a v1 backup opens with the login password: take that key silently (then only a key password is missing)
-  if (r.key_backup && r.key_backup.v === 1 && r.key_backup.pub !== id.pubB64) {
+  if (password && r.key_backup && r.key_backup.v === 1 && r.key_backup.pub !== id.pubB64) {
     try { id = await C.importBackup(r.key_backup, r.username, password); } catch { }
   }
   S.identity = id;
@@ -134,8 +151,13 @@ export async function login(username, password) {
 }
 
 // ---------------- identity key: restore / new / key password ----------------
-let loginPass = null; // kept in memory only, so the key step right after login needs no second password
-export const needsAccountPassword = () => !loginPass;
+// kept in memory only, so the key step right after login needs no second password ('' = signed in by a code)
+let loginPass = null;
+export const needsAccountPassword = () => loginPass === null;
+/** Sends an SMS code that confirms the account instead of the login password. */
+export async function reauthSms() { try { await api.reauthSms(); return null; } catch (e) { return errText(e); } }
+/** A one-time code for signing in on a new device: { code, ttl, phone } or { error }. */
+export async function deviceCode() { try { return await api.deviceCode(); } catch (e) { return { error: errText(e) }; } }
 
 /**
  * S.keyStep: 'choose' = this device's key is not the account's key (restore it with the key password,
@@ -159,7 +181,7 @@ export async function checkKey(kb) {
 
 async function uploadBackup(id, keyPassword, accountPassword) {
   const kb = await C.exportBackup(id, S.me, keyPassword);
-  await api.saveKeyBackup(kb, accountPassword || loginPass);
+  await api.saveKeyBackup(kb, accountPassword || loginPass || '');
   if (accountPassword) loginPass = accountPassword;
   S.keyBackup = kb;
 }
@@ -211,7 +233,7 @@ export async function setKeyPassword(keyPassword, accountPassword) {
   return null;
 }
 function keyErr(e) {
-  if (e instanceof api.HttpError && e.status === 403) { loginPass = null; return 'رمز ورود حساب اشتباه است'; }
+  if (e instanceof api.HttpError && e.status === 403) { loginPass = null; return 'رمز ورود حساب یا کد پیامکی درست نیست'; }
   return errText(e);
 }
 
@@ -360,6 +382,7 @@ async function handleEvent(ev, data) {
     }
     case 'refresh': try { await refreshUsers(); await refreshGroups(); } catch { } return;
     case 'contacts': try { await refreshRequests(); } catch { } return;
+    case 'login_alert': return emit('login_alert', o);
     case 'pin':
       if (o.messageId == null) delete S.pins[o.convo]; else S.pins[o.convo] = o.messageId;
       return emit('pins', o.convo);

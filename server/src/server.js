@@ -11,6 +11,7 @@ const { sanitizeWebp } = require('./webp');
 const stats = require('./stats');
 const backup = require('./backup');
 const push = require('./push');
+const auth = require('./auth');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -37,8 +38,8 @@ const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const DUMMY = hashPassword('dummy-password');
 
 const q = {
-  addSess: db.prepare('INSERT INTO sessions(th,username,created) VALUES(?,?,?)'),
-  sess: db.prepare('SELECT s.username AS username, s.created AS created, u.disabled AS disabled FROM sessions s JOIN users u ON u.username=s.username WHERE s.th=?'),
+  addSess: db.prepare('INSERT INTO sessions(th,username,created,via,device) VALUES(?,?,?,?,?)'),
+  sess: db.prepare('SELECT s.username AS username, s.created AS created, s.via AS via, u.disabled AS disabled FROM sessions s JOIN users u ON u.username=s.username WHERE s.th=?'),
   delSess: db.prepare('DELETE FROM sessions WHERE th=?'),
   setKey: db.prepare('UPDATE users SET pubkey=? WHERE username=?'),
   setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
@@ -123,7 +124,7 @@ function authInfo(req) {
   const row = q.sess.get(th);
   if (!row || row.disabled) return null;
   if (now() - row.created > SESSION_DAYS * DAY) { q.delSess.run(th); return null; }
-  return { user: row.username, th };
+  return { user: row.username, th, created: row.created, via: row.via };
 }
 
 // ---------- login rate limit ----------
@@ -362,6 +363,44 @@ function pinsFor(user) {
   return out;
 }
 
+const smsSent = new Map(); // phone -> time of the last SMS code (one per minute)
+const DEVICE_RE = /[^\p{L}\p{N} .,()\-_/]/gu;
+
+/**
+ * Opens a session for user u (signed in by `via`: password, sms, device or admin) and tells the user's
+ * other devices that a new one signed in. b.device is a short label the app sends ("Android", "iPhone web").
+ */
+function newSession(u, via, b) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const device = String(b.device || '').replace(DEVICE_RE, '').trim().slice(0, 40) || null;
+  q.addSess.run(sha256(token), u.username, now(), via, device);
+  emit(u.username, 'login_alert', { ts: now(), via, device });
+  // with a key backup the account keeps one identity key on every device: a new device restores it instead
+  const kb = keyBackupOf(u);
+  if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024 && (!kb || kb.pub === b.pubkey)) q.setKey.run(b.pubkey, u.username);
+  return { token, username: u.username, key_backup: kb, via };
+}
+
+// ---------- the Android app for download (the admin uploads it in the panel) ----------
+const APK = path.join(DATA_DIR, 'apk', 'sepan.apk');
+function apkInfo() {
+  try { const st = fs.statSync(APK); return st.isFile() && st.size > 0 ? { size: st.size, mtime: st.mtimeMs } : null; } catch { return null; }
+}
+/** GET /download/sepan.apk: public like the setup page (the app holds nothing secret). */
+function serveApk(req, res) {
+  const info = apkInfo();
+  if (!info) return send(res, 404, { error: 'no_apk' });
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': info.size,
+    'Content-Disposition': 'attachment; filename="sepan.apk"', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff',
+  });
+  if (req.method === 'HEAD') return res.end();
+  const rs = fs.createReadStream(APK);
+  rs.on('error', () => res.destroy());
+  res.on('close', () => rs.destroy());
+  rs.pipe(res);
+}
+
 function freeSpace() { try { const s = fs.statfsSync(FILES_DIR); return s.bavail * s.bsize; } catch { return Infinity; } }
 
 // ---------- routes ----------
@@ -371,9 +410,11 @@ async function route(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
   if (p === '/api/health') return send(res, 200, { ok: true });
+  if (p === '/download/sepan.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res);
 
   if (p === '/api/login' && req.method === 'POST') {
     const b = await readJson(req, 4096);
+    if (!auth.passwordLogin()) return send(res, 403, { error: 'password_login_disabled' });
     const username = String(b.username || '').toLowerCase();
     const ip = req.socket.remoteAddress;
     if (limited('ip:' + ip, 20) || limited('u:' + username, 5)) return send(res, 429, { error: 'rate_limited' });
@@ -381,12 +422,45 @@ async function route(req, res) {
     const ok = u ? checkPassword(b.password || '', u.pass) : (checkPassword(b.password || '', DUMMY), false);
     if (!ok || u.disabled) { addFail('ip:' + ip); addFail('u:' + username); return send(res, 401, { error: 'bad_credentials' }); }
     fails.delete('u:' + username);
-    const token = crypto.randomBytes(32).toString('hex');
-    q.addSess.run(sha256(token), username, now());
-    // with a key backup the account keeps one identity key on every device: a new device restores it instead
-    const kb = keyBackupOf(u);
-    if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024 && (!kb || kb.pub === b.pubkey)) q.setKey.run(b.pubkey, username);
-    return send(res, 200, { token, username, key_backup: kb });
+    return send(res, 200, newSession(u, 'password', b));
+  }
+
+  // ---- sign-in by mobile number (see auth.js) ----
+  // what the login screen offers: SMS codes, the old username + password, the Android app download
+  if (p === '/api/auth/config' && req.method === 'GET') {
+    return send(res, 200, { sms: auth.smsReady(), password: auth.passwordLogin(), apk: !!apkInfo() });
+  }
+  // sends a login code by SMS. An unknown number gets the same answer as a known one (no way to probe numbers).
+  if (p === '/api/auth/sms' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const phone = auth.normPhone(b.phone);
+    if (!phone) return send(res, 400, { error: 'bad_phone' });
+    const ip = req.socket.remoteAddress;
+    if (limited('smsip:' + ip, 10) || limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });
+    const wait = Math.ceil((smsSent.get(phone) || 0) + 60e3 - now());
+    if (wait > 0) return send(res, 429, { error: 'wait', wait: Math.ceil(wait / 1000) });
+    if (!auth.smsReady()) return send(res, 503, { error: 'sms_unavailable' });
+    addFail('smsip:' + ip); addFail('sms:' + phone);
+    smsSent.set(phone, now());
+    const username = auth.findUser(phone);
+    if (username) {
+      const { code } = auth.issue(username, 'sms');
+      try { await auth.sendSms(phone, code); } catch { smsSent.delete(phone); return send(res, 503, { error: 'sms_unavailable' }); }
+    }
+    return send(res, 200, { ok: true, ttl: auth.TTL.sms / 1000 });
+  }
+  // signs in with a code: from the SMS, from another signed-in device of the user, or from the admin
+  if (p === '/api/auth/code' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    const ident = String(b.phone || b.username || '').slice(0, 40);
+    const ip = req.socket.remoteAddress;
+    const key = 'code:' + (auth.normPhone(ident) || ident.toLowerCase());
+    if (limited('ip:' + ip, 20) || limited(key, 5)) return send(res, 429, { error: 'rate_limited' });
+    const username = auth.findUser(ident);
+    const via = username && auth.consume(username, b.code, ['sms', 'device', 'admin']);
+    if (!via) { addFail('ip:' + ip); addFail(key); return send(res, 401, { error: 'bad_code' }); }
+    fails.delete(key);
+    return send(res, 200, newSession(core.q.user.get(username), via, b));
   }
 
   const a = authInfo(req);
@@ -394,6 +468,25 @@ async function route(req, res) {
   const user = a.user;
 
   if (p === '/api/logout' && req.method === 'POST') { q.delSess.run(a.th); return send(res, 200, { ok: true }); }
+
+  // a code for signing in on a new device, shown on this (signed-in) one; works without SMS or internet
+  if (p === '/api/auth/devicecode' && req.method === 'POST') {
+    if (limited('dev:' + user, 10)) return send(res, 429, { error: 'rate_limited' });
+    addFail('dev:' + user);
+    const { code, expires } = auth.issue(user, 'device');
+    return send(res, 200, { code, expires, ttl: auth.TTL.device / 1000, phone: !!auth.phoneOf(user) });
+  }
+  // an SMS code that stands in for the login password when the key backup changes (accounts that sign in by SMS)
+  if (p === '/api/auth/reauth' && req.method === 'POST') {
+    const phone = auth.phoneOf(user);
+    if (!phone) return send(res, 400, { error: 'no_phone' });
+    if (!auth.smsReady()) return send(res, 503, { error: 'sms_unavailable' });
+    if (limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });
+    addFail('sms:' + phone);
+    const { code } = auth.issue(user, 'reauth');
+    try { await auth.sendSms(phone, code); } catch { return send(res, 503, { error: 'sms_unavailable' }); }
+    return send(res, 200, { ok: true, ttl: auth.TTL.reauth / 1000 });
+  }
 
   if (p === '/api/me' && req.method === 'GET') {
     const u = core.q.user.get(user);
@@ -507,9 +600,13 @@ async function route(req, res) {
   if (p === '/api/keybackup' && req.method === 'POST') {
     const b = await readJson(req, 8192);
     const me = core.q.user.get(user);
-    // the account password is required: it is what the backup is locked with, and a stolen session alone must not swap the key
+    // the account must be confirmed, so a stolen session alone cannot swap the key: by the login password,
+    // by an SMS code (/api/auth/reauth), or by a sign-in with a one-time code in the last 30 minutes
     if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
-    if (typeof b.password !== 'string' || !checkPassword(b.password, me.pass)) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    const pw = typeof b.password === 'string' ? b.password : '';
+    const fresh = a.via !== 'password' && now() - a.created < 30 * 60e3;
+    const proven = pw ? checkPassword(pw, me.pass) || !!auth.consume(user, pw, ['reauth']) : fresh;
+    if (!proven) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
     const kb = cleanKeyBackup(b.key_backup);
     if (!kb) return send(res, 400, { error: 'bad_key_backup' });
     const before = me.pubkey;
@@ -846,6 +943,7 @@ function cleanup() {
     db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     push.cleanup();
+    auth.cleanup();
     db.prepare('DELETE FROM msg_changes WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM sessions WHERE created<?').run(now() - SESSION_DAYS * DAY);
     for (const u of db.prepare('SELECT id FROM uploads WHERE ts<?').all(now() - DAY)) {
@@ -866,11 +964,11 @@ stats.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
-const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected };
+const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------
-require('./web').start(handler, { plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST });
+require('./web').start(handler, { plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST, serveApk, apkInfo });
 
 server.listen(PORT, '0.0.0.0', () => console.log(`messenger listening on ${PORT} (${PLAIN ? 'PLAIN HTTP - test only' : 'TLS'})`));
 for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { server.close(); process.exit(0); });

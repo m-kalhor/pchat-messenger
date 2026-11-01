@@ -5,7 +5,7 @@ const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
-for (const d of ['files', 'uploads', 'avatars', 'backups']) fs.mkdirSync(path.join(DATA_DIR, d), { recursive: true });
+for (const d of ['files', 'uploads', 'avatars', 'backups', 'apk']) fs.mkdirSync(path.join(DATA_DIR, d), { recursive: true });
 
 const db = new DatabaseSync(path.join(DATA_DIR, 'messenger.db'));
 db.exec(`
@@ -52,6 +52,10 @@ CREATE INDEX IF NOT EXISTS idx_rcpt_convo ON receipts(convo);
 CREATE TABLE IF NOT EXISTS reactions (
   msg_id INTEGER NOT NULL, username TEXT NOT NULL, emoji TEXT, seq INTEGER NOT NULL, PRIMARY KEY (msg_id, username));
 CREATE INDEX IF NOT EXISTS idx_react_seq ON reactions(seq);
+CREATE TABLE IF NOT EXISTS login_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL, kind TEXT NOT NULL, code TEXT NOT NULL,
+  expires INTEGER NOT NULL, tries INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_codes_user ON login_codes(username);
 CREATE TABLE IF NOT EXISTS push_subs (
   endpoint TEXT PRIMARY KEY, username TEXT NOT NULL, th TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, ts INTEGER NOT NULL);
 `);
@@ -67,6 +71,9 @@ if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEX
 if (!userCols.includes('last_seen')) db.exec('ALTER TABLE users ADD COLUMN last_seen INTEGER');
 if (!userCols.includes('hide_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_seen INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('hide_last_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_last_seen INTEGER NOT NULL DEFAULT 0');
+const sessCols = db.prepare('PRAGMA table_info(sessions)').all().map((r) => r.name);
+if (!sessCols.includes('via')) db.exec("ALTER TABLE sessions ADD COLUMN via TEXT NOT NULL DEFAULT 'password'");
+if (!sessCols.includes('device')) db.exec('ALTER TABLE sessions ADD COLUMN device TEXT');
 const msgCols = db.prepare('PRAGMA table_info(messages)').all().map((r) => r.name);
 if (!msgCols.includes('edited')) db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER');
 if (!msgCols.includes('deleted')) db.exec('ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');

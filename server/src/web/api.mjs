@@ -28,6 +28,11 @@ async function call(method, path, body, headers = {}) {
 }
 
 export const login = (username, password) => call('POST', '/api/login', { username, password });
+export const authConfig = () => call('GET', '/api/auth/config');
+export const smsCode = (phone) => call('POST', '/api/auth/sms', { phone });
+export const codeLogin = (phone, code, device) => call('POST', '/api/auth/code', { phone, code, device });
+export const deviceCode = () => call('POST', '/api/auth/devicecode', {});
+export const reauthSms = () => call('POST', '/api/auth/reauth', {});
 export const getKeyBackup = () => call('GET', '/api/keybackup');
 export const saveKeyBackup = (key_backup, password) => call('POST', '/api/keybackup', { key_backup, password });
 export const logout = () => call('POST', '/api/logout', {});

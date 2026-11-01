@@ -7,7 +7,7 @@ import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
 
-const VERSION = '1.4.0';
+const VERSION = '1.5.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -324,6 +324,10 @@ E.on((kind, data) => {
   if (kind === 'login') { go('#/'); route(); return; }
   if (kind === 'logout') { logoutReason = data; route(); return; }
   if (kind === 'key') { route(); return; }
+  if (kind === 'login_alert') {
+    const via = { sms: 'با کد پیامکی', device: 'با کد دستگاه دیگر', admin: 'با کد مدیر', password: 'با رمز' }[data.via] || '';
+    toast('🔐 ورود تازه به حساب شما' + (data.device ? ' از ' + data.device : '') + ' ' + via + '. اگر خودتان نبودید، به مدیر خبر دهید.');
+  }
   if (kind === 'msg' && data && !data.mine && data.id > 0 && Date.now() - data.ts < 60000 && S.openConvo !== data.convo) {
     const group = E.isGroup(data.convo);
     toast((group ? E.groupName(data.convo) + ' · ' + E.nameOf(data.sender) : E.nameOf(data.sender)) + ': ' + E.preview(data).slice(0, 60), () => go('#/c/' + encodeURIComponent(data.convo)));
@@ -352,26 +356,116 @@ function connText() {
 }
 
 // ---------------- login ----------------
+/**
+ * Sign-in by mobile number: an SMS code, or (SMS down / no internet) a code from another signed-in
+ * device of the user or from the admin. Username + password stays as a second way while the admin allows it.
+ */
 function LoginScreen() {
-  const user = h('input', { type: 'text', placeholder: 'نام کاربری', autocomplete: 'username', class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
-  const pass = h('input', { type: 'password', placeholder: 'رمز عبور', autocomplete: 'current-password', class: 'ltr' });
-  const err = h('div', { class: 'err' }, logoutReason || '');
+  const reason = logoutReason || '';
   logoutReason = null;
-  const btn = h('button', { class: 'btn', type: 'submit' }, 'ورود');
+  const input = (ph, extra) => h('input', { type: 'text', placeholder: ph, class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', ...extra });
+  const phone = input('شمارهٔ موبایل', { inputmode: 'tel', autocomplete: 'tel' });
+  const code = input('کد', { inputmode: 'numeric', autocomplete: 'one-time-code', maxLength: 8 });
+  const user = input('نام کاربری', { autocomplete: 'username' });
+  const pass = h('input', { type: 'password', placeholder: 'رمز عبور', autocomplete: 'current-password', class: 'ltr' });
+  const err = h('div', { class: 'err' }, reason);
+  const info = h('div', { class: 'hint', style: { margin: 0 } });
+  const box = h('div', { style: { display: 'flex', flexDirection: 'column', gap: '12px' } });
+  const apkBox = h('div');
+  let cfg = { sms: true, password: true, apk: false }, mode = 'phone', step = 'phone', timer = null;
+
+  const busy = async (btn, fn) => {
+    btn.disabled = true; err.textContent = '';
+    try { await fn(); } catch (ex) { err.textContent = E.errText(ex); }
+    btn.disabled = false;
+  };
+  const sendBtn = h('button', { class: 'btn', type: 'button' }, 'ارسال کد پیامکی');
+  const resend = h('button', { class: 'btn sm flat', type: 'button' });
+  const loginBtn = h('button', { class: 'btn', type: 'submit' }, 'ورود');
+  function countdown(sec) {
+    clearInterval(timer);
+    let left = sec;
+    const tick = () => {
+      resend.disabled = left > 0;
+      resend.textContent = left > 0 ? 'ارسال دوباره (' + faNum(left) + ')' : 'ارسال دوباره';
+      if (left-- <= 0) clearInterval(timer);
+    };
+    tick();
+    timer = setInterval(tick, 1000);
+  }
+  async function sendSms(btn) {
+    if (!phone.value.trim()) { err.textContent = 'شمارهٔ موبایل را وارد کنید'; return; }
+    await busy(btn, async () => {
+      try { await api.smsCode(phone.value); }
+      catch (ex) {
+        if (ex instanceof api.HttpError && ex.body.error === 'wait') { step = 'code'; render(); countdown(ex.body.wait || 60); return; }
+        if (ex instanceof api.HttpError && ex.body.error === 'sms_unavailable') { step = 'code'; render(); }
+        throw ex;
+      }
+      step = 'code'; render();
+      info.textContent = 'کد ۵ رقمی به ' + phone.value.trim() + ' پیامک شد.';
+      countdown(60);
+      code.focus();
+    });
+  }
+  sendBtn.addEventListener('click', () => sendSms(sendBtn));
+  resend.addEventListener('click', () => sendSms(resend));
+  const link = (text, fn) => h('a', { href: '#', class: 'center', style: { display: 'block', fontSize: '14px' }, onclick: (e) => { e.preventDefault(); err.textContent = ''; fn(); } }, text);
+
   async function submit(e) {
     if (e) e.preventDefault();
-    if (!user.value.trim() || !pass.value) { err.textContent = 'نام کاربری و رمز عبور را وارد کنید'; return; }
-    btn.disabled = true; err.textContent = '';
-    try { await E.login(user.value, pass.value); } catch (ex) { err.textContent = E.errText(ex); }
-    btn.disabled = false;
+    if (mode === 'password') {
+      if (!user.value.trim() || !pass.value) { err.textContent = 'نام کاربری و رمز عبور را وارد کنید'; return; }
+      return busy(loginBtn, () => E.login(user.value, pass.value));
+    }
+    if (step === 'phone') return cfg.sms ? sendSms(sendBtn) : null;
+    if (!phone.value.trim() || !code.value.trim()) { err.textContent = 'شمارهٔ موبایل و کد را وارد کنید'; return; }
+    return busy(loginBtn, () => E.codeLogin(phone.value, code.value));
   }
+
+  function render() {
+    if (mode === 'password') {
+      fill(box, user, pass, err, loginBtn, cfg.sms || !cfg.password ? link('ورود با شمارهٔ موبایل', () => { mode = 'phone'; render(); }) : null);
+      return;
+    }
+    const noSms = !cfg.sms;
+    fill(box,
+      phone,
+      step === 'code' ? [code, info] : null,
+      step === 'phone' && noSms ? h('div', { class: 'hint', style: { margin: 0 } }, 'ورود با پیامک روی این سرور فعال نیست. کد ورود را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید.') : null,
+      err,
+      step === 'phone' && !noSms ? sendBtn : loginBtn,
+      step === 'code' && !noSms ? h('div', { class: 'center' }, resend) : null,
+      step === 'phone'
+        ? link('کد را دارم (از دستگاه دیگر یا مدیر)', () => { step = 'code'; render(); info.textContent = 'کد ۶ رقمی را که روی دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر گرفته‌اید وارد کنید.'; code.focus(); })
+        : link('پیامک نرسید؟', () => { info.textContent = 'اگر پیامک نمی‌رسد، روی دستگاه دیگری که واردش هستید «تنظیمات › ورود دستگاه تازه» را بزنید و کد ۶ رقمی آن را همین‌جا وارد کنید، یا از مدیر سرور «کد ورود» بخواهید.'; }),
+      step === 'code' ? link('تغییر شماره', () => { step = 'phone'; clearInterval(timer); render(); }) : null,
+      cfg.password ? link('ورود با نام کاربری و رمز', () => { mode = 'password'; render(); }) : null);
+    if (step === 'phone' && noSms) { step = 'code'; render(); info.textContent = 'کد ۶ رقمی از دستگاه دیگرتان یا از مدیر'; }
+  }
+  render();
+
+  api.authConfig().then((c) => {
+    cfg = c;
+    if (!c.sms && !c.password) mode = 'phone';
+    if (mode === 'password' && !c.password) mode = 'phone';
+    render();
+    // the Android app for download (from this server, so it works without international internet too)
+    fill(apkBox, c.apk ? h('div', { class: 'hint apk' },
+      h('b', null, 'برنامهٔ اندروید سپن'), h('br'),
+      isIOS ? 'برای گوشی‌های اندروید. روی آیفون از همین نسخهٔ وب استفاده کنید؛ این QR را با دوربین گوشی اندرویدی اسکن کنید:' : 'برای نصب روی گوشی اندروید:',
+      isIOS ? h('img', { class: 'qr', src: '/download/sepan-qr.svg', alt: 'QR دانلود برنامهٔ اندروید' }) : null,
+      h('a', { class: 'btn sm flat', href: '/download/sepan.apk', download: 'sepan.apk' }, '⬇️ دانلود فایل APK')) : null);
+  }).catch(() => { });
+
   const el = h('div', { class: 'scroll' }, h('div', { class: 'login' },
     h('img', { class: 'logo', src: '/icon-192.png', alt: '' }),
     h('h2', null, 'سپن'),
     h('p', null, 'پیام‌رسان خصوصی و رمزنگاری‌شده'),
-    h('form', { class: 'form', onsubmit: submit }, user, pass, err, btn),
+    h('form', { class: 'form', onsubmit: submit }, box),
+    apkBox,
     isIOS && !standalone() ? h('div', { class: 'hint' }, 'بعد از ورود، از دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' گزینهٔ ', h('b', null, '«افزودن به صفحهٔ اصلی»'), ' را بزنید تا سپن مثل یک برنامه باز شود.') : null));
-  return { el, mounted: () => user.focus() };
+  return { el, mounted: () => phone.focus(), destroy: () => clearInterval(timer) };
 }
 
 // ---------------- identity key: restore / new key / key password ----------------
@@ -382,7 +476,20 @@ function LoginScreen() {
 function KeyScreen(mode) {
   const kb = S.keyBackup;
   const pwField = (ph, ac) => h('input', { type: 'password', placeholder: ph, autocomplete: ac || 'new-password', class: 'ltr' });
-  const acct = () => (E.needsAccountPassword() || mode === 'change' ? pwField('رمز ورود حساب', 'current-password') : null);
+  // the account is confirmed by its login password or, for accounts that sign in by SMS, by an SMS code
+  const acct = () => {
+    if (!E.needsAccountPassword() && mode !== 'change') return null;
+    const f = pwField('رمز ورود حساب یا کد پیامکی', 'current-password');
+    const b = h('button', { class: 'btn sm flat', type: 'button', onclick: async () => {
+      b.disabled = true;
+      const e = await E.reauthSms();
+      toast(e || 'کد تأیید به موبایل شما پیامک شد');
+      setTimeout(() => { b.disabled = false; }, 60000);
+    } }, 'ارسال کد پیامکی');
+    const wrap = h('div', { class: 'field' }, f, h('div', { class: 'd', style: { fontSize: '13px', color: 'var(--fg2)' } }, 'اگر با پیامک وارد می‌شوید و رمز ندارید: ', b));
+    Object.defineProperty(wrap, 'value', { get: () => f.value }); // read like an input
+    return wrap;
+  };
   const busy = async (btn, err, fn) => {
     btn.disabled = true; err.className = 'err'; err.textContent = '';
     try { const e = await fn(); if (e) err.textContent = e; } catch (ex) { err.textContent = E.errText(ex); }
@@ -398,7 +505,7 @@ function KeyScreen(mode) {
     return h('form', { class: 'form', onsubmit: (e) => {
       e.preventDefault();
       busy(btn, err, async () => {
-        const bad = checkNew(p1, p2) || (ap && !ap.value ? 'رمز ورود حساب را وارد کنید' : null);
+        const bad = checkNew(p1, p2) || (ap && !ap.value ? 'رمز ورود حساب یا کد پیامکی را وارد کنید' : null);
         if (bad) return bad;
         if (makeNew && !(await confirmBox('ساخت کلید تازه', 'با کلید تازه، پیام‌های قبلی روی دستگاه‌هایی که آن‌ها را ندارند باز نمی‌شوند و دستگاه‌های دیگر شما باید دوباره کلید را بازگردانند. ادامه می‌دهید؟', 'ساخت کلید تازه', true))) return null;
         const e2 = makeNew ? await E.newKey(p1.value, ap && ap.value) : await E.setKeyPassword(p1.value, ap && ap.value);
@@ -1113,6 +1220,7 @@ function SettingsScreen() {
       setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن')),
       h('div', { class: 'section' }, 'امنیت'),
       setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
+      setting('ورود دستگاه تازه', 'کد یک‌بارمصرف برای ورود روی گوشی یا مرورگر دیگر، بدون پیامک و حتی بدون اینترنت', h('button', { class: 'btn sm flat', onclick: deviceCodeBox }, 'گرفتن کد')),
       h('div', { class: 'hint' }, 'کد امنیتی شما:', h('br'), myFp),
       h('div', { class: 'hint' }, 'اثر انگشت گواهی ریشهٔ سپن (SHA-256):', h('br'), caFp, h('br'), h('a', { href: '/setup' }, 'راهنمای نصب گواهی روی آیفون')),
       h('div', { class: 'section' }, 'دربارهٔ سپن'),
@@ -1124,6 +1232,25 @@ function SettingsScreen() {
   return { el, update: (k) => { if (k === 'users' || k === 'avatar') renderAv(); } };
 }
 // (privacy switches read S.privacy when the screen opens; it is refreshed from the server on start)
+
+/** Shows a one-time code (5 minutes) that signs this account in on another device. */
+async function deviceCodeBox() {
+  const r = await E.deviceCode();
+  if (r.error) { toast(r.error); return; }
+  const left = h('div', { class: 'center d' });
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'ورود دستگاه تازه'),
+      h('div', { class: 'devcode' }, r.code.replace(/(\d{3})(\d{3})/, '$1 $2')),
+      left,
+      h('p', null, 'روی دستگاه تازه، در صفحهٔ ورود ' + (r.phone ? 'شمارهٔ موبایلتان' : 'نام کاربری‌تان (@' + S.me + ')') + ' را بزنید، بعد «کد را دارم» و این کد را. فقط یک بار کار می‌کند. این کد را به هیچ‌کس دیگری ندهید.'),
+      h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => close() }, 'بستن'))));
+  let t = r.ttl;
+  const tick = () => { left.textContent = t > 0 ? 'اعتبار: ' + faNum(Math.floor(t / 60)) + ':' + String(t % 60).padStart(2, '0').replace(/\d/g, (d) => faNum(d)) : 'منقضی شد'; t--; };
+  tick();
+  const timer = setInterval(tick, 1000);
+  function close() { clearInterval(timer); v.remove(); }
+  document.body.append(v);
+}
 
 /** Center-crops a picked photo to 320x320 and encodes it as WebP (what the server accepts). */
 async function toAvatar(file) {

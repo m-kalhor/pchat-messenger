@@ -15,6 +15,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const qrcode = require('./vendor/qrcode');
+
 const WEB_DIR = path.join(__dirname, 'web');
 const TYPES = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8',
@@ -125,6 +127,35 @@ function setupRoute(req, res, p, files, certDir) {
   return false;
 }
 
+/** A QR code as SVG (black on white, so it scans in dark mode too). */
+function qrSvg(text) {
+  const qr = qrcode(0, 'M');
+  qr.addData(text);
+  qr.make();
+  const n = qr.getModuleCount(), m = 4;
+  let d = '';
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (qr.isDark(r, c)) d += `M${c + m} ${r + m}h1v1h-1z`;
+  return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n + 2 * m} ${n + 2 * m}" shape-rendering="crispEdges">` +
+    `<rect width="100%" height="100%" fill="#fff"/><path fill="#000" d="${d}"/></svg>`);
+}
+
+/**
+ * The Android app download (both listeners). The QR code points at the plain-HTTP listener: an Android
+ * phone does not have the private web certificate, and the APK is checked by its signature anyway.
+ */
+function apkRoute(req, res, p, opts) {
+  if (p === '/download/sepan.apk') { opts.serveApk(req, res); return true; }
+  if (p === '/download/sepan-qr.svg') {
+    const host = opts.publicHost || String(req.headers.host || '').replace(/:\d+$/, '').replace(/[^\w.\-[\]:]/g, '');
+    if (!opts.apkInfo() || !host) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('no apk'); return true; }
+    const body = qrSvg(`http://${host}${opts.httpPort === 80 ? '' : ':' + opts.httpPort}/download/sepan.apk`);
+    res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': body.length, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
+    res.end(body);
+    return true;
+  }
+  return false;
+}
+
 function readTls(certDir) {
   return {
     key: fs.readFileSync(path.join(certDir, 'key.pem')),
@@ -137,18 +168,20 @@ function readTls(certDir) {
  * apiHandler: the messenger's request handler (same /api as the Android port).
  * plain: serve plain HTTP instead of TLS (tests only).
  */
-function start(apiHandler, { plain = false, certDir, publicHost = '' } = {}) {
+function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, apkInfo } = {}) {
   if (process.env.WEB_DISABLE === '1') return null;
   const port = +(process.env.WEB_PORT || 443);
   const httpPort = +(process.env.WEB_HTTP_PORT ?? 80);
   certDir = process.env.WEB_CERT_DIR || certDir;
   const files = loadStatic();
+  const apk = { serveApk, apkInfo, publicHost, httpPort: httpPort || 80 };
   if (!files.has('/index.html')) { console.log('web app: ./web not found, web version disabled'); return null; }
 
   const handler = (req, res) => {
     const p = new URL(req.url, 'http://x').pathname;
     if (p.startsWith('/api/') && p !== '/api/web/ca') return apiHandler(req, res);
     if (setupRoute(req, res, p, files, certDir)) return;
+    if (serveApk && apkRoute(req, res, p, apk)) return;
     const f = (req.method === 'GET' || req.method === 'HEAD') && files.get(p);
     if (f) return serveFile(req, res, f);
     res.writeHead(404, { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff' });
@@ -184,6 +217,7 @@ function start(apiHandler, { plain = false, certDir, publicHost = '' } = {}) {
     redirect = http.createServer((req, res) => {
       const p = new URL(req.url, 'http://x').pathname;
       if (setupRoute(req, res, p, files, certDir)) return;
+      if (serveApk && apkRoute(req, res, p, apk)) return;
       const host = publicHost || String(req.headers.host || '').replace(/:\d+$/, '').replace(/[^\w.\-[\]:]/g, '');
       if (!host) { res.writeHead(400); return res.end(); }
       res.writeHead(302, { Location: `https://${host}${port === 443 ? '' : ':' + port}/`, 'Cache-Control': 'no-store' });
@@ -195,4 +229,4 @@ function start(apiHandler, { plain = false, certDir, publicHost = '' } = {}) {
   return { srv, redirect };
 }
 
-module.exports = { start, caInfo };
+module.exports = { start, caInfo, qrSvg };
