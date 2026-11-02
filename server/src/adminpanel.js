@@ -9,6 +9,7 @@ const core = require('./core');
 const stats = require('./stats');
 const backup = require('./backup');
 const auth = require('./auth');
+const diag = require('./diag');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
 const sessions = new Map(); // token -> { csrf, ts }
@@ -68,7 +69,7 @@ function authInfo(ctx) {
     api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
     enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
     open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
-    msg_requests: getSetting('msg_requests', '1') === '1',
+    msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '),
   };
 }
 
@@ -279,6 +280,7 @@ async function route(ctx, req, res, secure) {
     if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
     if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
     if (typeof b.msg_requests === 'boolean') setSetting('msg_requests', b.msg_requests ? '1' : '0');
+    if (typeof b.diag_users === 'string') { try { diag.setUsers(b.diag_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.signup_category !== undefined) {
       const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);
       if (c && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(Number(c))) return json(res, 400, { error: 'bad_category' });

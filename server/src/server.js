@@ -12,6 +12,7 @@ const stats = require('./stats');
 const backup = require('./backup');
 const push = require('./push');
 const auth = require('./auth');
+const diag = require('./diag');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -543,7 +544,7 @@ async function route(req, res) {
     return send(res, 200, {
       username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
       hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
-      allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(),
+      allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(), ...diag.meInfo(user),
     });
   }
 
@@ -735,6 +736,7 @@ async function route(req, res) {
     for (const pn of pinsFor(user)) res.write(`event: pin\ndata: ${JSON.stringify(pn)}\n\n`);
     // clients from before 1.4 send no `active`: they count as on screen whenever connected, as before
     res.dev = String(url.searchParams.get('dev') || '').slice(0, 64);
+    res.ip = diag.cleanIp(req.socket.remoteAddress);
     res.active = url.searchParams.get('active') !== '0';
     let set = clients.get(user);
     if (!set) clients.set(user, (set = new Set()));
@@ -919,6 +921,22 @@ async function route(req, res) {
       const code = e.message === 'no_such_user' || e.message === 'no_request' ? 404 : e.message === 'not_allowed' ? 403 : 400;
       return send(res, code, { error: e.message });
     }
+  }
+
+  // ---- call diagnostics, test feature for the users listed in the panel (see diag.js) ----
+  if (p === '/api/diag/trace' && req.method === 'POST') {
+    if (!diag.enabledFor(user)) return send(res, 404, { error: 'not_found' });
+    const b = await readJson(req, 1024);
+    const peer = String(b.peer || '').toLowerCase();
+    if (!core.canDM(user, peer)) return send(res, 403, { error: 'not_allowed' });
+    if (limited('diag:' + user, 20)) return send(res, 429, { error: 'rate_limited' });
+    addFail('diag:' + user);
+    const set = clients.get(peer);
+    const conns = set ? [...set] : [];
+    const peerConn = conns.find((r) => r.active) || conns[0];
+    const myIp = diag.cleanIp(req.socket.remoteAddress);
+    const [me, other] = await Promise.all([diag.trace(myIp), peerConn ? diag.trace(peerConn.ip) : Promise.resolve({ ip: null, error: 'offline' })]);
+    return send(res, 200, { server: PUBLIC_HOST || null, me, peer: other });
   }
 
   if (p === '/api/turn' && req.method === 'GET') {

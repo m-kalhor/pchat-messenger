@@ -112,3 +112,23 @@ test('phone numbers are kept in the international form', async () => {
   const r = await S.api(null, 'POST', '/api/auth/sms', { phone: '+447700900123' });
   assert.equal(r.data.error, 'sms_foreign');
 });
+
+test('call diagnostics only for the listed users', async () => {
+  const diag = require(require('node:path').join(S.app.appDir, 'diag.js'));
+  assert.equal((await S.api(t.mostafa, 'GET', '/api/me')).data.diag, true, 'mostafa by default');
+  assert.equal((await S.api(t.sima, 'GET', '/api/me')).data.diag, undefined);
+  assert.equal((await S.api(t.sima, 'POST', '/api/diag/trace', { peer: 'reza' })).status, 404);
+  assert.equal((await S.api(t.mostafa, 'POST', '/api/diag/trace', { peer: 'reza' })).status, 403, 'only people one may call');
+  setting('diag_users', '');
+  assert.equal((await S.api(t.mostafa, 'GET', '/api/me')).data.diag, undefined, 'an empty list turns it off');
+  setting('diag_users', 'mostafa');
+  const hops = diag.parseHops([
+    'traceroute to 8.8.8.8 (8.8.8.8), 24 hops max, 60 byte packets',
+    ' 1  10.0.0.1  0.512 ms',
+    ' 2  *',
+    ' 3  5.200.200.1  12.30 ms',
+  ].join('\n'));
+  assert.deepEqual(hops, [{ n: 1, ip: '10.0.0.1', ms: 0.5 }, { n: 2, ip: null, ms: null }, { n: 3, ip: '5.200.200.1', ms: 12.3 }]);
+  const tp = diag.parseHops(' 1?: [LOCALHOST]                      pmtu 1500\n 1:  192.168.1.1                                           0.402ms \n 2:  no reply\n     Resume: pmtu 1500');
+  assert.deepEqual(tp, [{ n: 1, ip: '192.168.1.1', ms: 0.4 }, { n: 2, ip: null, ms: null }]);
+});

@@ -388,6 +388,11 @@ async function loginTab(box){
     h('div',{class:'row'},h('label',null,mr,' درخواست پیام'),h('span',{class:'mut'},'(هر کاربر می‌تواند با @نام‌کاربری به کسی که به او وصل نیست تا ۳ پیام بدون فایل بفرستد؛ طرف مقابل قبول، رد یا مسدود می‌کند. جفت‌های «بسته» ⛔ هرگز.)')),
     h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){er.textContent='';
       try{await api('POST','/auth',{api_key:key.value,template_id:tid.value,param:par.value,enabled:en.checked,password_login:pw.checked,open_signup:su.checked,signup_category:sc.value,msg_requests:mr.checked});alert('ذخیره شد');render();}catch(e){er.textContent=msg(e);}}},'ذخیره'),h('span',null,'وضعیت: '),state),er));
+  var du=h('input',{value:A.diag_users,placeholder:'mostafa',style:'direction:ltr;min-width:260px'}),de=h('span');
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'عیب‌یابی تماس (آزمایشی)'),
+    h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'این کاربران در تماس صوتی و تصویری پینگ (تأخیر رفت‌وبرگشت)، لرزش، بستهٔ گم‌شده و نوع اتصال را کنار صفحه می‌بینند و با دکمهٔ «مسیر» هاب‌های بین راه را (traceroute از سرور تا هر دو طرف). برای خاموش کردن، فهرست را خالی کنید و ذخیره بزنید.'),
+    h('div',{class:'row'},h('span',null,'نام‌های کاربری:'),du,h('button',{class:'grn',onclick:async function(){de.textContent='';
+      try{var j=await api('POST','/auth',{diag_users:du.value});du.value=j.diag_users;de.textContent='✓ ذخیره شد';}catch(e){de.textContent='✗ '+msg(e);}}},'ذخیره'),de)));
   var tp=h('input',{placeholder:'+98912…',style:'direction:ltr;width:150px',inputmode:'tel'}),tr=h('span');
   var cr=h('span');
   box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'آزمایش'),
