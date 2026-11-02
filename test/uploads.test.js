@@ -108,7 +108,7 @@ test('encrypted file uploads in chunks, survives an interruption, and downloads 
 
   // the owner attaches it; others only once it reached them in a message (forwarding, no re-upload)
   const payload = C.b64(Buffer.from('meta'));
-  assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', payload, fileId: id })).data.error, 'not_allowed');
+  assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', payload, fileId: id })).data.error, 'request_text_only', 'a message request to a stranger cannot carry a file');
   S.db.prepare("INSERT INTO visibility(viewer,target) VALUES('bob','alice')").run();
   assert.equal((await S.api(bob, 'POST', '/api/send', { target: 'alice', payload, fileId: id })).data.error, 'bad_file', 'not received yet');
   assert.equal((await S.api(alice, 'POST', '/api/send', { target: 'bob', kind: 'file', payload, fileId: id })).status, 200);

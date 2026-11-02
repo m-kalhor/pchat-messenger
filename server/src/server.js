@@ -170,7 +170,8 @@ setInterval(() => { const t = now(); for (const u of clients.keys()) if (isOnlin
 
 /** connected people who are allowed to know about `username` (plus the user themself) */
 function audienceOf(username) {
-  return connectedUsers().filter((u) => u === username || core.contacts(u).has(username));
+  // people who only share a message request do not follow each other's presence or profile changes
+  return connectedUsers().filter((u) => { if (u === username) return true; const c = core.contacts(u).get(username); return !!c && !c.req; });
 }
 function broadcastTo(users, event, data) { for (const u of users) emit(u, event, data); }
 function refreshAll() { for (const u of connectedUsers()) emit(u, 'refresh', {}); }
@@ -244,7 +245,9 @@ function cleanKeyBackup(k) {
 }
 
 function publicUser(u, extra, viewer) {
-  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, avatar_ver: u.avatar_ver, bio: u.bio || null, ...presenceOf(u, viewer), ...extra };
+  // across a message request neither side sees the other's online / last seen
+  const pres = extra && extra.req ? { online: false, last_seen: null, recently: false, hidden: true } : presenceOf(u, viewer);
+  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, avatar_ver: u.avatar_ver, bio: u.bio || null, ...pres, ...extra };
 }
 
 function replay(user, since) {
@@ -316,12 +319,12 @@ const EMOJI_RE = /^[^\x00-\x7f]{1,16}$/;
 const okEmoji = (e) => typeof e === 'string' && EMOJI_RE.test(e) && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(e);
 
 /** What a closed web app shows for a new message: never its text (that is end-to-end encrypted). */
-function pushData(m, tr) {
+function pushData(m, tr, request) {
   const sender = core.q.user.get(m.sender);
   const who = (sender && sender.display_name) || m.sender;
   return tr.type === 'group'
     ? { t: 'msg', convo: tr.cat.gkey, id: m.id, title: tr.cat.name, body: who + ': پیام تازه' }
-    : { t: 'msg', convo: m.sender, id: m.id, title: who, body: 'پیام تازه' };
+    : { t: 'msg', convo: m.sender, id: m.id, title: who, body: request ? 'درخواست پیام تازه' : 'پیام تازه' };
 }
 
 /** Edits and deletions after change number `since` of messages the user can see (and had already received). */
@@ -370,6 +373,8 @@ const signupsByIp = new Map();   // ip -> { n, t }: accounts opened from this ad
 const SIGNUPS_PER_IP = +(process.env.SIGNUPS_PER_IP || 5);
 const lookups = new Map(); // username -> { n, t }: numbers looked up today
 const LOOKUP_DAY = +(process.env.LOOKUP_PER_DAY || 3000);
+const nameLookups = new Map(); // username -> { n, t }: @usernames looked up today
+const LOOKUP_NAMES = +(process.env.LOOKUP_NAMES_PER_DAY || 300);
 setInterval(() => {
   const t = now();
   for (const [k, v] of signupTickets) if (t - v.t > 15 * 60e3) signupTickets.delete(k);
@@ -446,6 +451,8 @@ async function route(req, res) {
     const b = await readJson(req, 1024);
     const phone = auth.normPhone(b.phone);
     if (!phone) return send(res, 400, { error: 'bad_phone' });
+    // sms.ir only reaches Iranian numbers; a foreign number signs in with a code from another device or the admin
+    if (!auth.isIran(phone)) return send(res, 400, { error: 'sms_foreign' });
     const ip = req.socket.remoteAddress;
     if (limited('smsip:' + ip, 10) || limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });
     const wait = Math.ceil((smsSent.get(phone) || 0) + 60e3 - now());
@@ -536,12 +543,13 @@ async function route(req, res) {
     return send(res, 200, {
       username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
       hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
+      allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(),
     });
   }
 
   if (p === '/api/users' && req.method === 'GET') {
     const out = [publicUser(core.q.user.get(user), { dm: false }, user)];
-    for (const [name, v] of core.contacts(user)) out.push(publicUser(core.q.user.get(name), { dm: v.dm }, user));
+    for (const [name, v] of core.contacts(user)) out.push(publicUser(core.q.user.get(name), v.req ? { dm: v.dm, req: v.req } : { dm: v.dm }, user));
     return send(res, 200, out);
   }
 
@@ -552,13 +560,15 @@ async function route(req, res) {
     const hs = typeof b.hide_seen === 'boolean' ? b.hide_seen : !!u.hide_seen;
     const hl = typeof b.hide_last_seen === 'boolean' ? b.hide_last_seen : !!u.hide_last_seen;
     const fd = typeof b.findable === 'boolean' ? b.findable : !!u.findable;
+    const ar = typeof b.allow_requests === 'boolean' ? b.allow_requests : u.allow_requests !== 0;
     q.setPrivacy.run(hs ? 1 : 0, hl ? 1 : 0, user);
     q.setFindable.run(fd ? 1 : 0, user);
+    db.prepare('UPDATE users SET allow_requests=? WHERE username=?').run(ar ? 1 : 0, user);
     if (hl !== !!u.hide_last_seen) {
       const nu = core.q.user.get(user);
       for (const v of audienceOf(user)) if (v !== user) emit(v, 'presence', { user, ...presenceOf(nu, v) });
     }
-    return send(res, 200, { hide_seen: hs, hide_last_seen: hl, findable: fd });
+    return send(res, 200, { hide_seen: hs, hide_last_seen: hl, findable: fd, allow_requests: ar });
   }
 
   // the app went to the foreground / background on device `dev`
@@ -746,7 +756,27 @@ async function route(req, res) {
     const kind = String(b.kind || 'text');
     if (!/^[a-z_]{1,16}$/.test(kind)) return send(res, 400, { error: 'bad_kind' });
     if (typeof b.payload !== 'string' || b.payload.length > 131072) return send(res, 400, { error: 'bad_payload' });
-    const tr = resolveTarget(user, target);
+    let tr = resolveTarget(user, target);
+    let request = null; // 1.7: a message to someone not connected travels as a message request
+    if (tr.error === 'not_allowed') {
+      if (kind === 'sig_invite') {
+        // a call from a stranger never rings: it is noted on the request as a missed call
+        if (contacts.missedCall(user, target) === 'pending') { emit(target, 'contacts', {}); emit(target, 'refresh', {}); }
+        emit(user, 'refresh', {});
+        return send(res, 403, { error: 'not_connected' });
+      }
+      if (!kind.startsWith('sig_')) {
+        try { request = contacts.requestMessage(user, target, b.fileId != null); } catch (e) {
+          return send(res, e.message === 'rate_limited' ? 429 : 403, { error: e.message });
+        }
+        if (request === 'connected') request = null;
+        emit(user, 'refresh', {}); emit(target, 'refresh', {}); emit(target, 'contacts', {}); emit(user, 'contacts', {});
+        tr = { type: 'dm', peer: target };
+      }
+    } else if (tr.type === 'dm' && !kind.startsWith('sig_') && contacts.acceptByReply(user, target)) {
+      // answering a message request accepts it
+      for (const u of [user, target]) { emit(u, 'contacts', {}); emit(u, 'refresh', {}); }
+    }
     if (tr.error) return send(res, tr.code, { error: tr.error });
     if (kind.startsWith('sig_')) { // live-only signalling (typing, calls) — private chats only, never stored
       if (tr.type !== 'dm') return send(res, 400, { error: 'sig_needs_target' });
@@ -761,11 +791,14 @@ async function route(req, res) {
     const ts = now();
     const r = q.addMsg.run(user, target, kind, b.payload, fileId, ts);
     const m = { id: Number(r.lastInsertRowid), sender: user, target, kind, payload: b.payload, file_id: fileId, ts };
-    const recipients = tr.type === 'group' ? core.membersOf(tr.cat.id) : [target, user];
+    // a declined request still takes the message (the sender is not told) but nothing pops up for the receiver
+    const quiet = request && request.status !== 'pending';
+    const recipients = tr.type === 'group' ? core.membersOf(tr.cat.id) : quiet ? [user] : [target, user];
     for (const u of recipients) emit(u, 'msg', msgJson(m), m.id);
-    // nobody has the app on screen: wake their closed web apps (iPhone) with a notification
-    for (const u of recipients) if (u !== user && !isOnline(u) && push.hasSubs(u)) push.notify(u, pushData(m, tr)).catch(() => { });
-    return send(res, 200, { id: m.id, ts });
+    // nobody has the app on screen: wake their closed web apps (iPhone) with a notification (a request: its first message only)
+    const ping = !request || request.first;
+    for (const u of recipients) if (ping && u !== user && !isOnline(u) && push.hasSubs(u)) push.notify(u, pushData(m, tr, !!request)).catch(() => { });
+    return send(res, 200, request ? { id: m.id, ts, request: true, left: contacts.REQ_MSGS - (contacts.lists(user).outgoing.find((r) => r.username === target) || { msgs: contacts.REQ_MSGS }).msgs } : { id: m.id, ts });
   }
 
   // ---- edit / delete for everyone / edit history (sender only) ----
@@ -774,7 +807,8 @@ async function route(req, res) {
     const m = q.msg.get(Number(b.id));
     if (!m || m.deleted || m.sender !== user || m.kind.startsWith('sig_')) return send(res, 404, { error: 'no_such_message' });
     const tr = resolveTarget(user, m.target);
-    if (tr.error) return send(res, tr.code, { error: tr.error });
+    // a message request can always be taken back (deleted), even before the other side accepts it
+    if (tr.error && !(p === '/api/delete' && tr.error === 'not_allowed')) return send(res, tr.code, { error: tr.error });
     const t = now();
     if (p === '/api/edit') {
       if (typeof b.payload !== 'string' || !b.payload || b.payload.length > 131072) return send(res, 400, { error: 'bad_payload' });
@@ -841,9 +875,31 @@ async function route(req, res) {
     return send(res, 200, { matches: out });
   }
 
+  // ---- finding a member by exact @username (1.7): enough to open a chat or a message request ----
+  // Exact names only (no prefix search), LOOKUP_NAMES a day, so the member list cannot be harvested.
+  if (p === '/api/users/find' && req.method === 'GET') {
+    const name = String(url.searchParams.get('u') || '').trim().replace(/^@/, '').toLowerCase();
+    if (!core.NAME_RE.test(name)) return send(res, 400, { error: 'bad_username' });
+    const used = nameLookups.get(user);
+    const day = used && now() - used.t < DAY ? used : { n: 0, t: now() };
+    if (day.n >= LOOKUP_NAMES) return send(res, 429, { error: 'rate_limited' });
+    nameLookups.set(user, { n: day.n + 1, t: day.t });
+    const u = core.activeUser(name);
+    if (!u || core.isBlocked(user, name)) return send(res, 404, { error: 'no_such_user' });
+    if (name === user) return send(res, 200, { username: user, display_name: u.display_name || null, me: true });
+    const c = core.contacts(user).get(name);
+    const linked = contacts.connected(user, name) || (!!c && !c.req && c.dm);
+    const canWrite = linked || (!!c && c.req === 'in') || (!!c && c.req === 'declined')
+      || (contacts.requestsOn() && contacts.takesRequests(name));
+    return send(res, 200, {
+      username: name, display_name: u.display_name || null, pubkey: u.pubkey || null, bio: u.bio || null,
+      avatar_ver: c ? u.avatar_ver : 0, connected: linked, req: c && c.req ? c.req : null, can_message: canWrite, max_request_msgs: contacts.REQ_MSGS,
+    });
+  }
+
   // ---- connection requests between users (fill the visibility matrix without the admin) ----
   if (p === '/api/contacts/requests' && req.method === 'GET') return send(res, 200, contacts.lists(user));
-  const cm = /^\/api\/contacts\/(request|respond|cancel|remove)$/.exec(p);
+  const cm = /^\/api\/contacts\/(request|respond|cancel|remove|block|unblock)$/.exec(p);
   if (cm && req.method === 'POST') {
     const b = await readJson(req, 4096);
     const other = String(b.username || '').trim().toLowerCase();
@@ -852,10 +908,12 @@ async function route(req, res) {
       if (cm[1] === 'request') result = contacts.request(user, other);
       else if (cm[1] === 'respond') contacts.respond(user, other, !!b.accept);
       else if (cm[1] === 'cancel') contacts.cancel(user, other);
+      else if (cm[1] === 'block') contacts.block(user, other);
+      else if (cm[1] === 'unblock') contacts.unblock(user, other);
       else contacts.remove(user, other);
       emit(other, 'contacts', {});
       emit(user, 'contacts', {});
-      if (result === 'connected' || (cm[1] === 'respond' && b.accept) || cm[1] === 'remove') { emit(other, 'refresh', {}); emit(user, 'refresh', {}); }
+      if (result === 'connected' || cm[1] !== 'request') { emit(other, 'refresh', {}); emit(user, 'refresh', {}); }
       return send(res, 200, { result });
     } catch (e) {
       const code = e.message === 'no_such_user' || e.message === 'no_request' ? 404 : e.message === 'not_allowed' ? 403 : 400;

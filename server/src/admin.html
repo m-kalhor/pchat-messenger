@@ -373,7 +373,7 @@ async function loginTab(box){
   var tid=h('input',{value:A.template_id,placeholder:'مثلاً 123456',style:'direction:ltr;width:130px',inputmode:'numeric'});
   var par=h('input',{value:A.param,style:'direction:ltr;width:110px'});
   var en=h('input',{type:'checkbox',checked:A.enabled}),pw=h('input',{type:'checkbox',checked:A.password_login});
-  var su=h('input',{type:'checkbox',checked:A.open_signup});
+  var su=h('input',{type:'checkbox',checked:A.open_signup}),mr=h('input',{type:'checkbox',checked:A.msg_requests});
   var sc=h('select',null,h('option',{value:''},'هیچ دسته‌ای (کسی را نبیند)'),S.categories.map(function(c){var o=h('option',{value:String(c.id)},c.name);if(A.signup_category===c.id)o.selected=true;return o;}));
   var er=h('div',{class:'err'});
   var st=A.status,state=!A.ready?h('span',{class:'mut'},'تنظیم نشده'):st.down?h('span',{style:'color:var(--red)'},'⚠️ آخرین ارسال ناموفق: '+msg2(st.last_error.error)+' ('+fmtDate(st.last_error.t)+')'):h('span',{style:'color:var(--grn)'},'✓ آماده'+(st.last_ok?' — آخرین ارسال موفق: '+fmtDate(st.last_ok):''));
@@ -385,9 +385,10 @@ async function loginTab(box){
     h('div',{class:'row'},h('label',null,pw,' ورود با نام کاربری و رمز هم مجاز باشد'),h('span',{class:'mut'},'(برای سرور بدون اینترنت یا تا وقتی موبایل همه ثبت نشده)')),
     h('div',{class:'row'},h('label',null,su,' ثبت‌نام آزاد'),h('span',{class:'mut'},'(هر کس با تأیید پیامکی شماره‌اش حساب می‌گیرد و نام کاربری‌اش را خودش انتخاب می‌کند)')),
     h('div',{class:'row'},h('span',null,'دستهٔ کاربران تازه:'),sc,h('span',{class:'mut'},'کاربر تازه فقط اعضای این دسته را می‌بیند؛ بقیه با «درخواست ارتباط» یا پیدا کردن از مخاطبان گوشی.')),
+    h('div',{class:'row'},h('label',null,mr,' درخواست پیام'),h('span',{class:'mut'},'(هر کاربر می‌تواند با @نام‌کاربری به کسی که به او وصل نیست تا ۳ پیام بدون فایل بفرستد؛ طرف مقابل قبول، رد یا مسدود می‌کند. جفت‌های «بسته» ⛔ هرگز.)')),
     h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){er.textContent='';
-      try{await api('POST','/auth',{api_key:key.value,template_id:tid.value,param:par.value,enabled:en.checked,password_login:pw.checked,open_signup:su.checked,signup_category:sc.value});alert('ذخیره شد');render();}catch(e){er.textContent=msg(e);}}},'ذخیره'),h('span',null,'وضعیت: '),state),er));
-  var tp=h('input',{placeholder:'09…',style:'direction:ltr;width:150px',inputmode:'tel'}),tr=h('span');
+      try{await api('POST','/auth',{api_key:key.value,template_id:tid.value,param:par.value,enabled:en.checked,password_login:pw.checked,open_signup:su.checked,signup_category:sc.value,msg_requests:mr.checked});alert('ذخیره شد');render();}catch(e){er.textContent=msg(e);}}},'ذخیره'),h('span',null,'وضعیت: '),state),er));
+  var tp=h('input',{placeholder:'+98912…',style:'direction:ltr;width:150px',inputmode:'tel'}),tr=h('span');
   var cr=h('span');
   box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'آزمایش'),
     h('div',{class:'row'},'پیامک آزمایشی به',tp,h('button',{class:'pri',onclick:async function(){tr.textContent='در حال ارسال…';

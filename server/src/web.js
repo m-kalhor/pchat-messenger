@@ -226,6 +226,12 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
       const body = Buffer.from(introPage(site() || {}, !!(apkInfo && apkInfo())));
       return serveFile(req, res, { body, type: TYPES['.html'], etag: '"' + crypto.createHash('sha1').update(body).digest('hex').slice(0, 16) + '"' });
     }
+    // a shareable profile link (1.7): https://<host>/@username opens the app on that user
+    const at = /^\/@([A-Za-z0-9_]{2,20})$/.exec(p);
+    if (at && (req.method === 'GET' || req.method === 'HEAD')) {
+      res.writeHead(302, { Location: '/app#@' + at[1].toLowerCase(), 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      return res.end();
+    }
     const f = (req.method === 'GET' || req.method === 'HEAD') && files.get(p === '/app' ? '/index.html' : p);
     if (f) return serveFile(req, res, f);
     res.writeHead(404, { 'Content-Type': 'text/plain', 'X-Content-Type-Options': 'nosniff' });
