@@ -41,18 +41,27 @@ const mac = (username, code) => crypto.createHmac('sha256', secret()).update(use
 const asciiDigits = (s) => String(s || '').replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x6f0).replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x660);
 
 /**
- * One spelling per number, so "+98 912 …", "0098912…", "98912…", "912…" and "0912…" all match.
- * Iranian mobiles become 09xxxxxxxxx (what sms.ir expects); other numbers keep their digits (and +).
+ * One spelling per number (1.7: international E.164, "+" country code, no trunk 0), so "+98 912 …",
+ * "0098912…", "98912…", "912…" and "0912…" all become +98912…. A number that starts with + or 00 keeps
+ * its country code; a bare local number is taken as Iranian only when it looks like an Iranian mobile.
  */
 function normPhone(s) {
-  let p = asciiDigits(s).replace(/[\s\-().]/g, '');
+  let p = asciiDigits(s).replace(/[\s\-().\u200e\u200f\u202a-\u202e]/g, '');
+  if (p.startsWith('00')) p = '+' + p.slice(2);
   if (!/^\+?[0-9]{7,15}$/.test(p)) return null;
-  if (p.startsWith('+98')) p = '0' + p.slice(3);
-  else if (p.startsWith('0098')) p = '0' + p.slice(4);
-  else if (/^989\d{9}$/.test(p)) p = '0' + p.slice(2);
-  else if (/^9\d{9}$/.test(p)) p = '0' + p;
-  return p;
+  if (p.startsWith('+')) {
+    if (p.startsWith('+980')) p = '+98' + p.slice(4); // +98 0912… typed with the trunk 0
+    return /^\+[1-9][0-9]{6,14}$/.test(p) ? p : null;
+  }
+  if (/^09\d{9}$/.test(p)) return '+98' + p.slice(1);
+  if (/^9\d{9}$/.test(p)) return '+98' + p;
+  if (/^989\d{9}$/.test(p)) return '+' + p;
+  return null;
 }
+/** An Iranian number: the only ones sms.ir can text (and the only ones open sign-up takes). */
+const isIran = (p) => typeof p === 'string' && p.startsWith('+98');
+/** The national spelling sms.ir expects: 09xxxxxxxxx. */
+const smsMobile = (p) => (isIran(p) ? '0' + p.slice(3) : p);
 
 /** The active user with this mobile number (or this username, for a device / admin code). */
 function findUser(ident) {
@@ -96,6 +105,13 @@ function consume(username, code, kinds) {
   }
   for (const r of live) q.miss.run(r.id);
   return null;
+}
+
+// 1.7: numbers on file move to the international form once (old 09… spellings and anything the admin typed)
+if (getSetting('migrated_v17_phone') !== '1') {
+  const set = db.prepare('UPDATE users SET phone=? WHERE username=?');
+  for (const u of q.phones.all()) { const n = normPhone(u.phone); if (n && n !== u.phone) set.run(n, u.username); }
+  setSetting('migrated_v17_phone', '1');
 }
 
 // ---------------- sms.ir ----------------
@@ -147,8 +163,9 @@ async function smsCall(path, method, body, apiKey) {
 async function sendSms(phone, code) {
   const c = smsConfig();
   if (!smsReady()) throw new Error('sms_not_configured');
+  if (!isIran(normPhone(phone))) throw new Error('sms_foreign_number');
   try {
-    await smsCall('/send/verify', 'POST', { mobile: phone, templateId: Number(c.template_id), parameters: [{ name: c.param || 'CODE', value: code }] }, c.api_key);
+    await smsCall('/send/verify', 'POST', { mobile: smsMobile(phone), templateId: Number(c.template_id), parameters: [{ name: c.param || 'CODE', value: code }] }, c.api_key);
     smsState(true);
   } catch (e) {
     smsState(false, e.name === 'TimeoutError' ? 'timeout' : e.message);
@@ -163,6 +180,6 @@ async function smsCredit() {
 function cleanup() { q.dead.run(Date.now(), MAX_TRIES); }
 
 module.exports = {
-  TTL, normPhone, findUser, phoneOf, phoneMap, issue, consume, smsConfig, smsReady, passwordLogin, openSignup, signupCategory, smsStatus,
+  TTL, normPhone, isIran, smsMobile, findUser, phoneOf, phoneMap, issue, consume, smsConfig, smsReady, passwordLogin, openSignup, signupCategory, smsStatus,
   sendSms, smsCredit, cleanup,
 };

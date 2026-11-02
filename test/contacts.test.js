@@ -7,7 +7,8 @@ const { startServer } = require('./helpers/server');
 let S, t;
 const post = (u, what, body) => S.api(t[u], 'POST', '/api/contacts/' + what, body);
 const lists = async (u) => (await S.api(t[u], 'GET', '/api/contacts/requests')).data;
-const dmable = async (u) => Object.entries(Object.fromEntries((await S.api(t[u], 'GET', '/api/users')).data.map((x) => [x.username, x.dm]))).filter(([, d]) => d).map(([n]) => n).sort();
+// connected chats only (1.7: someone behind an open message request is listed too, but marked `req`)
+const dmable = async (u) => (await S.api(t[u], 'GET', '/api/users')).data.filter((x) => x.dm && !x.req).map((x) => x.username).sort();
 
 test.before(async () => {
   S = await startServer();
@@ -25,7 +26,7 @@ test('request then accept connects both ways', async () => {
   assert.deepEqual(await dmable('ali'), ['bita']);
   assert.deepEqual(await dmable('bita'), ['ali']);
   assert.ok(S.core.q.vis.get('ali', 'bita') && S.core.q.vis.get('bita', 'ali'), 'the matrix shows both directions');
-  assert.deepEqual(await lists('bita'), { incoming: [], outgoing: [] });
+  assert.deepEqual(await lists('bita'), { incoming: [], declined: [], blocked: [], outgoing: [] });
   assert.equal((await post('ali', 'request', { username: 'bita' })).data.error, 'already_connected');
 });
 
@@ -37,11 +38,14 @@ test('two crossing requests connect at once; bad targets are refused', async () 
   assert.equal((await post('ali', 'request', { username: 'nobody' })).status, 404);
 });
 
-test('declined requests wait a day; cancel withdraws', async () => {
+test('a decline is not shown to the sender and can be accepted later; cancel withdraws', async () => {
   await post('ali', 'request', { username: 'cyrus' });
   await post('cyrus', 'respond', { username: 'ali', accept: false });
-  assert.deepEqual((await lists('ali')).outgoing.map((r) => r.status), ['declined']);
-  assert.equal((await post('ali', 'request', { username: 'cyrus' })).data.error, 'declined_recently');
+  assert.deepEqual((await lists('ali')).outgoing.map((r) => r.status), ['pending'], 'still looks pending');
+  assert.equal((await post('ali', 'request', { username: 'cyrus' })).data.result, 'sent');
+  assert.deepEqual((await lists('cyrus')).declined.map((r) => r.username), ['ali']);
+  assert.equal((await post('cyrus', 'respond', { username: 'ali', accept: true })).status, 200, 'changed their mind');
+  assert.ok(S.core.canDM('cyrus', 'ali') && S.core.canDM('ali', 'cyrus'));
   await post('bita', 'request', { username: 'dara' });
   await post('bita', 'cancel', { username: 'dara' });
   assert.deepEqual((await lists('dara')).incoming, []);

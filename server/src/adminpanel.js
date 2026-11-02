@@ -9,6 +9,7 @@ const core = require('./core');
 const stats = require('./stats');
 const backup = require('./backup');
 const auth = require('./auth');
+const diag = require('./diag');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
 const sessions = new Map(); // token -> { csrf, ts }
@@ -17,7 +18,6 @@ let gfail = { n: 0, t: 0 }; // global failed-login counter (all IPs)
 const SESSION_MS = 12 * 3600 * 1000;
 const NAME = /^[a-z0-9_]{2,20}$/;
 /** Mobile number for the SMS login: optional +, 7 to 15 digits (spaces, dashes and brackets are dropped). */
-const PHONE = /^\+?[0-9]{7,15}$/;
 const ADMIN_NAME = /^[a-z0-9_.\-]{3,32}$/;
 const adminUser = () => getSetting('admin_user', 'admin');
 
@@ -69,6 +69,7 @@ function authInfo(ctx) {
     api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
     enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
     open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
+    msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '),
   };
 }
 
@@ -178,7 +179,9 @@ async function route(ctx, req, res, secure) {
     const vis = Array.isArray(b.visibility) ? b.visibility.slice() : [];
     if (Array.isArray(b.links)) for (const l of b.links) { if (!Array.isArray(l)) return json(res, 400, { error: 'bad_pair' }); vis.push([l[0], l[1], l[2]], [l[1], l[0], l[2]]); }
     for (const u of Object.values(users)) {
-      if (u && typeof u.phone === 'string') { u.phone = u.phone.replace(/[\s\-()]/g, '').replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x6f0).replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x660); if (u.phone && !PHONE.test(u.phone)) return json(res, 400, { error: 'bad_phone' }); }
+      // stored in the international form (+98912…), whatever spelling the admin typed
+      if (u && typeof u.phone === 'string' && u.phone.trim()) { const n = auth.normPhone(u.phone); if (!n) return json(res, 400, { error: 'bad_phone' }); u.phone = n; }
+      else if (u && typeof u.phone === 'string') u.phone = '';
     }
     for (const name of Object.keys(users)) if (!core.q.user.get(name)) return json(res, 400, { error: 'no_such_user', detail: name });
     // one number signs in one account: the same mobile on two users would make the SMS login ambiguous
@@ -276,6 +279,8 @@ async function route(ctx, req, res, secure) {
     if (typeof b.enabled === 'boolean') setSetting('sms_enabled', b.enabled ? '1' : '0');
     if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
     if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
+    if (typeof b.msg_requests === 'boolean') setSetting('msg_requests', b.msg_requests ? '1' : '0');
+    if (typeof b.diag_users === 'string') { try { diag.setUsers(b.diag_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.signup_category !== undefined) {
       const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);
       if (c && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(Number(c))) return json(res, 400, { error: 'bad_category' });

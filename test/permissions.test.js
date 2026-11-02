@@ -21,6 +21,8 @@ test.before(async () => {
   tok = {};
   for (const u of ['alice', 'bob', 'carol', 'dave']) tok[u] = await S.user(u, u === 'dave' ? [] : [grp]);
   tok.erin = await S.user('erin', []);
+  // the matrix rules alone: message requests to strangers (1.7, see requests.test.js) are switched off here
+  S.db.prepare("INSERT OR REPLACE INTO settings(key,value) VALUES('msg_requests','0')").run();
 });
 test.after(() => S && S.stop());
 

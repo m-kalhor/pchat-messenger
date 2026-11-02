@@ -81,6 +81,8 @@ object CallManager {
 
     private var factory: PeerConnectionFactory? = null
     private var pc: PeerConnection? = null
+    /** The live peer connection (the admins' call diagnostics read its stats), or null. */
+    val peerConnection: PeerConnection? get() = pc
     private var audioSource: AudioSource? = null
     private var audioTrack: AudioTrack? = null
     private var videoSource: VideoSource? = null
@@ -125,6 +127,9 @@ object CallManager {
                 val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description))
                 if (!delivered) { endCall("کاربر الان آنلاین نیست", false); return@launch }
                 armTimeout(45_000L, "پاسخی داده نشد")
+            } catch (e: Api.HttpError) {
+                // 1.7: someone who has not accepted my message request: the call is only noted on the request
+                endCall(if (e.error == "not_connected") "تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد" else "خطا در برقراری تماس (${e.code})", false)
             } catch (e: Exception) {
                 endCall("خطا در برقراری تماس: " + (e.message ?: ""), false)
             }

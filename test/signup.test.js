@@ -48,7 +48,7 @@ test('open sign-up: SMS proves the number, the user picks a username, sees nobod
   const r = await proveNumber('0935 000 2222');
   assert.equal(r.status, 200);
   assert.equal(r.data.signup, true);
-  assert.equal(r.data.phone, '09350002222');
+  assert.equal(r.data.phone, '+989350002222');
   const t = r.data.ticket;
   assert.equal((await post('/api/auth/signup', { ticket: t, username: 'Omid' })).data.error, 'user_exists');
   assert.equal((await post('/api/auth/signup', { ticket: t, username: '1234' })).data.error, 'invalid_username');
@@ -57,7 +57,7 @@ test('open sign-up: SMS proves the number, the user picks a username, sees nobod
   assert.equal(ok.data.created, true);
   assert.equal(ok.data.username, 'nava');
   const u = S.core.q.user.get('nava');
-  assert.equal(u.phone, '09350002222');
+  assert.equal(u.phone, '+989350002222');
   assert.equal(u.display_name, 'نوا');
   const users = (await S.api(ok.data.token, 'GET', '/api/users')).data;
   assert.deepEqual(users.map((x) => x.username), ['nava'], 'a new user sees nobody');

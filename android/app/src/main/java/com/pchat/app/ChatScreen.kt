@@ -26,6 +26,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.material3.AlertDialog
@@ -100,6 +101,13 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withLink
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
@@ -128,7 +136,7 @@ private fun openFile(ctx: Context, path: String, mime: String?) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(convo: String, onBack: () -> Unit) {
+fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val ctxForToast = LocalContext.current
     val tick by Engine.tick.collectAsState()
@@ -177,7 +185,24 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
     var keyWarn by remember(tick, convo) { mutableStateOf(!Engine.isGroup(convo) && Engine.db.keyChanged(convo)) }
     val listState = rememberLazyListState()
     val isGroup = Engine.isGroup(convo)
-    val startCall = rememberCallStarter()
+    val startCall0 = rememberCallStarter()
+    // 1.7: a message request I have not accepted yet: no calls from here (and theirs do not ring)
+    val startCall: (String, Boolean) -> Unit = { c, v ->
+        val r = Engine.reqOf(c)
+        if (r == "in" || r == "declined") Toast.makeText(ctxForToast, "اول درخواست را بپذیرید", Toast.LENGTH_SHORT).show() else startCall0(c, v)
+    }
+    // @username in a message: open that chat (a stranger is found first, then it is a message request)
+    val openMention: (String) -> Unit = { name ->
+        if (name == Engine.me) Unit
+        else if (Engine.users.value.any { it.username == name && (it.dm || it.req != null) }) onOpenUser(name)
+        else scope.launch {
+            val (u, err) = Engine.findUser(name)
+            if (u != null) onOpenUser(u) else Toast.makeText(ctxForToast, err ?: "پیدا نشد", Toast.LENGTH_LONG).show()
+        }
+    }
+    val reqState = remember(users, convo) { Engine.reqOf(convo) }
+    val incomingReqs by Engine.incomingRequests.collectAsState()
+    val declinedReqs by Engine.declinedRequests.collectAsState()
     val atBottom by remember { derivedStateOf { listState.firstVisibleItemIndex <= 1 } }
 
     DisposableEffect(convo) {
@@ -377,6 +402,38 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     }
                 }
             }
+            if (reqState != null && !searching) {
+                Surface(color = MaterialTheme.colorScheme.secondaryContainer, modifier = Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        if (reqState == "out") {
+                            Text(
+                                "درخواست پیام: ${Engine.nameOf(convo)} هنوز در مخاطبان شما نیست. تا وقتی بپذیرد، تا ۳ پیام متنی (بدون فایل) می‌شود فرستاد. تماس بعد از پذیرفتن ممکن است.",
+                                fontSize = 13.sp
+                            )
+                        } else {
+                            val calls = (incomingReqs + declinedReqs).firstOrNull { it.username == convo }?.calls ?: 0
+                            Text(
+                                "${Engine.nameOf(convo)} (@$convo) در مخاطبان شما نیست" + (if (reqState == "declined") " و این درخواست را رد کرده‌اید" else "") + "." +
+                                    (if (calls > 0) " 📞 $calls تماس بی‌پاسخ." else "") + " با پاسخ دادن یا «پذیرفتن» به هم وصل می‌شوید.",
+                                fontSize = 13.sp
+                            )
+                            var confirmBlock by remember { mutableStateOf(false) }
+                            Row {
+                                TextButton(onClick = { scope.launch { error = Engine.contactAction("respond", convo, true).first } }) { Text("پذیرفتن") }
+                                if (reqState == "in") TextButton(onClick = { scope.launch { error = Engine.contactAction("respond", convo, false).first; if (error == null) onBack() } }) { Text("رد") }
+                                TextButton(onClick = { confirmBlock = true }) { Text("مسدود", color = MaterialTheme.colorScheme.error) }
+                            }
+                            if (confirmBlock) AlertDialog(
+                                onDismissRequest = { confirmBlock = false },
+                                title = { Text("مسدود کردن") },
+                                text = { Text("${Engine.nameOf(convo)} دیگر نمی‌تواند به شما پیام بدهد یا زنگ بزند. بعداً از «درخواست‌ها» می‌شود رفع مسدودی کرد.") },
+                                confirmButton = { TextButton(onClick = { confirmBlock = false; scope.launch { error = Engine.contactAction("block", convo).first; if (error == null) onBack() } }) { Text("مسدود", color = MaterialTheme.colorScheme.error) } },
+                                dismissButton = { TextButton(onClick = { confirmBlock = false }) { Text("انصراف") } }
+                            )
+                        }
+                    }
+                }
+            }
             if (pinnedId != null && !searching) {
                 Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { jumpTo = pinnedId }) {
                     Row(Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -396,7 +453,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     Text("چیزی پیدا نشد", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
             } else Box(Modifier.weight(1f).fillMaxWidth()) {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, LocalOpenMention provides openMention) {
                     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true) {
                         items(rowsList.size, key = { i -> val x = rowsList[i]; if (x is Msg) x.id else "d$x" }) { i ->
                             val it = rowsList[i]
@@ -512,7 +569,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                         )
                     }
                   } else {
-                    Box {
+                    if (reqState != "out") Box {
                         IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
                         DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
                             DropdownMenuItem(text = { Text("🖼  عکس (بدون فشرده‌سازی)") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
@@ -541,7 +598,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit) {
                     IconButton(onClick = { finishRec(true) }) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary)
                     }
-                  } else if (rec != null || (text.isBlank() && editing == null)) {
+                  } else if (rec != null || (text.isBlank() && editing == null && reqState != "out")) {
                     Box(
                         Modifier.size(48.dp).clip(CircleShape)
                             .background(if (rec != null) Color(0xFFE53935) else Color.Transparent)
@@ -666,6 +723,8 @@ fun Bubble(
     val fg = if (dark) Color(0xFFF5F5F5) else Color(0xFF111111)
     val sub = fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
+    var playVideo by remember { mutableStateOf<String?>(null) }
+    playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, m.mime) { playVideo = null } }
     val textSize by Prefs.textSize.collectAsState()
     val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
@@ -733,13 +792,15 @@ fun Bubble(
                                     if (progress != null) {
                                         Text("${(progress * 100).toInt()}٪", color = sub, fontSize = 12.sp)
                                     } else {
+                                        // 1.7: videos play in Sepan's own player, no "open with…" menu
+                                        val isVideo = (m.mime ?: "").startsWith("video/")
                                         TextButton(onClick = {
                                             scope.launch {
                                                 val p = Engine.downloadMedia(m)
-                                                if (p != null) openFile(ctx, p, m.mime)
+                                                if (p != null) { if (isVideo) playVideo = p else openFile(ctx, p, m.mime) }
                                                 else Toast.makeText(ctx, "دریافت فایل ناموفق بود (دوباره بزنید تا ادامه یابد)", Toast.LENGTH_SHORT).show()
                                             }
-                                        }) { Text(if (m.localPath != null) "باز کردن" else "دانلود") }
+                                        }) { Text(if (isVideo) (if (m.localPath != null) "▶ پخش" else "▶ دانلود و پخش") else if (m.localPath != null) "باز کردن" else "دانلود") }
                                     }
                                 }
                             }
@@ -748,7 +809,7 @@ fun Bubble(
                         "voice" -> VoiceContent(m, progress, sub)
                         "location" -> m.loc?.let { LocationContent(it, fg, sub) } ?: Text(m.text, color = fg, fontSize = textSize.sp)
                         "call" -> Text(m.text, color = sub, fontSize = 14.sp)
-                        else -> if (bigEmoji) BigEmoji(m.text, m.id, textSize * 2) else Text(m.text, color = fg, fontSize = textSize.sp, style = TextStyle(textDirection = TextDirection.Content))
+                        else -> if (bigEmoji) BigEmoji(m.text, m.id, textSize * 2) else MentionText(m.text, fg, textSize.sp, LocalOpenMention.current)
                     }
                     val rx = remember(m.reactions) { Engine.reactionsOf(m) }
                     if (rx.isNotEmpty()) {
@@ -871,7 +932,18 @@ private fun VoiceContent(m: Msg, progress: Float?, sub: Color) {
                     )
                 }
             }
-            Text(U.dur(if (current && ps.pos > 0) ps.pos else total), color = sub, fontSize = 11.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(U.dur(if (current && ps.pos > 0) ps.pos else total), color = sub, fontSize = 11.sp)
+                Spacer(Modifier.width(8.dp))
+                // playback speed 1x -> 1.5x -> 2x (remembered for the next voice messages)
+                val rate by VoicePlayer.rate.collectAsState()
+                Text(
+                    when (rate) { 1.5f -> "1.5×"; 2f -> "2×"; else -> "1×" },
+                    color = if (rate != 1f) accent else sub, fontSize = 11.sp, fontWeight = if (rate != 1f) FontWeight.Bold else FontWeight.Normal,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).border(1.dp, if (rate != 1f) accent else sub.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                        .clickable { VoicePlayer.cycleRate() }.padding(horizontal = 6.dp, vertical = 1.dp)
+                )
+            }
         }
     }
 }
@@ -945,4 +1017,31 @@ fun ImageViewer(path: String, onClose: () -> Unit) {
             }
         }
     }
+}
+
+/** Opens the chat of an @username tapped in a message (set by ChatScreen). */
+val LocalOpenMention = staticCompositionLocalOf<(String) -> Unit> { {} }
+private val MENTION = Regex("@([A-Za-z0-9_]{2,20})(?![A-Za-z0-9_])")
+
+/** Message text with tappable @usernames (1.7). */
+@Composable
+fun MentionText(text: String, color: Color, size: TextUnit, onMention: (String) -> Unit) {
+    val accent = MaterialTheme.colorScheme.primary
+    val open by rememberUpdatedState(onMention)
+    val annotated = remember(text, accent) {
+        buildAnnotatedString {
+            var i = 0
+            for (mm in MENTION.findAll(text)) {
+                val start = mm.range.first
+                // not an e-mail address (name@host)
+                if (start > 0 && (text[start - 1].isLetterOrDigit() || text[start - 1] == '_' || text[start - 1] == '.')) continue
+                append(text.substring(i, start))
+                val name = mm.groupValues[1].lowercase()
+                withLink(LinkAnnotation.Clickable("u:$name", TextLinkStyles(SpanStyle(color = accent))) { open(name) }) { append(mm.value) }
+                i = mm.range.last + 1
+            }
+            append(text.substring(i))
+        }
+    }
+    Text(annotated, color = color, fontSize = size, style = TextStyle(textDirection = TextDirection.Content))
 }

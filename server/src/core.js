@@ -16,6 +16,8 @@ const q = {
   hasMsg: db.prepare('SELECT 1 FROM messages WHERE sender=? AND target=? LIMIT 1'),
   blocked: db.prepare('SELECT 1 FROM blocks WHERE (viewer=? AND target=?) OR (viewer=? AND target=?)'),
   cut: db.prepare('SELECT 1 FROM disconnects WHERE a=? AND b=?'),
+  reqIn: db.prepare('SELECT from_user AS u, status FROM contact_requests WHERE to_user=?'),
+  reqOut: db.prepare('SELECT to_user AS u, status FROM contact_requests WHERE from_user=?'),
   mates: db.prepare('SELECT DISTINCT b.username AS u FROM user_categories a JOIN user_categories b ON a.category_id=b.category_id WHERE a.username=? AND b.username<>?'),
 };
 
@@ -44,6 +46,18 @@ function contacts(username) {
   for (const r of q.visList.all(username)) m.set(r.target, { dm: true });
   for (const r of q.priorSenders.all(username)) if (!m.has(r.sender) && !isBlocked(username, r.sender) && !isCut(username, r.sender)) m.set(r.sender, { dm: true });
   for (const r of q.mates.all(username, username)) if (!m.has(r.u)) m.set(r.u, { dm: false });
+  // 1.7 message requests between people who are not connected: req 'in' (open, to me), 'declined' (I declined
+  // it, still acceptable), 'out' (mine, waiting; a decline is not shown). A request I blocked hides its sender.
+  const linked = (o) => !!q.vis.get(username, o) && !!q.vis.get(o, username);
+  for (const r of q.reqIn.all(username)) {
+    if (linked(r.u) || isBlocked(username, r.u)) continue;
+    if (r.status === 'blocked') { const e = m.get(r.u); if (e && e.dm) { if (q.mates.all(username, username).some((x) => x.u === r.u)) m.set(r.u, { dm: false }); else m.delete(r.u); } continue; }
+    m.set(r.u, { dm: true, req: r.status === 'declined' ? 'declined' : 'in' });
+  }
+  for (const r of q.reqOut.all(username)) {
+    if (linked(r.u) || isBlocked(username, r.u) || (m.has(r.u) && m.get(r.u).req)) continue;
+    m.set(r.u, { dm: true, req: 'out' });
+  }
   m.delete(username);
   for (const k of [...m.keys()]) if (!activeUser(k)) m.delete(k);
   return m;

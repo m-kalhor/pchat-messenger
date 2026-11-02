@@ -23,9 +23,19 @@ data class UserInfo(
     /** when they were last online (null = online now, unknown or hidden) */
     val lastSeen: Long? = null,
     /** "last seen" is hidden between us (either side hides it); then only [recently] (within 3 days) is known */
-    val hidden: Boolean = false, val recently: Boolean = false
+    val hidden: Boolean = false, val recently: Boolean = false,
+    /** 1.7 message request between us: "in" (to me), "declined" (I declined it), "out" (mine, or a stranger found by @username) */
+    val req: String? = null,
+    /** found by @username and not listed by the server yet (kept until the first message) */
+    val found: Boolean = false
 )
-data class ContactRequest(val username: String, val displayName: String?, val status: String, val ts: Long)
+data class ContactRequest(
+    val username: String, val displayName: String?, val status: String, val ts: Long,
+    /** messages and missed calls that came with the request (1.7) */
+    val msgs: Int = 0, val calls: Int = 0
+)
+/** incoming (new), declined (can still be accepted), blocked, outgoing (mine, always shown as waiting) */
+data class RequestLists(val incoming: List<ContactRequest>, val declined: List<ContactRequest>, val blocked: List<ContactRequest>, val outgoing: List<ContactRequest>)
 data class GroupInfo(val key: String, val name: String, val members: List<String>)
 class TurnInfo(val urls: List<String>, val user: String, val cred: String, val expiresAt: Long)
 class PatchResult(val offset: Long, val done: Boolean, val fileId: String?)
@@ -39,7 +49,8 @@ fun parseUsers(raw: String): List<UserInfo> {
             if (o.isNull("display_name")) null else o.getString("display_name"), o.optInt("avatar_ver", 0), o.optBoolean("dm", true),
             if (o.isNull("bio")) null else o.optString("bio", "").ifEmpty { null },
             if (o.isNull("last_seen")) null else o.optLong("last_seen").takeIf { it > 0 },
-            o.optBoolean("hidden", false), o.optBoolean("recently", false)
+            o.optBoolean("hidden", false), o.optBoolean("recently", false),
+            if (o.isNull("req")) null else o.optString("req", "").ifEmpty { null }
         )
     }
 }
@@ -162,19 +173,27 @@ object Api {
     }
 
     /** incoming = people asking me; outgoing = my own requests (status pending/declined). */
-    fun contactRequests(): Pair<List<ContactRequest>, List<ContactRequest>> {
+    fun contactRequests(): RequestLists {
         val o = JSONObject(exec(req("/api/contacts/requests").get().build()))
-        fun list(k: String) = o.getJSONArray(k).let { a ->
+        fun list(k: String) = (o.optJSONArray(k) ?: JSONArray()).let { a ->
             (0 until a.length()).map { i ->
                 val r = a.getJSONObject(i)
                 ContactRequest(r.getString("username"), if (r.isNull("display_name")) null else r.optString("display_name", "").ifEmpty { null },
-                    r.optString("status", "pending"), r.optLong("ts"))
+                    r.optString("status", "pending"), r.optLong("ts"), r.optInt("msgs", 0), r.optInt("calls", 0))
             }
         }
-        return list("incoming") to list("outgoing")
+        return RequestLists(list("incoming"), list("declined"), list("blocked"), list("outgoing"))
     }
 
-    /** what = request | respond | cancel | remove. Returns the server's result ("sent", "connected" or "ok"). */
+    /** A member by exact @username: {username, display_name, pubkey, bio, connected, req, can_message} (or {me: true}). */
+    fun findUser(name: String): JSONObject =
+        JSONObject(exec(req("/api/users/find?u=" + java.net.URLEncoder.encode(name, "UTF-8")).get().build()))
+
+    /** Whether people who are not my contacts may write to me (message requests). */
+    fun setAllowRequests(on: Boolean): JSONObject =
+        JSONObject(exec(req("/api/privacy").post(JSONObject().put("allow_requests", on).toString().toRequestBody(JSON)).build()))
+
+    /** what = request | respond | cancel | remove | block | unblock. Returns the server's result ("sent", "connected" or "ok"). */
     fun contactAction(what: String, username: String, accept: Boolean = false): String {
         val body = JSONObject().put("username", username).put("accept", accept).toString()
         return JSONObject(exec(req("/api/contacts/$what").post(body.toRequestBody(JSON)).build())).optString("result", "ok")
@@ -232,6 +251,10 @@ object Api {
     }
 
     /** {hide_seen, hide_last_seen, ...} of my account. */
+    /** Call diagnostics (1.7 test feature, listed admins only): the server's traceroute to me and to [peer]. */
+    fun diagTrace(peer: String): JSONObject =
+        JSONObject(exec(req("/api/diag/trace").post(JSONObject().put("peer", peer).toString().toRequestBody(JSON)).build()))
+
     fun me(): JSONObject = JSONObject(exec(req("/api/me").get().build()))
 
     /** Saves my privacy switches; returns the stored values. */

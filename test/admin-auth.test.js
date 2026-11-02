@@ -53,7 +53,7 @@ test('one-time login code for a user', async () => {
   const r = await adm('POST', '/users/ann/logincode');
   assert.equal(r.status, 200);
   assert.match(r.data.code, /^\d{6}$/);
-  assert.equal(r.data.phone, '09121234567');
+  assert.equal(r.data.phone, '+989121234567');
   const l = await S.api(null, 'POST', '/api/auth/code', { phone: '+98 912 123 4567', code: r.data.code });
   assert.equal(l.status, 200);
   assert.equal(l.data.username, 'ann');

@@ -68,6 +68,14 @@ object Engine {
     val groups = MutableStateFlow<List<GroupInfo>>(emptyList())
     val incomingRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
     val outgoingRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
+    /** Message requests I declined (can still be accepted) and the people I blocked (1.7). */
+    val declinedRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
+    val blockedRequests = MutableStateFlow<List<ContactRequest>>(emptyList())
+    /** People who are not my contacts may write to me (message requests); requestsOn = the admin allows them at all. */
+    val allowRequests = MutableStateFlow(true)
+    val requestsOn = MutableStateFlow(true)
+    /** Call diagnostics (ping, route) for the admins listed in the panel — a test feature, see Diag.kt. */
+    val diag = MutableStateFlow(false)
     /** conversation key -> pinned message id */
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -188,6 +196,9 @@ object Engine {
         groups.value = emptyList()
         incomingRequests.value = emptyList()
         outgoingRequests.value = emptyList()
+        declinedRequests.value = emptyList()
+        blockedRequests.value = emptyList()
+        diag.value = false
         pins.value = emptyMap()
         progress.value = emptyMap()
         failures.value = emptyMap()
@@ -200,7 +211,18 @@ object Engine {
 
     private fun errText(e: Exception): String = when (e) {
         is UserError -> e.message ?: "خطا"
-        is Api.HttpError -> when (e.code) {
+        is Api.HttpError -> when (e.error) {
+            "request_limit" -> "تا وقتی درخواست شما را نپذیرد، بیش از ۳ پیام نمی‌شود فرستاد"
+            "request_text_only" -> "تا پذیرفته شدن درخواست فقط پیام متنی می‌شود فرستاد"
+            "not_connected" -> "تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد"
+            "sms_foreign" -> "پیامک فقط به شماره‌های ایران (+98) فرستاده می‌شود. کد را از دستگاه دیگرتان یا از مدیر بگیرید و «کد را دارم» را بزنید."
+            else -> httpText(e)
+        }
+        is IOException -> "اتصال به سرور برقرار نیست"
+        else -> "خطا: " + (e.message ?: e.javaClass.simpleName)
+    }
+
+    private fun httpText(e: Api.HttpError): String = when (e.code) {
             401 -> "نشست منقضی شده؛ دوباره وارد شوید"
             403 -> "اجازه‌ی ارسال به این گفتگو را ندارید"
             404 -> "گیرنده یا گروه پیدا نشد"
@@ -208,9 +230,6 @@ object Engine {
             429 -> "تلاش‌های زیاد؛ کمی صبر کنید"
             507 -> "فضای سرور پر است"
             else -> "خطای سرور (${e.code})"
-        }
-        is IOException -> "اتصال به سرور برقرار نیست"
-        else -> "خطا: " + (e.message ?: e.javaClass.simpleName)
     }
 
     /** true when retrying later makes sense (network trouble / server busy), false for definitive refusals. */
@@ -455,7 +474,9 @@ object Engine {
         // another device made a new key for this account: stop until the user restores it here
         if (self != null && self != identity?.pubB64 && keyStep.value != KeyStep.CHOOSE) try { checkKey() } catch (e: Exception) { }
         prefs.edit().putString("users_raw", raw).apply()
-        users.value = list
+        // someone found by @username stays known until the server lists them (after the first message)
+        val found = users.value.filter { u -> u.found && list.none { it.username == u.username } }
+        users.value = list + found
         tick.value++
     }
 
@@ -479,11 +500,16 @@ object Engine {
     }
 
     fun refreshRequests() {
-        val (inc, out) = Api.contactRequests()
+        val l = Api.contactRequests()
+        val inc = l.incoming
         val known = incomingRequests.value.map { it.username }.toSet()
         incomingRequests.value = inc
-        outgoingRequests.value = out
-        for (r in inc) if (r.username !in known && !prefs.getBoolean("req_seen_${r.username}_${r.ts}", false)) {
+        outgoingRequests.value = l.outgoing
+        declinedRequests.value = l.declined
+        blockedRequests.value = l.blocked
+        tick.value++
+        // a request that came with messages is already announced by the message notification
+        for (r in inc) if (r.msgs == 0 && r.username !in known && !prefs.getBoolean("req_seen_${r.username}_${r.ts}", false)) {
             prefs.edit().putBoolean("req_seen_${r.username}_${r.ts}", true).apply()
             postRequestNotification(r)
         }
@@ -496,10 +522,44 @@ object Engine {
             "bad_username" -> "نام کاربری نامعتبر است"
             "already_connected" -> "شما از قبل به این کاربر متصل هستید"
             "declined_recently" -> "این کاربر درخواست قبلی شما را رد کرده؛ فردا دوباره امتحان کنید"
-            "not_allowed" -> "مدیر ارتباط شما با این کاربر را بسته است"
+            "rate_limited" -> "امروز به آدم‌های تازهٔ زیادی پیام داده‌اید؛ فردا دوباره امتحان کنید"
+            "not_allowed" -> "امکان ارتباط با این کاربر نیست"
             "no_request" -> "این درخواست دیگر وجود ندارد"
             else -> errText(e)
         }
+    }
+
+    /** The message-request state of a private chat: "in" / "declined" (to me), "out" (mine or a stranger), or null. */
+    fun reqOf(convo: String): String? = if (isGroup(convo)) null else users.value.firstOrNull { it.username == convo }?.req
+
+    /** Finds a member by exact @username and makes a chat with them possible. Returns (username, error). */
+    suspend fun findUser(name: String): Pair<String?, String?> = withContext(Dispatchers.IO) {
+        val n = name.trim().removePrefix("@").lowercase()
+        try {
+            val o = Api.findUser(n)
+            if (o.optBoolean("me")) return@withContext null to "این نام کاربری خودتان است"
+            val u = o.getString("username")
+            val connected = o.optBoolean("connected")
+            val canMessage = o.optBoolean("can_message")
+            if (!connected && !canMessage) return@withContext null to "این کاربر از کسانی که در مخاطبانش نیستند پیام نمی‌گیرد؛ می‌توانید درخواست ارتباط بفرستید"
+            val pub = if (o.isNull("pubkey")) null else o.optString("pubkey").ifEmpty { null }
+            if (pub != null) db.saveKey(u, pub)
+            if (users.value.none { it.username == u }) {
+                val req = if (connected) null else if (o.isNull("req")) "out" else o.optString("req", "out")
+                users.value = users.value + UserInfo(
+                    u, pub, false, if (o.isNull("display_name")) null else o.optString("display_name"), 0, true,
+                    if (o.isNull("bio")) null else o.optString("bio"), null, true, false, req, found = true
+                )
+                tick.value++
+            }
+            u to null
+        } catch (e: Api.HttpError) {
+            null to when (e.code) { 404 -> "کاربری با این نام کاربری پیدا نشد"; 400 -> "نام کاربری درست نیست"; 429 -> "جستجوی زیاد؛ فردا دوباره امتحان کنید"; else -> errText(e) }
+        } catch (e: Exception) { null to errText(e) }
+    }
+
+    suspend fun setAllowRequests(on: Boolean): String? = withContext(Dispatchers.IO) {
+        try { setPrivacyLocal(Api.setAllowRequests(on)); null } catch (e: Exception) { errText(e) }
     }
 
     /** Sends / answers / withdraws a connection request, or removes a connection. Returns (error, result). */
@@ -545,8 +605,8 @@ object Engine {
         val who = r.displayName?.let { "$it (${r.username})" } ?: r.username
         val n = NotificationCompat.Builder(app, Prefs.messageChannel(app))
             .setSmallIcon(android.R.drawable.stat_notify_chat)
-            .setContentTitle("درخواست اتصال")
-            .setContentText("$who می‌خواهد با شما در ارتباط باشد")
+            .setContentTitle(if (r.calls > 0) "تماس بی‌پاسخ" else "درخواست اتصال")
+            .setContentText(if (r.calls > 0) "$who به شما زنگ زد (هنوز در مخاطبان شما نیست)" else "$who می‌خواهد با شما در ارتباط باشد")
             .setAutoCancel(true)
             .setContentIntent(pi)
             .build()
@@ -891,9 +951,11 @@ object Engine {
         groups.value.forEach { keys.add(it.key) }
         users.value.filter { it.username != me }.forEach { keys.add(it.username) }
         keys.addAll(db.convos())
-        val canDm = users.value.filter { it.dm }.map { it.username }.toSet()
+        val canDm = users.value.filter { it.dm && it.req == null }.map { it.username }.toSet()
+        // message requests to me live under «درخواست‌ها», not in the chat list
+        val requests = users.value.filter { it.req == "in" || it.req == "declined" }.map { it.username }.toSet()
         return keys.map { db.summary(it) }
-            .filter { isGroup(it.convo) || it.convo in canDm || it.last != null }
+            .filter { it.convo !in requests && (isGroup(it.convo) || it.convo in canDm || it.last != null) }
             .sortedWith(compareByDescending<ConvoSummary> { it.last?.ts ?: if (isGroup(it.convo)) 1L else 0L })
     }
 
@@ -917,6 +979,7 @@ object Engine {
     }
 
     fun sendTyping(convo: String) {
+        if (reqOf(convo) == "out") return // no "typing…" to someone who has not accepted yet
         val t = System.currentTimeMillis()
         if (t - (lastTypingSent[convo] ?: 0L) < 3000) return
         lastTypingSent[convo] = t
@@ -1092,6 +1155,9 @@ object Engine {
         hideSeen.value = o.optBoolean("hide_seen", false)
         hideLastSeen.value = o.optBoolean("hide_last_seen", false)
         if (o.has("findable")) findable.value = o.optBoolean("findable", true)
+        if (o.has("allow_requests")) allowRequests.value = o.optBoolean("allow_requests", true)
+        if (o.has("requests_on")) requestsOn.value = o.optBoolean("requests_on", true)
+        if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 

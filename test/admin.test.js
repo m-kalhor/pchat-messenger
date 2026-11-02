@@ -82,7 +82,7 @@ test('links are saved both ways and a mobile number can be set', async () => {
   assert.ok(has(st.visibility, 'ann', 'cid') && has(st.visibility, 'cid', 'ann'));
   assert.ok(has(st.blocks, 'ben', 'cid') && has(st.blocks, 'cid', 'ben'));
   assert.ok(!has(st.visibility, 'ben', 'cid') && !has(st.visibility, 'cid', 'ben'));
-  assert.equal(st.users.find((u) => u.username === 'ann').phone, '09123456789');
+  assert.equal(st.users.find((u) => u.username === 'ann').phone, '+989123456789');
   assert.equal(st.users.find((u) => u.username === 'ben').phone, '+989121112233');
 
   assert.equal((await adm('POST', '/save', { users: { cid: { phone: '12ab' } } })).data.error, 'bad_phone');

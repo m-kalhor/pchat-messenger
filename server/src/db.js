@@ -72,6 +72,12 @@ if (!userCols.includes('last_seen')) db.exec('ALTER TABLE users ADD COLUMN last_
 if (!userCols.includes('hide_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_seen INTEGER NOT NULL DEFAULT 0');
 if (!userCols.includes('findable')) db.exec('ALTER TABLE users ADD COLUMN findable INTEGER NOT NULL DEFAULT 1');
 if (!userCols.includes('hide_last_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_last_seen INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('allow_requests')) db.exec('ALTER TABLE users ADD COLUMN allow_requests INTEGER NOT NULL DEFAULT 1');
+// 1.7 message requests: a stranger's first messages (msgs) and missed calls ride on the connection request
+const reqCols = db.prepare('PRAGMA table_info(contact_requests)').all().map((r) => r.name);
+if (!reqCols.includes('msgs')) db.exec('ALTER TABLE contact_requests ADD COLUMN msgs INTEGER NOT NULL DEFAULT 0');
+if (!reqCols.includes('calls')) db.exec('ALTER TABLE contact_requests ADD COLUMN calls INTEGER NOT NULL DEFAULT 0');
+if (!reqCols.includes('last_call')) db.exec('ALTER TABLE contact_requests ADD COLUMN last_call INTEGER');
 const sessCols = db.prepare('PRAGMA table_info(sessions)').all().map((r) => r.name);
 if (!sessCols.includes('via')) db.exec("ALTER TABLE sessions ADD COLUMN via TEXT NOT NULL DEFAULT 'password'");
 if (!sessCols.includes('device')) db.exec('ALTER TABLE sessions ADD COLUMN device TEXT');

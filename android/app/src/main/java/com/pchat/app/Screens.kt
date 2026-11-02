@@ -225,6 +225,8 @@ fun LoginScreen() {
         } else {
             OutlinedTextField(
                 value = phone, onValueChange = { phone = it }, singleLine = true, label = { Text("شمارهٔ موبایل") },
+                placeholder = { Text("+98 912 345 6789") },
+                supportingText = { Text("با پیش‌شمارهٔ کشور (+98…) یا به شکل 09…") },
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                 modifier = Modifier.fillMaxWidth()
             )
@@ -329,8 +331,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("افزودن مخاطب") }, onClick = { menu = false; addContact = true })
-                        DropdownMenuItem(text = { Text("درخواست‌های اتصال" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
+                        DropdownMenuItem(text = { Text("پیام به @نام‌کاربری / افزودن مخاطب") }, onClick = { menu = false; addContact = true })
+                        DropdownMenuItem(text = { Text("درخواست‌ها" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
                         DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
                         DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
                     }
@@ -347,7 +349,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 ) {
                     Text("👋", fontSize = 22.sp)
                     Spacer(Modifier.width(12.dp))
-                    Text("${incoming.size} درخواست اتصال تازه", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text("${incoming.size} درخواست پیام / ارتباط تازه", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
                     Text("مشاهده", color = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -416,8 +418,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
             }
         }
     }
-    if (addContact) AddContactDialog { addContact = false }
-    if (showRequests) RequestsDialog { showRequests = false }
+    if (addContact) AddContactDialog(onClose = { addContact = false }, onOpen = onOpen)
+    if (showRequests) RequestsDialog(onClose = { showRequests = false }, onOpen = onOpen)
 }
 
 /** Shows key fingerprints so users can verify each other out-of-band (protects against a malicious server swapping keys). */

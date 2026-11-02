@@ -97,10 +97,30 @@ export function prime() {
   if (!current) { audio.src = silent; audio.play().catch(() => { }); }
 }
 
+// playback speed of voice messages (1.7): 1x, 1.5x, 2x, kept for the next ones too; pitch stays the same
+const RATES = [1, 1.5, 2];
+let rate = 1;
+try { const r = Number(localStorage.getItem('pref_voiceRate')); if (RATES.includes(r)) rate = r; } catch { }
+function applyRate() {
+  audio.defaultPlaybackRate = rate;
+  audio.playbackRate = rate;
+  audio.preservesPitch = true; audio.webkitPreservesPitch = true;
+}
+export const getRate = () => rate;
+/** Next speed (1 -> 1.5 -> 2 -> 1); the message that is playing changes at once. */
+export function cycleRate() {
+  rate = RATES[(RATES.indexOf(rate) + 1) % RATES.length];
+  try { localStorage.setItem('pref_voiceRate', String(rate)); } catch { }
+  applyRate();
+  tell();
+  return rate;
+}
+
 /** Plays / pauses voice message `id` from `url`. */
 export function toggle(id, url) {
   if (current === id && !audio.paused) { audio.pause(); return; }
   if (current !== id) { current = id; audio.src = url; }
+  applyRate(); // a new src resets the speed
   audio.play().catch(() => { current = null; tell(); });
   tell();
 }
