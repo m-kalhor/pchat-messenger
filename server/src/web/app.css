@@ -230,3 +230,12 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .loc .fi { width: 44px; height: 44px; border-radius: 50%; background: #e53935; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; flex: none; }
 .loc .fn { font-weight: 600; font-size: 14.5px; }
 .loc .fs { font-size: 12.5px; color: var(--fg2); }
+
+/* 1.7: message requests, @mentions, voice speed, videos in the chat */
+.reqbar { background: var(--bg2); border-bottom: 1px solid var(--line); flex: none; padding: 8px 12px; font-size: 13px; line-height: 1.6; }
+.reqbar .ra { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.mention { color: var(--accent); text-decoration: none; unicode-bidi: isolate; }
+.vspeed { border: 1px solid currentColor; background: none; color: inherit; border-radius: 9px; font-size: 11px; padding: 0 6px; margin-inline-start: 8px; cursor: pointer; opacity: .75; line-height: 16px; }
+.vspeed.on { color: var(--accent); opacity: 1; font-weight: 600; }
+.bubble video.vid { display: block; width: 260px; max-width: 100%; max-height: 360px; border-radius: 10px; background: #000; }
+.vid-ph { width: 260px; height: 150px; }

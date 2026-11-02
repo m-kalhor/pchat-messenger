@@ -37,7 +37,8 @@ export async function startCall(peer, video) {
     for (const c of localIce.splice(0)) signal('sig_ice', c).catch(() => { });
     arm(45000, 'پاسخی داده نشد');
   } catch (e) {
-    end(e && e.name === 'NotAllowedError' ? 'اجازهٔ دسترسی به میکروفون/دوربین داده نشد' : 'خطا در برقراری تماس', false);
+    end(e && e.name === 'NotAllowedError' ? 'اجازهٔ دسترسی به میکروفون/دوربین داده نشد'
+      : e && e.body && e.body.error === 'not_connected' ? 'تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد' : 'خطا در برقراری تماس', false);
   }
 }
 

@@ -7,12 +7,12 @@ import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
 
-const VERSION = '1.6.1';
+const VERSION = '1.7.0';
 const S = E.S;
 const app = document.getElementById('app');
 
 // ---------------- small helpers ----------------
-const PROPS = new Set(['value', 'checked', 'disabled', 'srcObject', 'muted', 'autoplay', 'playsInline', 'multiple', 'accept', 'selected', 'type', 'placeholder', 'rows', 'maxLength', 'autocomplete', 'src', 'alt', 'href', 'download', 'title', 'dir']);
+const PROPS = new Set(['controls', 'value', 'checked', 'disabled', 'srcObject', 'muted', 'autoplay', 'playsInline', 'multiple', 'accept', 'selected', 'type', 'placeholder', 'rows', 'maxLength', 'autocomplete', 'src', 'alt', 'href', 'download', 'title', 'dir']);
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
   if (props) {
@@ -292,6 +292,26 @@ if (window.visualViewport) {
   fit();
 }
 
+// ---------------- @username (1.7) ----------------
+/** Opens the chat with @name: a contact directly, anybody else after finding them (a message request). */
+async function openUser(name) {
+  name = String(name || '').replace(/^@/, '').toLowerCase();
+  if (!name) return;
+  if (name === S.me) { go('#/settings'); return; }
+  const u = E.user(name);
+  if (u && (u.dm || (S.convos.get(name) || []).length)) { go('#/c/' + encodeURIComponent(name)); return; }
+  const r = await E.findUser(name);
+  if (r.error) { toast(r.error); return; }
+  if (r.me) { go('#/settings'); return; }
+  if (!r.connected && !r.can_message) {
+    const ok = await confirmBox((r.display_name || r.username) + ' · @' + r.username, 'این کاربر از کسانی که در مخاطبانش نیستند پیام نمی‌گیرد. درخواست ارتباط فرستاده شود؟', 'فرستادن درخواست');
+    if (ok) { const x = await E.contactAction('request', r.username); toast(x.error || (x.result === 'connected' ? 'ارتباط برقرار شد' : 'درخواست فرستاده شد')); }
+    return;
+  }
+  go('#/c/' + encodeURIComponent(r.username));
+}
+const NAME_AT = /@([A-Za-z0-9_]{2,20})(?![A-Za-z0-9_])/g;
+
 // ---------------- routing ----------------
 let view = null;
 function go(hash) { if (location.hash !== hash) location.hash = hash; else route(); }
@@ -306,6 +326,7 @@ function route() {
   else if (hash.startsWith('/p/')) view = ProfileScreen(hash.slice(3));
   else if (hash === '/new') view = ContactsScreen();
   else if (hash === '/requests') view = RequestsScreen();
+  else if (/^@[A-Za-z0-9_]{2,20}$/.test(hash)) { const n = hash.slice(1); view = ListScreen(); setTimeout(() => { history.replaceState(null, '', '#/'); openUser(n); }, 0); }
   else if (hash === '/settings') view = SettingsScreen();
   else view = ListScreen();
   fill(app, view.el);
@@ -364,7 +385,7 @@ function LoginScreen() {
   const reason = logoutReason || '';
   logoutReason = null;
   const input = (ph, extra) => h('input', { type: 'text', placeholder: ph, class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', ...extra });
-  const phone = input('شمارهٔ موبایل', { inputmode: 'tel', autocomplete: 'tel' });
+  const phone = input('شمارهٔ موبایل، مثل ‎+98 936 575 1198', { inputmode: 'tel', autocomplete: 'tel' });
   const code = input('کد', { inputmode: 'numeric', autocomplete: 'one-time-code', maxLength: 8 });
   const user = input('نام کاربری', { autocomplete: 'username' });
   const pass = h('input', { type: 'password', placeholder: 'رمز عبور', autocomplete: 'current-password', class: 'ltr' });
@@ -584,7 +605,9 @@ function ListScreen() {
     reqBadge.textContent = faNum(n);
     reqBadge.classList.toggle('hidden', !n);
     const pins = pinnedChats();
-    const all = E.summaries();
+    // message requests (people I am not connected to who wrote to me) live under «درخواست‌ها», not in the list
+    const isReq = (c) => { const r = E.reqOf(c); return r === 'in' || r === 'declined'; };
+    const all = E.summaries().filter((x) => !isReq(x.convo));
     const sorted = [...pins.map((c) => all.find((s) => s.convo === c)).filter(Boolean), ...all.filter((s) => !pins.includes(s.convo))];
     const rows = sorted.map((s) => {
       const group = E.isGroup(s.convo);
@@ -608,46 +631,56 @@ function ListScreen() {
       row.addEventListener('click', () => { if (!wasLong()) go('#/c/' + encodeURIComponent(s.convo)); });
       return row;
     });
+    const reqRow = n ? h('button', { class: 'row', onclick: () => go('#/requests') },
+      h('div', { class: 'av', style: { background: '#3390ec' } }, '📨'),
+      h('div', { class: 'mid' }, h('div', { class: 'top' }, h('div', { class: 'name' }, 'درخواست‌های پیام')),
+        h('div', { class: 'sub' }, h('div', { class: 'prev' }, S.requests.incoming.slice(0, 3).map((r) => r.display_name || '@' + r.username).join('، ')), h('span', { class: 'count' }, faNum(n))))) : null;
     fill(list, 
       isIOS && !standalone() ? h('div', { class: 'hint' }, 'برای اینکه سپن مثل یک برنامه باز شود: دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' و بعد ', h('b', null, '«افزودن به صفحهٔ اصلی»'), '.') : null,
+      reqRow,
       rows.length ? rows : h('div', { class: 'empty' }, 'هنوز گفتگویی ندارید. با دکمهٔ ✏️ یک گفتگو شروع کنید.'));
   });
   render();
+  E.refreshRequests().catch(() => { });
   return { el, update: render };
 }
 
 // ---------------- contacts (new chat) ----------------
 function ContactsScreen() {
-  const q = h('input', { type: 'text', placeholder: 'جستجو', oninput: () => render() });
+  const q = h('input', { type: 'text', placeholder: 'جستجو یا ‎@نام‌کاربری', oninput: () => render(), onkeydown: (e) => { if (e.key === 'Enter' && /^@?[A-Za-z0-9_]{2,20}$/.test(q.value.trim())) openUser(q.value.trim()); } });
   const list = h('div');
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
     h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'), h('h1', null, 'مخاطبان'),
       h('button', { class: 'icon', title: 'افزودن مخاطب', onclick: () => go('#/requests') }, '➕')),
     h('div', { class: 'scroll' }, h('div', { class: 'form', style: { paddingBottom: '4px' } }, q), list));
   const render = batched(() => {
-    const term = q.value.trim().toLowerCase();
+    const term = q.value.trim().toLowerCase().replace(/^@/, '');
     const groups = S.groups.filter((g) => !term || g.name.toLowerCase().includes(term));
-    const users = S.users.filter((u) => u.username !== S.me && (!term || u.username.includes(term) || (u.display_name || '').toLowerCase().includes(term)))
+    const users = S.users.filter((u) => u.username !== S.me && u.req !== 'in' && u.req !== 'declined' && (!term || u.username.includes(term) || (u.display_name || '').toLowerCase().includes(term)))
       .sort((a, b) => (b.online - a.online) || E.nameOf(a.username).localeCompare(E.nameOf(b.username), 'fa'));
     const row = (c, sub, onclick) => h('button', { class: 'row', onclick }, avatarWithDot(c, 'sm'), h('div', { class: 'mid' }, h('div', { class: 'name' }, E.titleOf(c)), h('div', { class: 'prev' }, sub)));
+    // anybody by exact @username (not only contacts): opens a chat, or a message request to a stranger
+    const exact = /^[a-z0-9_]{2,20}$/.test(term) && term !== S.me && !users.some((u) => u.username === term);
     fill(list, 
+      exact ? h('button', { class: 'row', onclick: () => openUser(term) }, h('div', { class: 'av sm', style: { background: '#3390ec' } }, '@'),
+        h('div', { class: 'mid' }, h('div', { class: 'name' }, 'پیدا کردن ‎@' + term), h('div', { class: 'prev' }, 'جستجو با نام کاربری دقیق'))) : null,
       groups.length ? h('div', { class: 'section' }, 'گروه‌ها') : null,
       groups.map((g) => row(g.key, faNum(g.members.length) + ' عضو', () => go('#/c/' + encodeURIComponent(g.key)))),
       h('div', { class: 'section' }, 'افراد'),
-      users.length ? users.map((u) => row(u.username, (u.online ? 'آنلاین · ' : '') + '@' + u.username + (u.dm ? '' : ' · فقط پاسخ'), () => {
+      users.length ? users.map((u) => row(u.username, (u.online ? 'آنلاین · ' : '') + '@' + u.username + (u.req === 'out' ? ' · در انتظار پذیرفتن' : u.dm ? '' : ' · فقط پاسخ'), () => {
         if (!u.dm && !(S.convos.get(u.username) || []).length) { toast('شروع گفتگو با این کاربر مجاز نیست؛ اگر او پیام بدهد می‌توانید پاسخ دهید'); return; }
         go('#/c/' + encodeURIComponent(u.username));
-      })) : h('div', { class: 'empty' }, 'مخاطبی پیدا نشد. از دکمهٔ ➕ برای فرستادن درخواست ارتباط استفاده کنید.'));
+      })) : h('div', { class: 'empty' }, 'مخاطبی پیدا نشد. نام کاربری دقیق را با ‎@ بنویسید، یا از دکمهٔ ➕ با شمارهٔ موبایل پیدا کنید.'));
   });
   render();
   return { el, update: (k) => { if (k === 'users' || k === 'groups') render(); } };
 }
 
-// ---------------- connection requests ----------------
+// ---------------- message and connection requests ----------------
 function RequestsScreen() {
-  const name = h('input', { type: 'text', placeholder: 'نام کاربری یا شمارهٔ موبایل', class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
+  const name = h('input', { type: 'text', placeholder: '@نام‌کاربری یا شمارهٔ موبایل', class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false' });
   const msg = h('div', { class: 'err' });
-  const btn = h('button', { class: 'btn', type: 'submit' }, 'فرستادن درخواست');
+  const btn = h('button', { class: 'btn', type: 'submit' }, 'پیدا کردن');
   const lists = h('div');
   E.refreshRequests().catch(() => { });
   async function add(e) {
@@ -664,33 +697,38 @@ function RequestsScreen() {
         msg.textContent = f.error || 'کسی با این شماره در سپن پیدا نشد (یا پیدا شدن با شماره را خاموش کرده)';
         return;
       }
-      const m = f.matches[0];
-      if (m.connected) { btn.disabled = false; msg.className = 'ok'; msg.textContent = (m.display_name || m.username) + ' از قبل در مخاطبان شماست'; return; }
-      if (!(await confirmBox('درخواست ارتباط', 'این شماره متعلق به ' + (m.display_name ? m.display_name + ' ' : '') + '(@' + m.username + ') است. درخواست ارتباط فرستاده شود؟', 'فرستادن'))) { btn.disabled = false; return; }
-      who = m.username;
+      who = f.matches[0].username;
     }
-    const r = await E.contactAction('request', who);
     btn.disabled = false;
-    msg.className = r.error ? 'err' : 'ok';
-    msg.textContent = r.error || (r.result === 'connected' ? 'ارتباط برقرار شد' : 'درخواست فرستاده شد؛ بعد از پذیرفتن او به مخاطبان اضافه می‌شود');
-    if (!r.error) name.value = '';
+    name.value = '';
+    openUser(who);
   }
   const act = async (what, u, accept) => { const r = await E.contactAction(what, u, accept); if (r.error) toast(r.error); };
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, '→'), h('h1', null, 'درخواست‌های ارتباط')),
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, '→'), h('h1', null, 'درخواست‌ها')),
     h('div', { class: 'scroll' },
-      h('form', { class: 'form', onsubmit: add }, h('div', { class: 'field' }, h('label', null, 'افزودن مخاطب با نام کاربری یا شمارهٔ موبایل'), name), msg, btn),
+      h('form', { class: 'form', onsubmit: add }, h('div', { class: 'field' }, h('label', null, 'پیام به هر کسی با نام کاربری یا شمارهٔ موبایل'), name), msg, btn),
       lists));
   const render = batched(() => {
-    const { incoming, outgoing } = S.requests;
+    const { incoming = [], declined = [], blocked = [], outgoing = [] } = S.requests;
     const who = (r) => (r.display_name ? r.display_name + ' · ' : '') + '@' + r.username;
-    fill(lists, 
-      h('div', { class: 'section' }, 'درخواست‌های دریافتی'),
-      incoming.length ? incoming.map((r) => h('div', { class: 'setting' }, h('div', { class: 'l' }, who(r)),
+    const detail = (r) => [r.msgs ? faNum(r.msgs) + ' پیام' : null, r.calls ? '📞 ' + faNum(r.calls) + ' تماس بی‌پاسخ' : null, r.ts ? fmtListTime(r.ts) : null].filter(Boolean).join(' · ');
+    const open = (r) => (r.msgs ? () => go('#/c/' + encodeURIComponent(r.username)) : null);
+    const item = (r, ...btns) => h('div', { class: 'setting' },
+      h('div', { class: 'l', style: r.msgs ? { cursor: 'pointer' } : null, onclick: open(r) }, who(r), h('div', { class: 'd' }, detail(r) || 'درخواست ارتباط', r.msgs ? ' · برای دیدن پیام‌ها بزنید' : '')), btns);
+    fill(lists,
+      h('div', { class: 'section' }, 'درخواست‌های تازه'),
+      incoming.length ? incoming.map((r) => item(r,
         h('button', { class: 'btn sm', onclick: () => act('respond', r.username, true) }, 'پذیرفتن'),
-        h('button', { class: 'btn sm flat', onclick: () => act('respond', r.username, false) }, 'رد'))) : h('div', { class: 'hint' }, 'درخواستی ندارید'),
-      h('div', { class: 'section' }, 'درخواست‌های فرستاده‌شده'),
-      outgoing.length ? outgoing.map((r) => h('div', { class: 'setting' }, h('div', { class: 'l' }, who(r), h('div', { class: 'd' }, r.status === 'declined' ? 'رد شد' : 'در انتظار پاسخ')),
+        h('button', { class: 'btn sm flat', onclick: () => act('respond', r.username, false) }, 'رد'),
+        h('button', { class: 'btn sm flat danger', onclick: async () => { if (await confirmBox('مسدود کردن', who(r) + ' دیگر نمی‌تواند به شما پیام بدهد یا زنگ بزند. بعداً از همین صفحه می‌شود رفع مسدودی کرد.', 'مسدود', true)) act('block', r.username); } }, 'مسدود'))) : h('div', { class: 'hint' }, 'درخواست تازه‌ای ندارید'),
+      declined.length ? [h('div', { class: 'section' }, 'رد شده‌ها (هنوز می‌شود پذیرفت)'), declined.map((r) => item(r,
+        h('button', { class: 'btn sm', onclick: () => act('respond', r.username, true) }, 'پذیرفتن'),
+        h('button', { class: 'btn sm flat danger', onclick: () => act('block', r.username) }, 'مسدود')))] : null,
+      blocked.length ? [h('div', { class: 'section' }, 'مسدود شده‌ها'), blocked.map((r) => item(r,
+        h('button', { class: 'btn sm flat', onclick: () => act('unblock', r.username) }, 'رفع مسدودی')))] : null,
+      h('div', { class: 'section' }, 'فرستاده‌شده'),
+      outgoing.length ? outgoing.map((r) => h('div', { class: 'setting' }, h('div', { class: 'l' }, who(r), h('div', { class: 'd' }, 'در انتظار پذیرفتن' + (r.msgs ? ' · ' + faNum(r.msgs) + ' پیام' : ''))),
         h('button', { class: 'btn sm flat', onclick: () => act('cancel', r.username) }, 'لغو'))) : h('div', { class: 'hint' }, 'درخواستی نفرستاده‌اید'));
   });
   render();
@@ -707,8 +745,15 @@ function ChatScreen(convo) {
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
   const callBtns = group ? [] : [
-    h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => Call.startCall(convo, false) }, '📞'),
-    h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => Call.startCall(convo, true) }, '🎥')];
+    h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => call(false) }, '📞'),
+    h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => call(true) }, '🎥')];
+  // a message request (no connection yet): calls are only noted on the request, they do not ring
+  function call(video) {
+    const r = E.reqOf(convo);
+    if (r === 'in' || r === 'declined') { toast('اول درخواست را بپذیرید'); return; }
+    Call.startCall(convo, video);
+  }
+  const reqBar = h('div', { class: 'reqbar hidden' });
   const searchInput = h('input', { type: 'text', placeholder: 'جستجو در گفتگو', oninput: () => { search = searchInput.value.trim(); renderList(); } });
   const searchBar = h('div', { class: 'searchbar hidden' }, searchInput, h('button', { class: 'icon', onclick: () => { searchBar.classList.add('hidden'); search = ''; searchInput.value = ''; renderList(); } }, '✕'));
   const pinBar = h('div', { class: 'pinbar hidden' });
@@ -753,7 +798,7 @@ function ChatScreen(convo) {
       h('div', { class: 'grow', style: { display: 'flex', gap: '10px', alignItems: 'center' }, onclick: () => go('#/p/' + encodeURIComponent(convo)) }, av, h('div', { style: { minWidth: '0' } }, title, sub)),
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
-    searchBar, pinBar, msgs, jump,
+    searchBar, pinBar, reqBar, msgs, jump,
     h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn, micBtn), emojiPanel, fileIn));
 
   function renderHeader() {
@@ -772,6 +817,28 @@ function ChatScreen(convo) {
     else { const u = E.user(convo); s = lastSeenText(u) || '@' + convo; on = !!(u && u.online); }
     sub.textContent = s;
     sub.classList.toggle('on', on);
+  }
+
+  function renderReq() {
+    const r = E.reqOf(convo);
+    reqBar.classList.toggle('hidden', !r);
+    const stranger = r === 'out';
+    attachBtn.classList.toggle('hidden', stranger);
+    showMic();
+    if (!r) return;
+    const nm = E.nameOf(convo);
+    if (stranger) {
+      fill(reqBar, h('div', { class: 'rt' }, 'درخواست پیام: ' + nm + ' هنوز در مخاطبان شما نیست. تا وقتی بپذیرد، تا ' + faNum(3) + ' پیام متنی (بدون فایل) می‌شود فرستاد. تماس بعد از پذیرفتن ممکن است.'));
+      return;
+    }
+    const q = (S.requests.incoming || []).concat(S.requests.declined || []).find((x) => x.username === convo);
+    const act = async (what, accept) => { const x = await E.contactAction(what, convo, accept); if (x.error) toast(x.error); else if (what === 'block') go('#/requests'); };
+    fill(reqBar,
+      h('div', { class: 'rt' }, nm + ' (@' + convo + ') در مخاطبان شما نیست' + (r === 'declined' ? ' و این درخواست را رد کرده‌اید' : '') + '.' + (q && q.calls ? ' 📞 ' + faNum(q.calls) + ' تماس بی‌پاسخ.' : '') + ' با پاسخ دادن یا «پذیرفتن» به هم وصل می‌شوید.'),
+      h('div', { class: 'ra' },
+        h('button', { class: 'btn sm', onclick: () => act('respond', true) }, 'پذیرفتن'),
+        r === 'in' ? h('button', { class: 'btn sm flat', onclick: async () => { await act('respond', false); go('#/requests'); } }, 'رد') : null,
+        h('button', { class: 'btn sm flat danger', onclick: async () => { if (await confirmBox('مسدود کردن', nm + ' دیگر نمی‌تواند به شما پیام بدهد یا زنگ بزند.', 'مسدود', true)) act('block'); } }, 'مسدود')));
   }
 
   function renderPin() {
@@ -823,6 +890,20 @@ function ChatScreen(convo) {
     return out;
   }
 
+  /** Text with clickable @usernames (search hits still highlighted). */
+  function richText(text) {
+    const out = [];
+    let i = 0;
+    for (const mm of text.matchAll(NAME_AT)) {
+      if (mm.index > 0 && /[A-Za-z0-9_.]/.test(text[mm.index - 1])) continue; // e-mail addresses
+      const n = mm[1].toLowerCase();
+      out.push(highlight(text.slice(i, mm.index)), h('a', { class: 'mention', href: '#', dir: 'ltr', onclick: (e) => { e.preventDefault(); e.stopPropagation(); openUser(n); } }, '@' + mm[1]));
+      i = mm.index + mm[0].length;
+    }
+    out.push(highlight(text.slice(i)));
+    return out;
+  }
+
   function mediaPart(m) {
     const url = E.mediaUrl(m);
     const prog = S.progress.get(m.id);
@@ -834,6 +915,12 @@ function ChatScreen(convo) {
       if (m.fileId && !fail && prog == null && m.size <= 25 * 1024 * 1024 && pref('autoImages', true)) E.download(m).catch(() => { });
       return h('div', { class: 'img-ph', style: box, onclick: (e) => { e.stopPropagation(); S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
         prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '🖼 ' + fmtSize(m.size));
+    }
+    if ((m.mime || '').startsWith('video/')) {
+      // videos play right here in the chat (1.7), with the browser's own controls (full screen, speed)
+      if (url) return h('video', { class: 'vid', src: url, controls: true, playsInline: true, preload: 'metadata', onclick: (e) => e.stopPropagation() });
+      return h('div', { class: 'img-ph vid-ph', onclick: (e) => { e.stopPropagation(); if (!m.fileId) return; S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
+        prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '▶ ویدیو · ' + fmtSize(m.size));
     }
     return h('div', { class: 'file', onclick: async (e) => {
       e.stopPropagation();
@@ -857,6 +944,8 @@ function ChatScreen(convo) {
     v.btn.textContent = S.progress.get(m.id) != null ? '⏳' : st.playing ? '❚❚' : '▶';
     v.bars.forEach((b, i) => b.classList.toggle('on', (i + 0.5) / v.bars.length <= frac));
     v.time.textContent = fmtDur(st.playing || st.pos ? st.pos : m.dur);
+    v.speed.textContent = Voice.getRate() === 1 ? '1×' : Voice.getRate() === 1.5 ? '1.5×' : '2×';
+    v.speed.classList.toggle('on', Voice.getRate() !== 1);
   }
   const offPlayer = Voice.onPlayer(() => { for (const id of voiceEls.keys()) { const m = (S.convos.get(convo) || []).find((x) => x.id === id); if (m) paintVoice(m); } });
   function voicePart(m) {
@@ -877,8 +966,10 @@ function ChatScreen(convo) {
     } });
     const waveEl = h('div', { class: 'wave', onclick: (e) => { e.stopPropagation(); const r = waveEl.getBoundingClientRect(); Voice.seek(m.id, (e.clientX - r.left) / r.width); } }, bars);
     const time = h('span');
-    voiceEls.set(m.id, { btn, bars, time });
-    const el = h('div', { class: 'voice' }, btn, h('div', { class: 'vw' }, waveEl, h('div', { class: 'fs' }, time, fail && m.status !== 2 ? ' · ⚠️ ' + fail : '')));
+    // playback speed: 1x -> 1.5x -> 2x, remembered for the next voice messages
+    const speed = h('button', { class: 'vspeed', title: 'سرعت پخش', onclick: (e) => { e.stopPropagation(); Voice.cycleRate(); } });
+    voiceEls.set(m.id, { btn, bars, time, speed });
+    const el = h('div', { class: 'voice' }, btn, h('div', { class: 'vw' }, waveEl, h('div', { class: 'fs' }, time, speed, fail && m.status !== 2 ? ' · ⚠️ ' + fail : '')));
     paintVoice(m);
     return el;
   }
@@ -909,7 +1000,7 @@ function ChatScreen(convo) {
       m.type === 'image' || m.type === 'file' ? mediaPart(m) : null,
       m.type === 'voice' ? voicePart(m) : null,
       m.type === 'location' && m.loc ? locationPart(m.loc) : null,
-      m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, highlight(m.text)) : null,
+      m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, richText(m.text)) : null,
       m.mine && prog != null && m.status === 1 ? h('div', { class: 'bar-prog' }, h('i', { style: { width: Math.round(prog * 100) + '%' } })) : null,
       m.status === 2 ? h('div', { class: 'fail' }, '⚠️ ' + (S.failures.get(m.id) || 'ارسال نشد'), h('button', { onclick: (e) => { e.stopPropagation(); E.retry(m); } }, 'تلاش دوباره')) : null,
       reactionRow(m),
@@ -1001,7 +1092,7 @@ function ChatScreen(convo) {
   // composer
   const autosize = () => { ta.style.height = 'auto'; ta.style.height = Math.min(140, ta.scrollHeight) + 'px'; };
   const canMic = Voice.canRecord();
-  const showMic = () => { const mic = canMic && !ta.value.trim() && !editing; micBtn.classList.toggle('hidden', !mic); sendBtn.classList.toggle('hidden', mic); };
+  const showMic = () => { const mic = canMic && E.reqOf(convo) !== 'out' && !ta.value.trim() && !editing; micBtn.classList.toggle('hidden', !mic); sendBtn.classList.toggle('hidden', mic); };
   let draftTimer = null;
   ta.addEventListener('input', () => {
     autosize(); showMic();
@@ -1097,12 +1188,12 @@ function ChatScreen(convo) {
   });
   ta.addEventListener('focus', () => emojiPanel.classList.add('hidden'));
 
-  const renderAll = batched(() => { renderHeader(); renderPin(); renderList(); });
+  const renderAll = batched(() => { renderHeader(); renderPin(); renderReq(); renderList(); });
   const renderListB = batched(() => renderList());
   const tick = setInterval(renderHeader, 2000);
   ta.value = draftOf(convo);
   showMic();
-  renderHeader(); renderPin();
+  renderHeader(); renderPin(); renderReq();
   return {
     el,
     mounted: () => { renderList(); autosize(); },
@@ -1118,6 +1209,7 @@ function ChatScreen(convo) {
         renderListB(); renderPin();
       } else if (kind === 'progress' || kind === 'media' || kind === 'receipts' || kind === 'privacy' || (kind === 'react' && data && data.convo === convo)) renderListB();
       else if (kind === 'pins') { renderPin(); renderListB(); }
+      else if (kind === 'requests') renderReq();
       else if (kind === 'users' || kind === 'typing' || kind === 'conn' || kind === 'groups' || kind === 'avatar') renderAll();
     },
   };
@@ -1233,7 +1325,10 @@ function SettingsScreen() {
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
     h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'), h('h1', null, 'تنظیمات')),
     h('div', { class: 'scroll' },
-      h('div', { class: 'profile-head' }, avBox, photoIn, h('div', { class: 'u' }, '@' + S.me)),
+      h('div', { class: 'profile-head' }, avBox, photoIn, h('div', { class: 'u', title: 'کپی لینک', style: { cursor: 'pointer' }, onclick: () => {
+        const link = location.origin + '/@' + S.me;
+        navigator.clipboard.writeText(link).then(() => toast('لینک شما کپی شد: ' + link), () => toast(link));
+      } }, '@' + S.me + ' 🔗')),
       h('form', { class: 'form', onsubmit: async (e) => {
         e.preventDefault();
         const err = await E.saveProfile(name.value.trim(), bio.value.trim());
@@ -1253,6 +1348,15 @@ function SettingsScreen() {
           const e = await E.setPrivacy({ findable: c.checked });
           c.disabled = false;
           if (e) { toast(e); c.checked = S.privacy.findable !== false; }
+        } });
+        return c;
+      })()),
+      setting('پیام از کسانی که در مخاطبانم نیستند', 'هر کس نام کاربری شما را بداند می‌تواند تا ۳ پیام متنی بفرستد؛ پیام‌ها در «درخواست‌ها» می‌آیند و شما می‌پذیرید، رد می‌کنید یا مسدود می‌کنید. تماس از غریبه زنگ نمی‌خورد.', (() => {
+        const c = h('input', { type: 'checkbox', checked: S.privacy.allow_requests !== false, disabled: !S.meInfo.requests_on, onchange: async () => {
+          c.disabled = true;
+          const e = await E.setPrivacy({ allow_requests: c.checked });
+          c.disabled = false;
+          if (e) { toast(e); c.checked = S.privacy.allow_requests !== false; }
         } });
         return c;
       })()),

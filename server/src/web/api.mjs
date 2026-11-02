@@ -52,6 +52,7 @@ export const pin = (target, messageId) => call('POST', '/api/pin', { target, mes
 export const send = (target, payload, fileId) => call('POST', '/api/send', fileId ? { target, kind: 'msg', payload, fileId } : { target, kind: 'msg', payload });
 export const signal = (target, kind, payload) => call('POST', '/api/send', { target, kind, payload }).then((r) => !!r.delivered);
 export const turn = () => call('GET', '/api/turn');
+export const findUser = (name) => call('GET', '/api/users/find?u=' + encodeURIComponent(name));
 export const contactRequests = () => call('GET', '/api/contacts/requests');
 export const contactAction = (what, username, accept = false) => call('POST', '/api/contacts/' + what, { username, accept });
 export const caInfo = () => call('GET', '/api/web/ca');

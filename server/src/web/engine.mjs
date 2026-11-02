@@ -16,12 +16,13 @@ export const S = {
   gtyping: {},                // group -> { username: when they last typed }
   receipts: {},               // convo -> { username: { d: delivered up to id, s: seen up to id } }
   rseq: -1,                   // last reaction change seen (-1 = none yet)
-  privacy: { hide_seen: false, hide_last_seen: false, findable: true },
+  privacy: { hide_seen: false, hide_last_seen: false, findable: true, allow_requests: true },
+  meInfo: { diag: false, requests_on: true }, // from /api/me: call diagnostics (admin test feature), message requests on
   convos: new Map(),          // convo -> array of messages, oldest first
   lastId: 0,
   cseq: -1,                   // last edit/delete number seen (-1 = none yet)
   conn: 'offline',            // offline | connecting | online
-  requests: { incoming: [], outgoing: [] },
+  requests: { incoming: [], declined: [], blocked: [], outgoing: [] },
   progress: new Map(),        // message id -> 0..1 (upload / download)
   failures: new Map(),        // message id -> error text
   openConvo: null,            // convo on screen
@@ -69,6 +70,11 @@ export function errText(e) {
     case 'password_login_disabled': return 'ورود با رمز خاموش است؛ با شمارهٔ موبایل وارد شوید';
     case 'no_phone': return 'برای حساب شما شمارهٔ موبایل ثبت نشده؛ از مدیر بخواهید';
     case 'wait': return 'کمی صبر کنید و دوباره بخواهید';
+    case 'request_limit': return 'تا وقتی درخواست شما را نپذیرد، بیش از ۳ پیام نمی‌شود فرستاد';
+    case 'request_text_only': return 'تا پذیرفته شدن درخواست فقط پیام متنی می‌شود فرستاد';
+    case 'not_connected': return 'تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد';
+    case 'sms_foreign': return 'پیامک فقط به شماره‌های ایران (‎+98) فرستاده می‌شود. کد را از دستگاه دیگرتان یا از مدیر بگیرید و «کد را دارم» را بزنید.';
+    case 'bad_username': return 'نام کاربری درست نیست';
     default: break;
   }
   if (e instanceof api.HttpError) return 'خطای سرور (' + e.status + ')';
@@ -284,7 +290,9 @@ async function endSession(reason) {
 // ---------------- directory ----------------
 export async function refreshUsers() {
   const list = await api.users();
-  S.users = list.map((u) => (u.username === S.me ? { ...u, pubkey: S.identity.pubB64 } : u));
+  // someone found by @username stays known until the server lists them (after the first message)
+  const found = S.users.filter((u) => u.found && !list.some((x) => x.username === u.username));
+  S.users = [...list.map((u) => (u.username === S.me ? { ...u, pubkey: S.identity.pubB64 } : u)), ...found];
   const self = list.find((u) => u.username === S.me);
   if (self && self.pubkey && self.pubkey !== S.identity.pubB64 && S.keyStep !== 'choose') {
     // another device made a new key for this account: stop until the user restores it here
@@ -305,7 +313,8 @@ export async function refreshRequests() {
 }
 export async function refreshMe() {
   const r = await api.me();
-  S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false };
+  S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false, allow_requests: r.allow_requests !== false };
+  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false };
   await store.kvSet('privacy', S.privacy);
   emit('privacy');
 }
@@ -867,7 +876,7 @@ export function retry(m) {
 
 const sentTyping = {};
 export function sendTyping(convo) {
-  if (S.conn !== 'online') return;
+  if (S.conn !== 'online' || reqOf(convo) === 'out') return; // no "typing…" to someone who has not accepted yet
   if (Date.now() - (sentTyping[convo] || 0) < 3000) return;
   sentTyping[convo] = Date.now();
   (isGroup(convo) ? api.typing(convo) : api.signal(convo, 'sig_typing', '1')).catch(() => { });
@@ -1076,11 +1085,32 @@ export async function removeAvatar() {
   try { await api.deleteAvatar(); await refreshUsers(); return null; } catch (e) { return errText(e); }
 }
 
+/** The message-request state of a private chat: 'in' / 'declined' (to me), 'out' (mine, or a new chat with a stranger), or null. */
+export function reqOf(convo) {
+  if (isGroup(convo)) return null;
+  const u = user(convo);
+  return u ? u.req || null : null;
+}
+
+/** Finds a member by exact @username: { username, display_name, connected, req, can_message } or { error }. */
+export async function findUser(name) {
+  try {
+    const r = await api.findUser(String(name).trim().replace(/^@/, '').toLowerCase());
+    if (r.me) return r;
+    if (!user(r.username)) {
+      S.users = [...S.users, { username: r.username, display_name: r.display_name, pubkey: r.pubkey, bio: r.bio, avatar_ver: 0,
+        dm: r.can_message, req: r.connected ? undefined : r.req || 'out', online: false, last_seen: null, recently: false, hidden: true, found: true }];
+      emit('users');
+    }
+    return r;
+  } catch (e) { return { error: errText(e) }; }
+}
+
 export async function contactAction(what, username, accept = false) {
   try {
     const r = await api.contactAction(what, username.trim().toLowerCase(), accept);
     await refreshRequests();
-    if (r.result === 'connected' || accept || what === 'remove') { await refreshUsers(); await refreshGroups(); }
+    if (r.result === 'connected' || what !== 'request') { await refreshUsers(); await refreshGroups(); }
     return { result: r.result };
   } catch (e) { return { error: errText(e) }; }
 }
