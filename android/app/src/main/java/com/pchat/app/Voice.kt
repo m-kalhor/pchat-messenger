@@ -88,12 +88,33 @@ object VoicePlayer {
     private var player: MediaPlayer? = null
     private var ticker: Job? = null
 
+    /** Playback speed of voice messages (1.7): 1x, 1.5x, 2x, remembered; the pitch stays the same. */
+    private val RATES = floatArrayOf(1f, 1.5f, 2f)
+    val rate = MutableStateFlow(Engine.prefs.getFloat("voice_rate", 1f).takeIf { r -> RATES.any { it == r } } ?: 1f)
+
+    /** Next speed (1 -> 1.5 -> 2 -> 1); the message that is playing changes at once. */
+    fun cycleRate() {
+        val i = RATES.indexOfFirst { it == rate.value }
+        rate.value = RATES[(i + 1) % RATES.size]
+        Engine.prefs.edit().putFloat("voice_rate", rate.value).apply()
+        player?.let { applyRate(it) }
+    }
+
+    private fun applyRate(mp: MediaPlayer) {
+        try {
+            val wasPlaying = mp.isPlaying
+            mp.playbackParams = mp.playbackParams.setSpeed(rate.value).setPitch(1f)
+            // setting the speed starts a paused player on some phones: keep it paused
+            if (!wasPlaying && mp.isPlaying) mp.pause()
+        } catch (e: Exception) { }
+    }
+
     /** Plays / pauses voice message [id] from the decrypted file at [path]. */
     fun toggle(id: Long, path: String) {
         val p = player
         if (p != null && state.value.id == id) {
             if (p.isPlaying) { p.pause(); state.value = state.value.copy(playing = false) }
-            else { p.start(); state.value = state.value.copy(playing = true); tick() }
+            else { p.start(); applyRate(p); state.value = state.value.copy(playing = true); tick() }
             return
         }
         stop()
@@ -104,6 +125,7 @@ object VoicePlayer {
             mp.setOnCompletionListener { stop() }
             mp.prepare()
             mp.start()
+            applyRate(mp)
             player = mp
             state.value = State(id, true, 0, mp.duration.toLong().coerceAtLeast(0))
             tick()

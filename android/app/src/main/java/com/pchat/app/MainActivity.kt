@@ -141,7 +141,7 @@ fun App(deepLink: MutableState<String?>) {
         val c = convo
         if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })
         else if (c == null) ChatListScreen(onOpen = { convo = it }, onSettings = { settings = true }, onLogout = { Engine.logout() })
-        else ChatScreen(c, onBack = { convo = null })
+        else ChatScreen(c, onBack = { convo = null }, onOpenUser = { convo = it })
     }
 
     if (askBattery) {

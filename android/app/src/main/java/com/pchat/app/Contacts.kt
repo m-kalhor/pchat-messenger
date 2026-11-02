@@ -42,11 +42,12 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 /**
- * Ask another user to connect, by exact username or by mobile number; or find the members among the
- * phone's contacts (the numbers are only matched on the server, never kept). Once they accept, both can chat.
+ * Write to anyone by exact @username (1.7: a message request until they accept), find someone by mobile
+ * number, or find the members among the phone's contacts (the numbers are only matched on the server,
+ * never kept).
  */
 @Composable
-fun AddContactDialog(onClose: () -> Unit) {
+fun AddContactDialog(onClose: () -> Unit, onOpen: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val ctx = LocalContext.current
     var name by remember { mutableStateOf("") }
@@ -55,6 +56,15 @@ fun AddContactDialog(onClose: () -> Unit) {
     var found by remember { mutableStateOf<List<Engine.Found>?>(null) }
     var sent by remember { mutableStateOf(setOf<String>()) }
 
+    /** Opens the chat with a member (a stranger is found first; then it is a message request). */
+    fun message(user: String) {
+        busy = true; msg = null
+        scope.launch {
+            val (u, err) = Engine.findUser(user)
+            busy = false
+            if (u != null) { onClose(); onOpen(u) } else msg = err
+        }
+    }
     fun request(user: String) {
         busy = true; msg = null
         scope.launch {
@@ -79,6 +89,7 @@ fun AddContactDialog(onClose: () -> Unit) {
         if (ok) scanContacts() else msg = "بدون اجازهٔ دسترسی به مخاطبان نمی‌شود آن‌ها را جستجو کرد."
     }
     val isPhone = name.isNotEmpty() && name.all { it.isDigit() || it == '+' || it in '۰'..'۹' || it == ' ' }
+    val uname = name.removePrefix("@")
 
     AlertDialog(
         onDismissRequest = onClose,
@@ -86,11 +97,11 @@ fun AddContactDialog(onClose: () -> Unit) {
         text = {
             LazyColumn {
                 item {
-                    Text("نام کاربری یا شمارهٔ موبایل شخص را وارد کنید. بعد از اینکه او درخواست را بپذیرد، می‌توانید با هم گفتگو کنید.", fontSize = 13.sp)
+                    Text("نام کاربری (مثل @mostafa) یا شمارهٔ موبایل شخص را وارد کنید. به کسی که در مخاطبانتان نیست هم می‌شود پیام داد؛ تا وقتی بپذیرد، پیام‌ها در «درخواست‌ها»ی او می‌مانند.", fontSize = 13.sp)
                     Spacer(Modifier.height(10.dp))
                     OutlinedTextField(
-                        value = name, onValueChange = { name = it.trim().lowercase().take(20) }, singleLine = true,
-                        label = { Text("نام کاربری یا شمارهٔ موبایل") }, modifier = Modifier.fillMaxWidth(),
+                        value = name, onValueChange = { name = it.trim().lowercase().take(21) }, singleLine = true,
+                        label = { Text("@نام‌کاربری یا شمارهٔ موبایل") }, modifier = Modifier.fillMaxWidth(),
                         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None, keyboardType = KeyboardType.Ascii)
                     )
                     TextButton(enabled = !busy, onClick = {
@@ -112,9 +123,12 @@ fun AddContactDialog(onClose: () -> Unit) {
                                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                             }
                             when {
-                                f.connected -> Text("مخاطب شماست", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                                f.connected -> TextButton(enabled = !busy, onClick = { message(f.username) }) { Text("گفتگو") }
                                 f.username in sent -> Text("فرستاده شد", fontSize = 12.sp)
-                                else -> TextButton(enabled = !busy, onClick = { request(f.username) }) { Text("درخواست ارتباط") }
+                                else -> Row {
+                                    TextButton(enabled = !busy, onClick = { message(f.username) }) { Text("پیام") }
+                                    TextButton(enabled = !busy, onClick = { request(f.username) }) { Text("درخواست") }
+                                }
                             }
                         }
                     }
@@ -122,8 +136,8 @@ fun AddContactDialog(onClose: () -> Unit) {
             }
         },
         confirmButton = {
-            TextButton(enabled = name.length >= 2 && !busy, onClick = {
-                if (!isPhone) { request(name); return@TextButton }
+            TextButton(enabled = uname.length >= 2 && !busy, onClick = {
+                if (!isPhone) { message(uname); return@TextButton }
                 busy = true; msg = null
                 scope.launch {
                     val (list, err) = Engine.lookup(listOf(name to null))
@@ -134,17 +148,22 @@ fun AddContactDialog(onClose: () -> Unit) {
                         else -> found = list
                     }
                 }
-            }) { Text(if (isPhone) "جستجو" else "ارسال درخواست") }
+            }) { Text(if (isPhone) "جستجو" else "پیام دادن") }
         },
         dismissButton = { TextButton(onClick = onClose) { Text("بستن") } }
     )
 }
 
-/** Incoming requests (accept / decline) and my own pending requests (cancel). */
+/**
+ * Message and connection requests (1.7): new ones (read the messages, accept, decline, block), the ones I
+ * declined (can still be accepted), the people I blocked (unblock) and my own (cancel; a decline is not shown).
+ */
 @Composable
-fun RequestsDialog(onClose: () -> Unit) {
+fun RequestsDialog(onClose: () -> Unit, onOpen: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val incoming by Engine.incomingRequests.collectAsState()
+    val declined by Engine.declinedRequests.collectAsState()
+    val blocked by Engine.blockedRequests.collectAsState()
     val outgoing by Engine.outgoingRequests.collectAsState()
     var msg by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
@@ -152,34 +171,66 @@ fun RequestsDialog(onClose: () -> Unit) {
         busy = true; msg = null
         scope.launch { msg = Engine.contactAction(what, user, accept).first; busy = false }
     }
+    val dim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+    fun detail(r: ContactRequest) = listOfNotNull(
+        if (r.msgs > 0) "${r.msgs} پیام" else null,
+        if (r.calls > 0) "📞 ${r.calls} تماس بی‌پاسخ" else null
+    ).joinToString(" · ").ifEmpty { "می‌خواهد با شما در ارتباط باشد" }
+    @Composable
+    fun head(t: String) = Text(t, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 8.dp))
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text("درخواست‌های اتصال") },
+        title = { Text("درخواست‌ها") },
         confirmButton = { TextButton(onClick = onClose) { Text("بستن") } },
         text = {
             LazyColumn {
-                item { Text("درخواست‌های رسیده", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+                item { head("درخواست‌های تازه") }
                 if (incoming.isEmpty()) item { Text("درخواستی ندارید", fontSize = 13.sp, modifier = Modifier.padding(vertical = 6.dp)) }
                 items(incoming, key = { "in:" + it.username }) { r ->
                     Column(Modifier.padding(vertical = 6.dp)) {
-                        Text(r.displayName?.let { "$it (${r.username})" } ?: r.username, fontWeight = FontWeight.SemiBold)
-                        Text("می‌خواهد با شما در ارتباط باشد", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Text(r.displayName?.let { "$it (@${r.username})" } ?: "@" + r.username, fontWeight = FontWeight.SemiBold)
+                        Text(detail(r), fontSize = 12.sp, color = dim)
                         Row {
+                            if (r.msgs > 0) TextButton(enabled = !busy, onClick = { onClose(); onOpen(r.username) }) { Text("دیدن پیام‌ها") }
                             TextButton(enabled = !busy, onClick = { act("respond", r.username, true) }) { Text("پذیرفتن") }
-                            TextButton(enabled = !busy, onClick = { act("respond", r.username, false) }) { Text("رد کردن", color = MaterialTheme.colorScheme.error) }
+                            TextButton(enabled = !busy, onClick = { act("respond", r.username, false) }) { Text("رد") }
+                            TextButton(enabled = !busy, onClick = { act("block", r.username) }) { Text("مسدود", color = MaterialTheme.colorScheme.error) }
+                        }
+                    }
+                }
+                if (declined.isNotEmpty()) {
+                    item { head("رد شده‌ها (هنوز می‌شود پذیرفت)") }
+                    items(declined, key = { "de:" + it.username }) { r ->
+                        Column(Modifier.padding(vertical = 4.dp)) {
+                            Text(r.displayName?.let { "$it (@${r.username})" } ?: "@" + r.username, fontWeight = FontWeight.SemiBold)
+                            Text(detail(r), fontSize = 12.sp, color = dim)
+                            Row {
+                                if (r.msgs > 0) TextButton(enabled = !busy, onClick = { onClose(); onOpen(r.username) }) { Text("دیدن پیام‌ها") }
+                                TextButton(enabled = !busy, onClick = { act("respond", r.username, true) }) { Text("پذیرفتن") }
+                                TextButton(enabled = !busy, onClick = { act("block", r.username) }) { Text("مسدود", color = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                    }
+                }
+                if (blocked.isNotEmpty()) {
+                    item { head("مسدود شده‌ها") }
+                    items(blocked, key = { "bl:" + it.username }) { r ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Text(r.displayName?.let { "$it (@${r.username})" } ?: "@" + r.username, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                            TextButton(enabled = !busy, onClick = { act("unblock", r.username) }) { Text("رفع مسدودی") }
                         }
                     }
                 }
                 if (outgoing.isNotEmpty()) {
-                    item { Spacer(Modifier.height(8.dp)); Text("درخواست‌های من", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+                    item { head("فرستاده‌شده") }
                     items(outgoing, key = { "out:" + it.username }) { r ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(Modifier.weight(1f)) {
-                                Text(r.username, fontWeight = FontWeight.SemiBold)
-                                Text(if (r.status == "declined") "رد شد" else "در انتظار پاسخ", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                Text("@" + r.username, fontWeight = FontWeight.SemiBold)
+                                Text("در انتظار پذیرفتن" + if (r.msgs > 0) " · ${r.msgs} پیام" else "", fontSize = 12.sp, color = dim)
                             }
                             Spacer(Modifier.width(8.dp))
-                            TextButton(enabled = !busy, onClick = { act("cancel", r.username) }) { Text(if (r.status == "declined") "حذف" else "لغو") }
+                            TextButton(enabled = !busy, onClick = { act("cancel", r.username) }) { Text("لغو") }
                         }
                     }
                 }

@@ -204,6 +204,14 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 "کسانی که شمارهٔ شما را دارند می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به هیچ‌کس نشان داده نمی‌شود.",
                 findable
             ) { v -> scope.launch { Engine.setFindable(v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
+            val allowReq by Engine.allowRequests.collectAsState()
+            val reqOn by Engine.requestsOn.collectAsState()
+            SwitchRow(
+                "پیام از کسانی که در مخاطبانم نیستند",
+                if (reqOn) "هر کس نام کاربری شما را بداند می‌تواند تا ۳ پیام متنی بفرستد؛ پیامش در «درخواست‌های پیام» می‌ماند تا قبول یا رد کنید."
+                else "مدیر سرور فعلاً درخواست پیام را برای همه بسته است.",
+                allowReq && reqOn
+            ) { v -> if (reqOn) scope.launch { Engine.setAllowRequests(v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
             SettingRow("قفل برنامه", if (lockOn) "روشن" else "خاموش") { showLock = true }
             SettingRow("اثرانگشت کلیدها", "مقایسهٔ کلید امنیتی با مخاطبان") { showKeys = true }
             SettingRow("رمز کلید", when (backedUp) {
