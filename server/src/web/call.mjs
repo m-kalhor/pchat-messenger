@@ -19,6 +19,8 @@ let pc = null, offerSdp = null, remoteSet = false, timer = null, discTimer = nul
 let pendingIce = [];      // remote candidates that arrived before the remote description: { callId, cand }
 let localIce = [], inviteSent = false;
 let ring = null;
+/** The live RTCPeerConnection (the admins' call diagnostics read its stats), or null. */
+export const peerConnection = () => pc;
 
 export async function startCall(peer, video) {
   if (C.phase !== 'idle') return;

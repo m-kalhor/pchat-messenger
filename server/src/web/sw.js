@@ -3,7 +3,7 @@
 // It also shows Web Push notifications while the app is closed (iPhone, iOS 16.4+) and reports the
 // message as delivered, so the sender's tick turns blue.
 const CACHE = 'sepan-shell-v4';
-const SHELL = ['/', '/app', '/app.css', '/app.mjs', '/engine.mjs', '/api.mjs', '/crypto.mjs', '/store.mjs', '/call.mjs', '/webp.mjs', '/emoji.mjs', '/voice.mjs', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
+const SHELL = ['/', '/app', '/app.css', '/app.mjs', '/engine.mjs', '/api.mjs', '/crypto.mjs', '/store.mjs', '/call.mjs', '/webp.mjs', '/emoji.mjs', '/voice.mjs', '/diag.mjs', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

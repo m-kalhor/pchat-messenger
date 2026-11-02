@@ -53,6 +53,7 @@ export const send = (target, payload, fileId) => call('POST', '/api/send', fileI
 export const signal = (target, kind, payload) => call('POST', '/api/send', { target, kind, payload }).then((r) => !!r.delivered);
 export const turn = () => call('GET', '/api/turn');
 export const findUser = (name) => call('GET', '/api/users/find?u=' + encodeURIComponent(name));
+export const diagTrace = (peer) => call('POST', '/api/diag/trace', { peer });
 export const contactRequests = () => call('GET', '/api/contacts/requests');
 export const contactAction = (what, username, accept = false) => call('POST', '/api/contacts/' + what, { username, accept });
 export const caInfo = () => call('GET', '/api/web/ca');

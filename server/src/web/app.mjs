@@ -6,6 +6,7 @@ import { fingerprint } from './crypto.mjs';
 import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
+import * as Diag from './diag.mjs';
 
 const VERSION = '1.7.0';
 const S = E.S;
@@ -1417,7 +1418,7 @@ async function toAvatar(file) {
 let callEl = null, callTick = null;
 function renderCall(c) {
   if (c.phase === 'idle') {
-    if (callEl) { callEl.remove(); callEl = null; clearInterval(callTick); }
+    if (callEl) { callEl.remove(); callEl = null; clearInterval(callTick); Diag.detach(); }
     if (c.note) toast(c.note);
     return;
   }
@@ -1456,6 +1457,8 @@ function renderCall(c) {
       btn('✕', 'red', Call.hangup, 'پایان تماس'));
   callEl.querySelectorAll('.info, .ctrls').forEach((x) => x.remove());
   callEl.append(info, ctrls);
+  // admins' call diagnostics (test feature, switched on per user in the panel)
+  if (S.meInfo.diag && c.phase !== 'incoming') Diag.attach(callEl, c.peer, Call.peerConnection);
 }
 Call.onCall(renderCall);
 
