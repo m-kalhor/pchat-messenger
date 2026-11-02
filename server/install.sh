@@ -101,6 +101,8 @@ chmod +x /usr/local/bin/msgadmin
 export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
 apt-get update -y
 apt-get install -y coturn
+# traceroute for the call diagnostics (1.7, admin test feature); not needed for anything else
+apt-get install -y traceroute || echo "traceroute could not be installed (call route diagnostics will say so)"
 
 # shared secret between coturn and the messenger server (time-limited credentials)
 SECRET_FILE=/opt/messenger/certs/turn_secret
