@@ -41,7 +41,7 @@ function introPage(site, hasApk) {
 <body><main>
 <header><img src="/icon-192.png" alt="" width="72" height="72"><h1>${esc(title)}</h1></header>
 <section>${para(about)}</section>
-<nav><a class="btn" href="/app">ورود به پیام‌رسان</a>${hasApk ? '<a class="btn alt" href="/download/sepan.apk">دانلود اپ اندروید</a>' : ''}</nav>
+${hasApk ? '<nav><a class="btn" href="/download/sepan.apk">دانلود اپ اندروید</a></nav>' : ''}
 <section><h2>امکانات</h2><ul>
 <li>گفتگوی خصوصی و گروهی با رمزنگاری سرتاسری</li>
 <li>تماس صوتی و تصویری، پیام صوتی، ارسال فایل و موقعیت مکانی</li>

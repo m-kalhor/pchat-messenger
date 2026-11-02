@@ -152,8 +152,7 @@ test('a domain name: intro page at /, the app at /app, http stays on the name, A
   const intro = await get(base + '/', dom);
   assert.equal(intro.status, 200);
   const html = intro.body.toString();
-  assert.match(html, /ورود به پیام‌رسان/);
-  assert.match(html, /href="\/app"/);
+  assert.doesNotMatch(html, /href="\/app"/, 'no login link on the intro page (1.8): the app is only at /app');
   assert.match(html, /فقط برای فرستادن کد یک‌بارمصرف/, 'says what the SMS is for');
   assert.match(html, /info@example\.ir &lt;b&gt;/, 'contact shown, escaped');
   assert.doesNotMatch(html, /<script/);
