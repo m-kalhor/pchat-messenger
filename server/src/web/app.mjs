@@ -7,6 +7,7 @@ import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
+import './lan.mjs';
 
 const VERSION = '1.7.0';
 const S = E.S;
