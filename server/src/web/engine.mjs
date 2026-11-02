@@ -34,6 +34,9 @@ function emit(kind, data) { for (const fn of listeners) { try { fn(kind, data); 
 
 export let onSignal = () => { };
 export const setSignalHandler = (fn) => { onSignal = fn; };
+/** 1.8 direct transfer on the same Wi-Fi (lan.mjs): { offer(m), signal(from, payload) } */
+let lanHook = null;
+export const setLanHook = (o) => { lanHook = o; };
 
 // ---------------- names ----------------
 export const isGroup = (c) => c === 'all' || /^g:\d+$/.test(c);
@@ -418,6 +421,7 @@ async function handleEvent(ev, data) {
       return emit('pins', o.convo);
     case 'sig':
       if (o.kind === 'sig_typing') { S.typing[o.from] = Date.now(); emit('typing', o.from); setTimeout(() => emit('typing', o.from), 4500); return; }
+      if (o.kind === 'sig_lan') { if (lanHook) lanHook.signal(o.from, o.payload); return; }
       return onSignal(o.from, o.kind, o.payload);
     default: return;
   }
@@ -439,12 +443,13 @@ function removeLocal(m) {
 async function handleMsg(o) {
   const mine = o.from === S.me;
   const convo = isGroup(o.target) ? o.target : mine ? o.target : o.from;
-  let m;
+  let m, lx = null;
   try {
     let pub = pubOf(o.from);
     if (!pub && !mine) { try { await refreshUsers(); } catch { } pub = pubOf(o.from); }
     const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pub, o.payload)));
     const r = plain.r || null;
+    if (typeof plain.lx === 'string' && !mine) lx = plain.lx;
     // a voice message travels as a file with v:1 (older apps show it as an audio file)
     const voice = plain.t === 'file' && plain.v === 1;
     m = {
@@ -459,6 +464,7 @@ async function handleMsg(o) {
     m = { id: o.id, convo, sender: o.from, mine, ts: o.ts, type: 'text', text: '🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)', status: 0, locked: true };
   }
   if (o.reactions) m.reactions = { ...o.reactions };
+  if (lx && m.fileId) { if (lanFiles.has(lx)) lanTakeOver(lx, m); else lanReal.set(lx, m); }
   if (!mine) ack(convo, 'delivered', o.id);
   const isNew = addLocal(m);
   if (isNew) S.convos.get(convo).sort(byOrder);
@@ -915,6 +921,7 @@ export async function sendFile(convo, file, reply) {
   addLocal(m);
   markRead(convo);
   emit('msg', m);
+  if (lanHook) lanHook.offer(m);
   uploadFile(m);
   return null;
 }
@@ -931,6 +938,7 @@ export async function sendVoice(convo, blob, dur, wave, reply) {
   addLocal(m);
   markRead(convo);
   emit('msg', m);
+  if (lanHook) lanHook.offer(m);
   uploadFile(m);
 }
 
@@ -962,7 +970,7 @@ async function uploadFile(m) {
         let r;
         try { r = await api.patchUpload(up, off, body); } catch (e) {
           if (e instanceof api.HttpError && e.status === 409) { off = (await api.uploadStatus(up)).offset; continue; }
-          if (!(e instanceof api.HttpError) && ++netErrors <= 40) { await wait(3000); try { off = (await api.uploadStatus(up)).offset; } catch { } continue; }
+          if (!(e instanceof api.HttpError) && ++netErrors <= 200) { await netBack(Math.min(15000, 3000 * netErrors)); try { off = (await api.uploadStatus(up)).offset; } catch { } continue; }
           throw e;
         }
         off = r.offset;
@@ -972,7 +980,7 @@ async function uploadFile(m) {
       }
       m._fileId = fileId;
     }
-    const plain = { ...fileJson(m), ...replyJson(m), ...forwardJson(m) };
+    const plain = { ...fileJson(m), ...replyJson(m), ...forwardJson(m), ...(m._lanX ? { lx: m._lanX } : {}) };
     const r = await api.send(m.convo, await encryptFor(m.convo, plain), fileId);
     const real = { ...m, id: r.id, ts: r.ts, status: 0, fileId };
     if (file && (m.type === 'image' || m.type === 'voice') && m.size <= 25 * 1024 * 1024) await store.putMedia(fileId, file).catch(() => { });
@@ -999,6 +1007,59 @@ const downloading = new Map();
 export const mediaUrl = (m) => blobUrls.get(m.fileId || m.id) || null;
 export const mediaBlob = (m) => blobs.get(m.fileId || m.id) || null;
 
+/** Waits `ms`, but no longer than until the browser is back online (and while offline, until it is). */
+function netBack(ms) {
+  return new Promise((resolve) => {
+    let t = null;
+    const done = () => { clearTimeout(t); removeEventListener('online', done); resolve(); };
+    addEventListener('online', done);
+    t = setTimeout(() => { if (navigator.onLine !== false) done(); else t = setTimeout(done, 10 * 60e3); }, ms);
+  });
+}
+
+// ---------------- direct transfer on the same Wi-Fi (1.8) ----------------
+const lanFiles = new Map(); // transfer id -> { blob, m } (the file arrived over Wi-Fi before the server message)
+const lanReal = new Map();  // transfer id -> the server message, when that came first
+
+/** A file arrived directly over the local network: show it now, as a message that the server copy replaces later. */
+export function lanShow(from, meta, x, blob) {
+  const real = lanReal.get(x);
+  if (real) { // the server message was quicker: it just gets the file without downloading it
+    lanReal.delete(x);
+    if (!blobUrls.has(real.fileId)) {
+      blobUrls.set(real.fileId, URL.createObjectURL(blob)); blobs.set(real.fileId, blob);
+      if (blob.size <= 50 * 1024 * 1024) store.putMedia(real.fileId, blob).catch(() => { });
+      emit('media', real);
+    }
+    return;
+  }
+  const voice = meta.t === 'file' && meta.v === 1;
+  const m = {
+    id: localId(), convo: from, sender: from, mine: false, ts: Date.now(), type: voice ? 'voice' : meta.t === 'image' ? 'image' : 'file', text: '', edited: 0,
+    ...(voice ? { dur: Number(meta.d) || 0, wave: Array.isArray(meta.wf) ? meta.wf.slice(0, 100).map((v) => Math.max(0, Math.min(31, v | 0))) : [] } : {}),
+    fileId: null, name: meta.n || 'file', mime: meta.m || null, size: meta.s || blob.size, fk: meta.fk, w: meta.w || 0, h: meta.h || 0,
+    replyId: 0, replyUser: null, replyText: null, status: 0, lan: true,
+  };
+  blobUrls.set(m.id, URL.createObjectURL(blob)); blobs.set(m.id, blob);
+  lanFiles.set(x, { blob, m });
+  setTimeout(() => lanFiles.delete(x), 6 * 3600e3);
+  addLocal(m);
+  S.convos.get(from).sort(byOrder);
+  emit('msg', m);
+}
+
+/** The server message of a file that already came over Wi-Fi: it takes the file, the temporary message goes. */
+function lanTakeOver(x, m) {
+  const l = lanFiles.get(x);
+  lanFiles.delete(x);
+  const url = blobUrls.get(l.m.id);
+  blobUrls.delete(l.m.id); blobs.delete(l.m.id);
+  blobUrls.set(m.fileId, url || URL.createObjectURL(l.blob)); blobs.set(m.fileId, l.blob);
+  if (l.blob.size <= 50 * 1024 * 1024) store.putMedia(m.fileId, l.blob).catch(() => { });
+  removeLocal(l.m);
+  emit('msg', l.m);
+}
+
 /** Downloads and decrypts a file or image. Resolves to an object URL. */
 export function download(m) {
   const id = m.fileId;
@@ -1020,8 +1081,9 @@ export function download(m) {
           const end = Math.min(total, off + 4 * C.CIPHER_CHUNK) - 1;
           let enc;
           try { enc = await api.fileRange(id, off, end); tries = 0; } catch (e) {
-            if (e instanceof api.HttpError || ++tries > 5) throw e;
-            await wait(2000 * tries); continue;
+            // 1.8: a network cut does not lose what is already here: wait for the network and go on from `off`
+            if (e instanceof api.HttpError || ++tries > 200) throw e;
+            await netBack(Math.min(15000, 2000 * tries)); continue;
           }
           for (let p = 0; p < enc.length; p += C.CIPHER_CHUNK) {
             const idx = (off + p) / C.CIPHER_CHUNK;

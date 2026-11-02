@@ -173,6 +173,10 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .call video.remote { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
 .call video.local { position: absolute; top: calc(env(safe-area-inset-top) + 14px); left: 14px; width: 30%; max-width: 150px; aspect-ratio: 3 / 4; object-fit: cover; border-radius: 12px; z-index: 2; background: #222; transform: scaleX(-1); }
 .call video.local.back { transform: none; }
+/* 1.8: swapped pictures (tap the small one) */
+.call video.local, .call.swap video.remote { cursor: pointer; }
+.call.swap video.local { inset: 0; top: 0; left: 0; width: 100%; max-width: none; height: 100%; aspect-ratio: auto; border-radius: 0; z-index: 0; }
+.call.swap video.remote { inset: auto; top: calc(env(safe-area-inset-top) + 14px); left: 14px; width: 30%; max-width: 150px; height: auto; aspect-ratio: 3 / 4; border-radius: 12px; z-index: 2; }
 .call .info { position: relative; z-index: 2; text-align: center; margin-top: calc(env(safe-area-inset-top) + 70px); text-shadow: 0 1px 3px rgba(0, 0, 0, .6); }
 .call .info h2 { margin: 12px 0 4px; font-size: 26px; }
 .call .info .av { margin: 0 auto; }

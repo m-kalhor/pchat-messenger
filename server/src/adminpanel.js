@@ -53,7 +53,7 @@ function stateDump(ctx) {
   const cats = db.prepare('SELECT c.id, c.name, c.gkey, (SELECT COUNT(*) FROM user_categories WHERE category_id=c.id) AS count FROM categories c ORDER BY c.id').all();
   return {
     users: users.map((u) => ({
-      username: u.username, display_name: u.display_name || '', bio: u.bio || '', phone: u.phone || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0,
+      username: u.username, display_name: u.display_name || '', bio: u.bio || '', phone: u.phone || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0, diag: diag.enabledFor(u.username),
       online: ctx.isOnline(u.username), categories: uc.filter((x) => x.username === u.username).map((x) => x.category_id),
     })),
     categories: cats,

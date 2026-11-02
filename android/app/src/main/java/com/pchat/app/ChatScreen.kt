@@ -789,8 +789,12 @@ fun Bubble(
                                     Text(U.size(m.size), color = sub, fontSize = 12.sp)
                                 }
                                 if (m.status == 0) {
+                                    val waiting by Engine.waitingDownloads.collectAsState()
                                     if (progress != null) {
                                         Text("${(progress * 100).toInt()}٪", color = sub, fontSize = 12.sp)
+                                    } else if (m.id in waiting) {
+                                        // 1.8: cut off by the network; continues by itself from where it stopped
+                                        Text("⏸ ادامه بعد از اتصال", color = sub, fontSize = 12.sp, modifier = Modifier.clickable { Engine.resumeDownloads() })
                                     } else {
                                         // 1.7: videos play in Sepan's own player, no "open with…" menu
                                         val isVideo = (m.mime ?: "").startsWith("video/")
@@ -798,7 +802,7 @@ fun Bubble(
                                             scope.launch {
                                                 val p = Engine.downloadMedia(m)
                                                 if (p != null) { if (isVideo) playVideo = p else openFile(ctx, p, m.mime) }
-                                                else Toast.makeText(ctx, "دریافت فایل ناموفق بود (دوباره بزنید تا ادامه یابد)", Toast.LENGTH_SHORT).show()
+                                                else Toast.makeText(ctx, if (m.id in Engine.waitingDownloads.value) "دریافت قطع شد؛ با برگشتن اینترنت خودش از همان‌جا ادامه می‌دهد" else "دریافت فایل ناموفق بود", Toast.LENGTH_SHORT).show()
                                             }
                                         }) { Text(if (isVideo) (if (m.localPath != null) "▶ پخش" else "▶ دانلود و پخش") else if (m.localPath != null) "باز کردن" else "دانلود") }
                                     }

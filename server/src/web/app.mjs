@@ -7,8 +7,9 @@ import { encodeWebp } from './webp.mjs';
 import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
+import './lan.mjs';
 
-const VERSION = '1.7.0';
+const VERSION = '1.8.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -1415,10 +1416,11 @@ async function toAvatar(file) {
 }
 
 // ---------------- call screen (overlay above everything) ----------------
-let callEl = null, callTick = null;
+let callEl = null, callTick = null, callSwap = false;
 function renderCall(c) {
   if (c.phase === 'idle') {
     if (callEl) { callEl.remove(); callEl = null; clearInterval(callTick); Diag.detach(); }
+    callSwap = false;
     if (c.note) toast(c.note);
     return;
   }
@@ -1443,6 +1445,12 @@ function renderCall(c) {
       lv.style.visibility = c.camOff ? 'hidden' : 'visible';
     }
   }
+  // 1.8: tap the small picture to swap it with the big one (like Telegram); tap again to swap back
+  const canSwap = remoteVideo && localVideo;
+  callEl.classList.toggle('swap', canSwap && callSwap);
+  const tapSmall = (big) => (e) => { e.stopPropagation(); if (canSwap && callSwap === big) { callSwap = !callSwap; renderCall(Call.C); } };
+  rv.onclick = tapSmall(true);
+  if (lv && localVideo) lv.onclick = tapSmall(false);
   let status = c.note;
   if (c.phase === 'active') { const s = Math.floor((Date.now() - c.startedAt) / 1000); status = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   else if (c.phase === 'incoming') status = c.video ? 'تماس تصویری ورودی' : 'تماس صوتی ورودی';
