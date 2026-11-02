@@ -57,4 +57,6 @@ for i in $(seq 1 14); do
   sleep 5
 done
 if [ $OK = 1 ]; then echo "OK: https://$NAME/ has a valid certificate"; else echo "Not confirmed from the server itself; open https://$NAME/ in a browser"; fi
-systemctl list-timers 2>/dev/null | grep -q certbot && echo "Automatic renewal: certbot.timer is active"
+# (no grep -q here: with pipefail its early exit would end the script with 141)
+if systemctl is-active --quiet certbot.timer 2>/dev/null; then echo "Automatic renewal: certbot.timer is active"
+else echo "WARNING: certbot.timer is not active; renew by hand with: certbot renew"; fi
