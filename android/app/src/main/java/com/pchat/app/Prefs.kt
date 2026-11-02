@@ -106,5 +106,39 @@ object Prefs {
         else -> true
     }
 
+    // ---- chat list: pinned chats and drafts (belong to the account, cleared on logout) ----
+    const val MAX_PINNED = 5
+    /** bumps when pins or drafts change */
+    val chatTick = MutableStateFlow(0)
+
+    fun pinnedChats(): List<String> = (p.getString("pinned_chats", "") ?: "").split('\n').filter { it.isNotEmpty() }
+
+    /** Pins / unpins a chat at the top of the list. Returns false when 5 are pinned already. */
+    fun togglePinned(convo: String): Boolean {
+        val l = pinnedChats()
+        val n = when {
+            convo in l -> l - convo
+            l.size >= MAX_PINNED -> return false
+            else -> l + convo
+        }
+        p.edit().putString("pinned_chats", n.joinToString("\n")).apply()
+        chatTick.value++
+        return true
+    }
+
+    fun draft(convo: String): String = p.getString("draft_$convo", "") ?: ""
+    fun setDraft(convo: String, text: String) {
+        if (draft(convo) == text || (text.isBlank() && draft(convo).isEmpty())) return
+        p.edit().apply { if (text.isBlank()) remove("draft_$convo") else putString("draft_$convo", text) }.apply()
+        chatTick.value++
+    }
+
+    fun clearChatPrefs() {
+        val e = p.edit()
+        p.all.keys.filter { it.startsWith("draft_") }.forEach { e.remove(it) }
+        e.remove("pinned_chats").apply()
+        chatTick.value++
+    }
+
     fun dirSize(f: File): Long = if (f.isDirectory) (f.listFiles()?.sumOf { dirSize(it) } ?: 0L) else f.length()
 }

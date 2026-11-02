@@ -45,6 +45,15 @@ CREATE TABLE IF NOT EXISTS msg_history (
 CREATE INDEX IF NOT EXISTS idx_hist_msg ON msg_history(msg_id);
 CREATE TABLE IF NOT EXISTS uploads (
   id TEXT PRIMARY KEY, owner TEXT NOT NULL, size INTEGER NOT NULL, off INTEGER NOT NULL DEFAULT 0, ts INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS receipts (
+  username TEXT NOT NULL, convo TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0, seen INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (username, convo));
+CREATE INDEX IF NOT EXISTS idx_rcpt_convo ON receipts(convo);
+CREATE TABLE IF NOT EXISTS reactions (
+  msg_id INTEGER NOT NULL, username TEXT NOT NULL, emoji TEXT, seq INTEGER NOT NULL, PRIMARY KEY (msg_id, username));
+CREATE INDEX IF NOT EXISTS idx_react_seq ON reactions(seq);
+CREATE TABLE IF NOT EXISTS push_subs (
+  endpoint TEXT PRIMARY KEY, username TEXT NOT NULL, th TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL, ts INTEGER NOT NULL);
 `);
 
 // ---- idempotent migrations for databases created by the first version ----
@@ -55,6 +64,9 @@ if (!userCols.includes('disabled')) db.exec('ALTER TABLE users ADD COLUMN disabl
 if (!userCols.includes('bio')) db.exec('ALTER TABLE users ADD COLUMN bio TEXT');
 if (!userCols.includes('key_backup')) db.exec('ALTER TABLE users ADD COLUMN key_backup TEXT');
 if (!userCols.includes('phone')) db.exec('ALTER TABLE users ADD COLUMN phone TEXT');
+if (!userCols.includes('last_seen')) db.exec('ALTER TABLE users ADD COLUMN last_seen INTEGER');
+if (!userCols.includes('hide_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_seen INTEGER NOT NULL DEFAULT 0');
+if (!userCols.includes('hide_last_seen')) db.exec('ALTER TABLE users ADD COLUMN hide_last_seen INTEGER NOT NULL DEFAULT 0');
 const msgCols = db.prepare('PRAGMA table_info(messages)').all().map((r) => r.name);
 if (!msgCols.includes('edited')) db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER');
 if (!msgCols.includes('deleted')) db.exec('ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');

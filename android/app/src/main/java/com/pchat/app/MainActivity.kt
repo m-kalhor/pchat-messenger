@@ -55,8 +55,8 @@ class MainActivity : ComponentActivity() {
         deepLink.value = intent.getStringExtra("convo")
     }
 
-    override fun onStart() { super.onStart(); Engine.appVisible = true; AppLock.onAppStart(); Engine.refreshDirectory() }
-    override fun onStop() { super.onStop(); Engine.appVisible = false; AppLock.onAppStop() }
+    override fun onStart() { super.onStart(); Engine.appVisible = true; Engine.setActive(true); AppLock.onAppStart(); Engine.refreshDirectory() }
+    override fun onStop() { super.onStop(); Engine.appVisible = false; Engine.setActive(false); VoicePlayer.stop(); AppLock.onAppStop() }
 }
 
 @Composable

@@ -17,12 +17,33 @@ data class Msg(
     /** when the sender last edited it (0 = never) */
     val edited: Long = 0,
     /** forwarded: the original sender's username and display name */
-    val fwFrom: String? = null, val fwName: String? = null
+    val fwFrom: String? = null, val fwName: String? = null,
+    /** voice message: length in ms and 50 waveform bars of 0..31 */
+    val dur: Long = 0, val wave: List<Int> = emptyList(),
+    /** shared location (type "location") */
+    val loc: Loc? = null,
+    /** emoji reactions: username -> emoji */
+    val reactions: Map<String, String> = emptyMap()
 )
+
+data class Loc(val lat: Double, val lon: Double, val acc: Int)
+
+private fun locStr(l: Loc?) = l?.let { "${it.lat},${it.lon},${it.acc}" }
+private fun parseLoc(s: String?): Loc? = s?.split(',')?.takeIf { it.size == 3 }?.let {
+    val lat = it[0].toDoubleOrNull(); val lon = it[1].toDoubleOrNull()
+    if (lat == null || lon == null) null else Loc(lat, lon, it[2].toIntOrNull() ?: 0)
+}
+private fun waveStr(w: List<Int>) = if (w.isEmpty()) null else w.joinToString(",")
+private fun parseWave(s: String?): List<Int> = s?.split(',')?.mapNotNull { it.toIntOrNull() } ?: emptyList()
+fun reactionsStr(r: Map<String, String>): String? =
+    if (r.isEmpty()) null else org.json.JSONObject().apply { r.forEach { (u, e) -> put(u, e) } }.toString()
+fun parseReactions(s: String?): Map<String, String> = try {
+    if (s.isNullOrEmpty()) emptyMap() else org.json.JSONObject(s).let { o -> o.keys().asSequence().associateWith { o.getString(it) } }
+} catch (e: Exception) { emptyMap() }
 
 data class ConvoSummary(val convo: String, val last: Msg?, val unread: Int)
 
-private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name"
+private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name,dur,wave,loc,reactions"
 
 private fun Cursor.toMsg() = Msg(
     id = getLong(0), convo = getString(1), sender = getString(2), mine = getInt(3) == 1, ts = getLong(4),
@@ -31,17 +52,19 @@ private fun Cursor.toMsg() = Msg(
     replyId = getLong(14), replyUser = getString(15), replyText = getString(16),
     localPath = getString(17), read = getInt(18) == 1,
     status = getInt(19), uploadId = getString(20),
-    edited = getLong(21), fwFrom = getString(22), fwName = getString(23)
+    edited = getLong(21), fwFrom = getString(22), fwName = getString(23),
+    dur = getLong(24), wave = parseWave(getString(25)), loc = parseLoc(getString(26)), reactions = parseReactions(getString(27))
 )
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 3) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 4) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE messages(id INTEGER PRIMARY KEY, convo TEXT NOT NULL, sender TEXT NOT NULL, " +
                 "mine INTEGER NOT NULL, ts INTEGER NOT NULL, type TEXT NOT NULL, text TEXT, file_id TEXT, " +
                 "file_name TEXT, mime TEXT, size INTEGER, fkey TEXT, w INTEGER, h INTEGER, reply_id INTEGER, " +
                 "reply_user TEXT, reply_text TEXT, local_path TEXT, read INTEGER NOT NULL DEFAULT 0, " +
-                "status INTEGER NOT NULL DEFAULT 0, upload_id TEXT, edited INTEGER NOT NULL DEFAULT 0, fw_from TEXT, fw_name TEXT)"
+                "status INTEGER NOT NULL DEFAULT 0, upload_id TEXT, edited INTEGER NOT NULL DEFAULT 0, fw_from TEXT, fw_name TEXT, " +
+                "dur INTEGER NOT NULL DEFAULT 0, wave TEXT, loc TEXT, reactions TEXT)"
         )
         db.execSQL("CREATE INDEX idx_convo ON messages(convo, id)")
         db.execSQL("CREATE TABLE contacts(username TEXT PRIMARY KEY, pubkey TEXT, key_changed INTEGER NOT NULL DEFAULT 0)")
@@ -57,6 +80,12 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 3) {
             db.execSQL("ALTER TABLE messages ADD COLUMN fw_from TEXT")
             db.execSQL("ALTER TABLE messages ADD COLUMN fw_name TEXT")
         }
+        if (oldVersion < 4) {
+            db.execSQL("ALTER TABLE messages ADD COLUMN dur INTEGER NOT NULL DEFAULT 0")
+            db.execSQL("ALTER TABLE messages ADD COLUMN wave TEXT")
+            db.execSQL("ALTER TABLE messages ADD COLUMN loc TEXT")
+            db.execSQL("ALTER TABLE messages ADD COLUMN reactions TEXT")
+        }
     }
 
     /** Returns true if the message was new. */
@@ -69,6 +98,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 3) {
             put("reply_text", m.replyText); put("local_path", m.localPath); put("read", if (m.read) 1 else 0)
             put("status", m.status); put("upload_id", m.uploadId)
             put("edited", m.edited); put("fw_from", m.fwFrom); put("fw_name", m.fwName)
+            put("dur", m.dur); put("wave", waveStr(m.wave)); put("loc", locStr(m.loc)); put("reactions", reactionsStr(m.reactions))
         }
         return writableDatabase.insertWithOnConflict("messages", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }
@@ -96,6 +126,26 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 3) {
 
     fun markRead(convo: String) {
         writableDatabase.execSQL("UPDATE messages SET read=1 WHERE convo=? AND read=0", arrayOf<Any>(convo))
+    }
+
+    /** Marks incoming messages up to [upTo] as read (read on another device of mine). Returns true if any changed. */
+    fun markReadUpTo(convo: String, upTo: Long): Boolean {
+        val st = writableDatabase.compileStatement("UPDATE messages SET read=1 WHERE convo=? AND read=0 AND id>0 AND id<=?")
+        st.bindString(1, convo); st.bindLong(2, upTo)
+        return st.executeUpdateDelete() > 0
+    }
+
+    /** Newest incoming message id of a conversation (only read ones with [readOnly]); 0 if none. */
+    fun lastIncoming(convo: String, readOnly: Boolean = false): Long {
+        var r = 0L
+        readableDatabase.rawQuery(
+            "SELECT MAX(id) FROM messages WHERE convo=? AND mine=0 AND id>0" + if (readOnly) " AND read=1" else "", arrayOf(convo)
+        ).use { c -> if (c.moveToFirst() && !c.isNull(0)) r = c.getLong(0) }
+        return r
+    }
+
+    fun setReactions(id: Long, r: Map<String, String>) {
+        writableDatabase.execSQL("UPDATE messages SET reactions=? WHERE id=?", arrayOf<Any?>(reactionsStr(r), id))
     }
 
     fun setLocalPath(id: Long, path: String) {

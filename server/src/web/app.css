@@ -2,18 +2,18 @@
 :root {
   --bg: #ffffff; --bg2: #f1f3f6; --chat: #e8eef4; --fg: #111418; --fg2: #6b7480; --line: #e2e6eb;
   --accent: #1e88e5; --accent-fg: #ffffff; --mine: #d9f2c4; --theirs: #ffffff; --danger: #d93025; --ok: #2e9d4f;
-  --shadow: 0 1px 2px rgba(0, 0, 0, .12); --fs: 16px;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .12); --fs: 16px; --tick: #2a9bf0;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #17212b; --bg2: #0e1621; --chat: #0e1621; --fg: #e9edf1; --fg2: #8b98a5; --line: #233140;
-    --accent: #3d9bf0; --mine: #2b5278; --theirs: #182533; --shadow: none; color-scheme: dark;
+    --accent: #3d9bf0; --mine: #2b5278; --theirs: #182533; --shadow: none; color-scheme: dark; --tick: #8fd0ff;
   }
 }
 :root[data-theme="dark"] {
   --bg: #17212b; --bg2: #0e1621; --chat: #0e1621; --fg: #e9edf1; --fg2: #8b98a5; --line: #233140;
-  --accent: #3d9bf0; --mine: #2b5278; --theirs: #182533; --shadow: none; color-scheme: dark;
+  --accent: #3d9bf0; --mine: #2b5278; --theirs: #182533; --shadow: none; color-scheme: dark; --tick: #8fd0ff;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overscroll-behavior: none; }
@@ -189,3 +189,39 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .dialog input[type=text] { width: 100%; box-sizing: border-box; }
 .hist { margin: 6px 0 12px; display: flex; flex-direction: column; gap: 8px; }
 .hv { background: var(--bg2); border-radius: 10px; padding: 6px 10px; }
+/* ticks, reactions, voice, recording, drafts (1.4) */
+.tick { font-weight: 700; font-size: 12.5px; letter-spacing: -4px; padding-left: 4px; direction: ltr; }
+.tick.sent { color: var(--fg2); }
+.tick.delivered, .tick.seen { color: var(--tick); }
+.row .top .tick { flex: none; font-size: 13px; }
+.row .draft { color: var(--danger); }
+.pinmark { font-size: 13px; flex: none; opacity: .7; }
+.rxn { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 1px; }
+.rchip { border: 0; border-radius: 13px; padding: 1px 8px; background: color-mix(in srgb, var(--accent) 14%, transparent); font-size: 15px; display: inline-flex; gap: 4px; align-items: center; }
+.rchip span { font-size: 12.5px; color: var(--accent); font-weight: 600; }
+.rchip.mine { background: var(--accent); }
+.rchip.mine span { color: #fff; }
+.rbig { font-size: 22px; }
+.rpick { display: flex; justify-content: space-around; padding: 4px 10px 10px; border-bottom: 1px solid var(--line); }
+.rpick button { border: 0; background: none; font-size: 30px; border-radius: 50%; width: 46px; height: 46px; }
+.rpick button.on { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.rpick button.more { font-size: 20px; color: var(--accent); }
+.emojis.tall { max-height: 60dvh; }
+.voice { display: flex; align-items: center; gap: 10px; padding: 4px 0; min-width: 210px; }
+.vplay { width: 44px; height: 44px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; font-size: 17px; flex: none; }
+.vw { flex: 1; min-width: 0; }
+.wave { display: flex; align-items: center; gap: 2px; height: 28px; direction: ltr; cursor: pointer; }
+.wave i { flex: 1; max-width: 4px; min-width: 2px; border-radius: 2px; background: color-mix(in srgb, var(--accent) 38%, transparent); }
+.wave i.on { background: var(--accent); }
+.voice .fs { font-size: 12.5px; color: var(--fg2); }
+.composer .mic { color: var(--accent); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.recbar { display: flex; align-items: center; gap: 10px; padding: 6px 10px; }
+.recbar .rdot { width: 12px; height: 12px; border-radius: 50%; background: #e53935; transition: transform .2s; flex: none; }
+.recbar .rt { font-variant-numeric: tabular-nums; min-width: 44px; }
+.recbar .hintx { color: var(--fg2); font-size: 14px; text-align: center; }
+.recbar .grow { flex: 1; }
+.pick .grow { flex: 1; }
+.loc { display: flex; align-items: center; gap: 10px; padding: 4px 0; cursor: pointer; min-width: 200px; }
+.loc .fi { width: 44px; height: 44px; border-radius: 50%; background: #e53935; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; flex: none; }
+.loc .fn { font-weight: 600; font-size: 14.5px; }
+.loc .fs { font-size: 12.5px; color: var(--fg2); }

@@ -10,6 +10,7 @@ const contacts = require('./contacts');
 const { sanitizeWebp } = require('./webp');
 const stats = require('./stats');
 const backup = require('./backup');
+const push = require('./push');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -67,6 +68,17 @@ const q = {
   delPin: db.prepare('DELETE FROM pins WHERE convo=?'),
   pin: db.prepare('SELECT * FROM pins WHERE convo=?'),
   allPins: db.prepare('SELECT * FROM pins'),
+  setLastSeen: db.prepare('UPDATE users SET last_seen=? WHERE username=?'),
+  setPrivacy: db.prepare('UPDATE users SET hide_seen=?, hide_last_seen=? WHERE username=?'),
+  rcpt: db.prepare('SELECT delivered, seen FROM receipts WHERE username=? AND convo=?'),
+  setRcpt: db.prepare('INSERT INTO receipts(username,convo,delivered,seen) VALUES(?,?,?,?) ON CONFLICT(username,convo) DO UPDATE SET delivered=excluded.delivered, seen=excluded.seen'),
+  maxFrom: db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE sender=? AND target=?'),
+  maxIn: db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE target=?'),
+  react: db.prepare('INSERT INTO reactions(msg_id,username,emoji,seq) VALUES(?,?,?,?) ON CONFLICT(msg_id,username) DO UPDATE SET emoji=excluded.emoji, seq=excluded.seq'),
+  myReact: db.prepare('SELECT emoji FROM reactions WHERE msg_id=? AND username=?'),
+  maxReact: db.prepare('SELECT COALESCE(MAX(seq),0) AS s FROM reactions'),
+  reactsOf: db.prepare('SELECT username, emoji FROM reactions WHERE msg_id=? AND emoji IS NOT NULL'),
+  delReacts: db.prepare('DELETE FROM reactions WHERE msg_id=?'),
 };
 
 // ---------- helpers ----------
@@ -124,7 +136,9 @@ const addFail = (key) => {
 };
 
 // ---------- live connections (SSE) ----------
-const clients = new Map(); // username -> Set(res)
+// username -> Set(res). Each connection carries res.dev (the device's id) and res.active: the app is on
+// screen. Android keeps its connection open in the background, so "connected" is not "online".
+const clients = new Map();
 function emit(user, event, data, id) {
   const set = clients.get(user);
   if (!set || !set.size) return false;
@@ -132,30 +146,67 @@ function emit(user, event, data, id) {
   for (const r of set) r.write(chunk);
   return true;
 }
-const isOnline = (u) => !!clients.get(u) && clients.get(u).size > 0;
-const onlineUsers = () => [...clients.keys()].filter(isOnline);
-const msgJson = (m) => ({ id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null });
+const isConnected = (u) => !!clients.get(u) && clients.get(u).size > 0;
+const connectedUsers = () => [...clients.keys()].filter(isConnected);
+/** Online = some device has the app on screen right now. */
+function isOnline(u) {
+  const set = clients.get(u);
+  if (set) for (const r of set) if (r.active) return true;
+  return false;
+}
+const msgJson = (m, reactions) => ({
+  id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null,
+  ...(reactions && reactions.length ? { reactions: Object.fromEntries(reactions.map((r) => [r.username, r.emoji])) } : {}),
+});
 /** An edit or delete-for-everyone of message m, as clients receive it (seq orders all changes). */
 const changeJson = (seq, kind, m) => (kind === 'del'
   ? { seq, kind, id: m.id, from: m.sender, target: m.target }
   : { seq, kind, id: m.id, from: m.sender, target: m.target, payload: m.payload, edited: m.edited });
 setInterval(() => { for (const set of clients.values()) for (const r of set) r.write(': ping\n\n'); }, 15000);
+// keeps "last seen" right even if the server stops without the users going offline first
+setInterval(() => { const t = now(); for (const u of clients.keys()) if (isOnline(u)) q.setLastSeen.run(t, u); }, 60000);
 
-/** online people who are allowed to know about `username` (plus the user themself) */
+/** connected people who are allowed to know about `username` (plus the user themself) */
 function audienceOf(username) {
-  return onlineUsers().filter((u) => u === username || core.contacts(u).has(username));
+  return connectedUsers().filter((u) => u === username || core.contacts(u).has(username));
 }
 function broadcastTo(users, event, data) { for (const u of users) emit(u, event, data); }
-function refreshAll() { for (const u of onlineUsers()) emit(u, 'refresh', {}); }
+function refreshAll() { for (const u of connectedUsers()) emit(u, 'refresh', {}); }
+
+const RECENTLY = 3 * DAY;
+/**
+ * What `viewer` may know about u's presence. Hiding "last seen" works both ways (like Telegram): when
+ * either of the two hides it, the viewer sees neither online nor the time, only "recently" (within 3 days).
+ */
+function presenceOf(u, viewer) {
+  const online = isOnline(u.username);
+  if (viewer && viewer !== u.username) {
+    const v = core.q.user.get(viewer);
+    if (u.hide_last_seen || (v && v.hide_last_seen)) return { online: false, last_seen: null, recently: online || (u.last_seen || 0) > now() - RECENTLY, hidden: true };
+  }
+  return { online, last_seen: online ? null : u.last_seen || null, recently: false };
+}
+function presenceChanged(username, online) {
+  if (!online) q.setLastSeen.run(now(), username);
+  const u = core.q.user.get(username);
+  if (!u) return;
+  for (const v of audienceOf(username)) {
+    // a hidden presence is not announced at all (the timing of the event would give it away)
+    if (v !== username && (u.hide_last_seen || core.q.user.get(v).hide_last_seen)) continue;
+    emit(v, 'presence', { user: username, ...presenceOf(u, v) });
+  }
+}
 function profileChanged(username) {
   const u = core.q.user.get(username);
   if (!u) return;
   broadcastTo(audienceOf(username), 'profile', { username, display_name: u.display_name, avatar_ver: u.avatar_ver, bio: u.bio || null });
 }
 function kick(username) {
+  const was = isOnline(username);
   const set = clients.get(username);
   if (set) for (const r of [...set]) { try { r.end(); } catch { } }
   clients.delete(username);
+  if (was) presenceChanged(username, false);
 }
 
 // ---------- permissions ----------
@@ -190,14 +241,85 @@ function cleanKeyBackup(k) {
   return { v: k.v, kdf: 'pbkdf2-sha256', iter, salt: k.salt, iv: k.iv, ct: k.ct, pub: k.pub };
 }
 
-function publicUser(u, extra) {
-  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, online: isOnline(u.username), avatar_ver: u.avatar_ver, bio: u.bio || null, ...extra };
+function publicUser(u, extra, viewer) {
+  return { username: u.username, display_name: u.display_name || null, pubkey: u.pubkey || null, avatar_ver: u.avatar_ver, bio: u.bio || null, ...presenceOf(u, viewer), ...extra };
 }
 
 function replay(user, since) {
   const gk = core.groupsOf(user).map((g) => g.gkey);
   const sql = `SELECT * FROM messages WHERE id>? AND deleted=0 AND (target=? OR sender=?${gk.length ? ` OR target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY id LIMIT 2000`;
   return db.prepare(sql).all(since, user, user, ...gk);
+}
+
+/** Reaction changes after number `since` on messages the user can see (and had already received). */
+function replayReactions(user, since, msgSince) {
+  const gk = core.groupsOf(user).map((g) => g.gkey);
+  const sql = `SELECT r.seq AS seq, r.msg_id AS id, r.username AS user, r.emoji AS emoji, m.sender AS sender, m.target AS target
+    FROM reactions r JOIN messages m ON m.id=r.msg_id
+    WHERE r.seq>? AND m.id<=? AND m.deleted=0 AND (m.target=? OR m.sender=?${gk.length ? ` OR m.target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY r.seq LIMIT 5000`;
+  return db.prepare(sql).all(since, msgSince, user, user, ...gk)
+    .map((r) => ({ seq: r.seq, id: r.id, from: r.sender, target: r.target, user: r.user, emoji: r.emoji }));
+}
+
+/**
+ * Delivery and read receipts are watermarks: receipts(username, convo) says "every message of this
+ * conversation up to id `delivered` reached one of the user's devices, up to `seen` was read".
+ * convo is 'dm:a:b' for private chats and the group key for groups. Clients get them from the
+ * user's own point of view: { convo (peer or group key), user, delivered, seen }.
+ */
+function receiptsFor(user) {
+  const gk = core.groupsOf(user).map((g) => g.gkey);
+  const pre = 'dm:' + user + ':', suf = ':' + user;
+  const rows = db.prepare(`SELECT * FROM receipts WHERE substr(convo,1,?)=? OR (substr(convo,1,3)='dm:' AND substr(convo,-?)=?)${gk.length ? ` OR convo IN (${gk.map(() => '?').join(',')})` : ''}`)
+    .all(pre.length, pre, suf.length, suf, ...gk);
+  const me = core.q.user.get(user);
+  return rows.map((r) => {
+    if (!r.convo.startsWith('dm:')) return { convo: r.convo, user: r.username, delivered: r.delivered, seen: r.seen };
+    const [a, b] = r.convo.slice(3).split(':');
+    // hiding "seen" works both ways in private chats: who hides it does not see it from others either
+    return { convo: a === user ? b : a, user: r.username, delivered: r.delivered, seen: r.username !== user && me.hide_seen ? 0 : r.seen };
+  });
+}
+
+function applyReceipt(user, me, it) {
+  const tr = resolveTarget(user, String((it && it.target) || '').toLowerCase());
+  if (tr.error) return;
+  const key = tr.type === 'group' ? tr.cat.gkey : core.convoKey(user, tr.peer);
+  // never past the newest message that actually came in
+  const max = tr.type === 'group' ? q.maxIn.get(key).m : q.maxFrom.get(tr.peer, user).m;
+  const num = (x) => (Number.isInteger(x) && x > 0 ? Math.min(x, max) : 0);
+  const old = q.rcpt.get(user, key) || { delivered: 0, seen: 0 };
+  const seen = Math.max(old.seen, tr.type === 'dm' && me.hide_seen ? 0 : num(it.seen));
+  const delivered = Math.max(old.delivered, num(it.delivered), num(it.seen));
+  if (seen === old.seen && delivered === old.delivered) return;
+  q.setRcpt.run(user, key, delivered, seen);
+  if (tr.type === 'group') {
+    for (const u of core.membersOf(tr.cat.id)) emit(u, 'receipt', { convo: key, user, delivered, seen });
+  } else {
+    const peer = core.q.user.get(tr.peer);
+    emit(tr.peer, 'receipt', { convo: user, user, delivered, seen: peer && peer.hide_seen ? 0 : seen });
+    emit(user, 'receipt', { convo: tr.peer, user, delivered, seen }); // the user's other devices: read there too
+  }
+}
+
+/** The user may see message m (and react to it). */
+function canSee(user, m) {
+  if (!m || m.deleted || m.kind.startsWith('sig_')) return false;
+  if (m.target === 'all' || /^g:\d+$/.test(m.target)) { const cat = core.groupByKey(m.target); return !!cat && core.isMember(user, cat.id); }
+  return m.sender === user || m.target === user;
+}
+
+// at least one emoji, no letters, digits or spaces, at most a few code units (flags, skin tones, ZWJ sequences)
+const EMOJI_RE = /^[^\x00-\x7f]{1,16}$/;
+const okEmoji = (e) => typeof e === 'string' && EMOJI_RE.test(e) && /\p{Extended_Pictographic}|\p{Regional_Indicator}/u.test(e);
+
+/** What a closed web app shows for a new message: never its text (that is end-to-end encrypted). */
+function pushData(m, tr) {
+  const sender = core.q.user.get(m.sender);
+  const who = (sender && sender.display_name) || m.sender;
+  return tr.type === 'group'
+    ? { t: 'msg', convo: tr.cat.gkey, id: m.id, title: tr.cat.name, body: who + ': پیام تازه' }
+    : { t: 'msg', convo: m.sender, id: m.id, title: who, body: 'پیام تازه' };
 }
 
 /** Edits and deletions after change number `since` of messages the user can see (and had already received). */
@@ -275,13 +397,96 @@ async function route(req, res) {
 
   if (p === '/api/me' && req.method === 'GET') {
     const u = core.q.user.get(user);
-    return send(res, 200, { username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null });
+    return send(res, 200, {
+      username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
+      hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen,
+    });
   }
 
   if (p === '/api/users' && req.method === 'GET') {
-    const out = [publicUser(core.q.user.get(user), { dm: false })];
-    for (const [name, v] of core.contacts(user)) out.push(publicUser(core.q.user.get(name), { dm: v.dm }));
+    const out = [publicUser(core.q.user.get(user), { dm: false }, user)];
+    for (const [name, v] of core.contacts(user)) out.push(publicUser(core.q.user.get(name), { dm: v.dm }, user));
     return send(res, 200, out);
+  }
+
+  // privacy: hide "seen" (private chats) and "last seen / online"; both work both ways
+  if (p === '/api/privacy' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const u = core.q.user.get(user);
+    const hs = typeof b.hide_seen === 'boolean' ? b.hide_seen : !!u.hide_seen;
+    const hl = typeof b.hide_last_seen === 'boolean' ? b.hide_last_seen : !!u.hide_last_seen;
+    q.setPrivacy.run(hs ? 1 : 0, hl ? 1 : 0, user);
+    if (hl !== !!u.hide_last_seen) {
+      const nu = core.q.user.get(user);
+      for (const v of audienceOf(user)) if (v !== user) emit(v, 'presence', { user, ...presenceOf(nu, v) });
+    }
+    return send(res, 200, { hide_seen: hs, hide_last_seen: hl });
+  }
+
+  // the app went to the foreground / background on device `dev`
+  if (p === '/api/presence' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const dev = String(b.dev || '').slice(0, 64);
+    const set = clients.get(user);
+    const was = isOnline(user);
+    if (set && dev) for (const r of set) if (r.dev === dev) r.active = !!b.active;
+    if (was !== isOnline(user)) presenceChanged(user, !was);
+    return send(res, 200, { ok: true });
+  }
+
+  // delivered / seen watermarks, several conversations at once: { items: [{ target, delivered, seen }] }
+  if (p === '/api/receipts' && req.method === 'POST') {
+    const b = await readJson(req, 65536);
+    const me = core.q.user.get(user);
+    for (const it of (Array.isArray(b.items) ? b.items : []).slice(0, 500)) applyReceipt(user, me, it);
+    return send(res, 200, { ok: true });
+  }
+
+  // "typing…" in a group (private chats use the older sig_typing signal)
+  if (p === '/api/typing' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const tr = resolveTarget(user, String(b.target || '').toLowerCase());
+    if (tr.error) return send(res, tr.code, { error: tr.error });
+    if (tr.type === 'group') { for (const u of core.membersOf(tr.cat.id)) if (u !== user) emit(u, 'typing', { convo: tr.cat.gkey, from: user }); }
+    else emit(tr.peer, 'typing', { convo: user, from: user });
+    return send(res, 200, { ok: true });
+  }
+
+  // emoji reaction: one per person per message; emoji null removes it
+  if (p === '/api/react' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const m = q.msg.get(Number(b.id));
+    if (!canSee(user, m)) return send(res, 404, { error: 'no_such_message' });
+    const tr = resolveTarget(user, m.sender === user || /^g:\d+$|^all$/.test(m.target) ? m.target : m.sender);
+    if (tr.error) return send(res, tr.code, { error: tr.error });
+    const emoji = b.emoji == null || b.emoji === '' ? null : b.emoji;
+    if (emoji !== null && !okEmoji(emoji)) return send(res, 400, { error: 'bad_emoji' });
+    const cur = q.myReact.get(m.id, user);
+    if ((cur ? cur.emoji : null) === emoji) return send(res, 200, { ok: true });
+    const seq = q.maxReact.get().s + 1;
+    q.react.run(m.id, user, emoji, seq);
+    const ev = { seq, id: m.id, from: m.sender, target: m.target, user, emoji };
+    for (const u of new Set(msgAudience(m))) emit(u, 'react', ev);
+    return send(res, 200, { ok: true, seq });
+  }
+
+  // ---- Web Push for the web version (notifications while it is closed) ----
+  if (p === '/api/push/key' && req.method === 'GET') return send(res, 200, { key: push.publicKey() });
+  if (p === '/api/push/subscribe' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    if (!push.subscribe(user, a.th, b.subscription)) return send(res, 400, { error: 'bad_subscription' });
+    return send(res, 200, { ok: true });
+  }
+  if (p === '/api/push/unsubscribe' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    push.unsubscribe(user, b.endpoint);
+    return send(res, 200, { ok: true });
+  }
+  // sends a test notification to this user's browsers and reports what the push services answered
+  if (p === '/api/push/test' && req.method === 'POST') {
+    if (limited('push:' + user, 10)) return send(res, 429, { error: 'rate_limited' });
+    addFail('push:' + user);
+    return send(res, 200, { results: await push.notify(user, { t: 'test', title: 'سپن', body: 'اعلان آزمایشی رسید ✓' }) });
   }
 
   if (p === '/api/groups' && req.method === 'GET') {
@@ -361,24 +566,34 @@ async function route(req, res) {
     res.write('retry: 2000\n\n');
     // csince: last edit/delete the client has seen; -1 = none yet (it only learns the current number)
     const csParam = url.searchParams.get('csince');
-    for (const m of replay(user, since)) res.write(`id: ${m.id}\nevent: msg\ndata: ${JSON.stringify(msgJson(m))}\n\n`);
+    // rsince: last reaction change the client has seen; -1 = none yet (it only learns the current number)
+    const rsParam = url.searchParams.get('rsince');
+    for (const m of replay(user, since)) res.write(`id: ${m.id}\nevent: msg\ndata: ${JSON.stringify(msgJson(m, q.reactsOf.all(m.id)))}\n\n`);
     if (csParam != null) {
       const cs = Number(csParam);
       if (Number.isInteger(cs) && cs >= 0) for (const c of replayChanges(user, cs, since)) res.write(`event: change\ndata: ${JSON.stringify(c)}\n\n`);
       res.write(`event: cseq\ndata: ${JSON.stringify({ seq: q.maxChange.get().s })}\n\n`);
     }
+    if (rsParam != null) {
+      const rs = Number(rsParam);
+      if (Number.isInteger(rs) && rs >= 0) for (const r of replayReactions(user, rs, since)) res.write(`event: react\ndata: ${JSON.stringify(r)}\n\n`);
+      res.write(`event: rseq\ndata: ${JSON.stringify({ seq: q.maxReact.get().s })}\n\n`);
+      res.write(`event: receipts\ndata: ${JSON.stringify({ list: receiptsFor(user) })}\n\n`);
+    }
     for (const pn of pinsFor(user)) res.write(`event: pin\ndata: ${JSON.stringify(pn)}\n\n`);
+    // clients from before 1.4 send no `active`: they count as on screen whenever connected, as before
+    res.dev = String(url.searchParams.get('dev') || '').slice(0, 64);
+    res.active = url.searchParams.get('active') !== '0';
     let set = clients.get(user);
-    const first = !set || !set.size;
     if (!set) clients.set(user, (set = new Set()));
+    const wasOnline = isOnline(user);
     set.add(res);
-    if (first) broadcastTo(audienceOf(user), 'presence', { user, online: true });
+    if (!wasOnline && isOnline(user)) presenceChanged(user, true);
     req.on('close', () => {
+      const was = isOnline(user);
       set.delete(res);
-      if (!set.size) {
-        if (clients.get(user) === set) clients.delete(user);
-        broadcastTo(audienceOf(user), 'presence', { user, online: false });
-      }
+      if (!set.size && clients.get(user) === set) clients.delete(user);
+      if (was && !isOnline(user)) presenceChanged(user, false);
     });
     return;
   }
@@ -404,8 +619,10 @@ async function route(req, res) {
     const ts = now();
     const r = q.addMsg.run(user, target, kind, b.payload, fileId, ts);
     const m = { id: Number(r.lastInsertRowid), sender: user, target, kind, payload: b.payload, file_id: fileId, ts };
-    if (tr.type === 'group') for (const u of core.membersOf(tr.cat.id)) emit(u, 'msg', msgJson(m), m.id);
-    else { emit(target, 'msg', msgJson(m), m.id); emit(user, 'msg', msgJson(m), m.id); }
+    const recipients = tr.type === 'group' ? core.membersOf(tr.cat.id) : [target, user];
+    for (const u of recipients) emit(u, 'msg', msgJson(m), m.id);
+    // nobody has the app on screen: wake their closed web apps (iPhone) with a notification
+    for (const u of recipients) if (u !== user && !isOnline(u) && push.hasSubs(u)) push.notify(u, pushData(m, tr)).catch(() => { });
     return send(res, 200, { id: m.id, ts });
   }
 
@@ -426,6 +643,7 @@ async function route(req, res) {
     } else {
       q.delMsg.run(m.id);
       db.prepare('DELETE FROM msg_history WHERE msg_id=?').run(m.id);
+      q.delReacts.run(m.id);
     }
     const kind = p === '/api/edit' ? 'edit' : 'del';
     const seq = Number(q.addChange.run(m.id, kind, t).lastInsertRowid);
@@ -626,6 +844,8 @@ function cleanup() {
     db.prepare('DELETE FROM files WHERE ts<?').run(fcut);
     db.prepare('DELETE FROM messages WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
+    db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)').run();
+    push.cleanup();
     db.prepare('DELETE FROM msg_changes WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM sessions WHERE created<?').run(now() - SESSION_DAYS * DAY);
     for (const u of db.prepare('SELECT id FROM uploads WHERE ts<?').all(now() - DAY)) {
@@ -646,7 +866,7 @@ stats.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
-const ctx = { kick, refreshAll, profileChanged, onlineUsers, isOnline };
+const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected };
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------

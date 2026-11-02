@@ -4,7 +4,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -58,7 +60,11 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import android.widget.Toast
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.platform.LocalContext
 
 @Composable
 fun Avatar(name: String, online: Boolean, size: Int = 48) {
@@ -144,13 +150,26 @@ fun LoginScreen() {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: () -> Unit) {
+    val ctx = LocalContext.current
     val tick by Engine.tick.collectAsState()
     val users by Engine.users.collectAsState()
     val connected by Engine.connected.collectAsState()
-    val rows = remember(tick, users) { Engine.summaries() }
+    val chatTick by Prefs.chatTick.collectAsState()
+    val receipts by Engine.receipts.collectAsState()
+    val hideSeen by Engine.hideSeen.collectAsState()
+    val typing by Engine.typing.collectAsState()
+    val gtyping by Engine.gtyping.collectAsState()
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(typing, gtyping) { now = System.currentTimeMillis(); delay(4600); now = System.currentTimeMillis() }
+    val pinned = remember(chatTick) { Prefs.pinnedChats() }
+    val rows = remember(tick, users, pinned) {
+        val all = Engine.summaries()
+        pinned.mapNotNull { p -> all.firstOrNull { it.convo == p } } + all.filter { it.convo !in pinned }
+    }
+    var rowMenu by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
     var addContact by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
@@ -193,21 +212,48 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
             items(rows, key = { it.convo }) { r ->
               Column {
                 val online = users.firstOrNull { it.username == r.convo }?.online ?: false
+                val isPinned = r.convo in pinned
+                val draft = remember(chatTick, r.convo) { Prefs.draft(r.convo) }
+                val group = Engine.isGroup(r.convo)
+                val typers = if (group) Engine.typingIn(r.convo, now) else emptyList()
+                val typingNow = if (group) typers.isNotEmpty() else now - (typing[r.convo] ?: 0L) < 4500
+                Box {
                 Row(
-                    Modifier.fillMaxWidth().clickable { onOpen(r.convo) }.padding(horizontal = 14.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(r.convo) }, onLongClick = { rowMenu = r.convo })
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Avatar(r.convo, online)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(Engine.titleOf(r.convo), fontWeight = FontWeight.SemiBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
-                            r.last?.let { Text(U.time(it.ts), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) }
+                            Text(Engine.titleOf(r.convo), fontWeight = FontWeight.SemiBold, fontSize = 16.sp, modifier = Modifier.weight(1f),
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            val last = r.last
+                            val t = last?.let { Engine.tickOf(it, receipts).also { hideSeen } }
+                            if (t != null) Text(
+                                if (t == "seen") "✓✓ " else "✓ ", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                                color = if (t == "sent") MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f) else MaterialTheme.colorScheme.primary
+                            )
+                            last?.let { Text(U.time(it.ts), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) }
                         }
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            val prev = r.last?.let { (if (Engine.isGroup(r.convo) && !it.mine) Engine.nameOf(it.sender) + ": " else if (it.mine) "شما: " else "") + U.preview(it) } ?: "هنوز پیامی نیست"
-                            Text(prev, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.weight(1f))
+                            val dim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            when {
+                                typingNow -> Text(
+                                    if (group) (if (typers.size == 1) Engine.nameOf(typers[0]) else "${typers.size} نفر") + " در حال نوشتن…" else "در حال نوشتن…",
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f)
+                                )
+                                draft.isNotBlank() -> Row(Modifier.weight(1f)) {
+                                    Text("پیش‌نویس: ", fontSize = 14.sp, color = MaterialTheme.colorScheme.error)
+                                    Text(draft.replace('\n', ' '), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim)
+                                }
+                                else -> {
+                                    val prev = r.last?.let { (if (group && !it.mine) Engine.nameOf(it.sender) + ": " else if (it.mine) "شما: " else "") + U.preview(it) } ?: "هنوز پیامی نیست"
+                                    Text(prev, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim, modifier = Modifier.weight(1f))
+                                }
+                            }
+                            if (isPinned && r.unread == 0) Text("📌", fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
                             if (r.unread > 0) {
                                 Box(Modifier.padding(start = 8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).padding(horizontal = 7.dp, vertical = 2.dp)) {
                                     Text(r.unread.toString(), color = Color.White, fontSize = 12.sp)
@@ -215,6 +261,13 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                             }
                         }
                     }
+                }
+                DropdownMenu(expanded = rowMenu == r.convo, onDismissRequest = { rowMenu = null }) {
+                    DropdownMenuItem(text = { Text(if (isPinned) "برداشتن سنجاق" else "سنجاق به بالای فهرست") }, onClick = {
+                        rowMenu = null
+                        if (!Prefs.togglePinned(r.convo)) Toast.makeText(ctx, "حداکثر ${Prefs.MAX_PINNED} گفتگو را می‌شود سنجاق کرد", Toast.LENGTH_SHORT).show()
+                    })
+                }
                 }
                 HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
               }
