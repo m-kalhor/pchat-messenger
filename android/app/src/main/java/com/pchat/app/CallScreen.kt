@@ -150,10 +150,15 @@ fun CallScreen() {
         else -> ""
     }
     val remoteVideo = s.video && remote != null && s.phase == CallPhase.ACTIVE
+    // 1.8: tap the small picture to swap it with the big one (like Telegram); tap again to swap back
+    var swapped by remember(s.callId) { mutableStateOf(false) }
+    val showLocal = s.video && local != null && s.phase != CallPhase.INCOMING
+    val swap = swapped && remoteVideo && showLocal
 
     Box(Modifier.fillMaxSize().background(Color(0xFF101820))) {
         if (remoteVideo) {
-            VideoView(remote, false, false, Modifier.fillMaxSize())
+            // the two views stay where they are; only the pictures they show change places
+            VideoView(if (swap) local else remote, swap && s.front, false, Modifier.fillMaxSize())
         } else {
             Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                 Avatar(s.peer, false, 120)
@@ -166,11 +171,10 @@ fun CallScreen() {
             Text(Engine.nameOf(s.peer), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Text(status, color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
         }
-        if (s.video && local != null && s.phase != CallPhase.INCOMING) {
-            VideoView(
-                local, s.front, true,
-                Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp).size(width = 110.dp, height = 150.dp).clip(RoundedCornerShape(12.dp))
-            )
+        if (showLocal) {
+            val small = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp).size(width = 110.dp, height = 150.dp).clip(RoundedCornerShape(12.dp))
+            VideoView(if (swap) remote else local, !swap && s.front, true, small)
+            if (remoteVideo) Box(small.clickable { swapped = !swapped })
         }
         Row(
             Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 36.dp),
