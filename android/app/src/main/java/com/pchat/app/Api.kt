@@ -251,6 +251,10 @@ object Api {
     }
 
     /** {hide_seen, hide_last_seen, ...} of my account. */
+    /** Call diagnostics (1.7 test feature, listed admins only): the server's traceroute to me and to [peer]. */
+    fun diagTrace(peer: String): JSONObject =
+        JSONObject(exec(req("/api/diag/trace").post(JSONObject().put("peer", peer).toString().toRequestBody(JSON)).build()))
+
     fun me(): JSONObject = JSONObject(exec(req("/api/me").get().build()))
 
     /** Saves my privacy switches; returns the stored values. */

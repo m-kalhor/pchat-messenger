@@ -189,5 +189,10 @@ fun CallScreen() {
                 RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
             }
         }
+        // 1.7 test feature: ping and route for the admins listed in the panel (see Diag.kt)
+        val diagOn by Engine.diag.collectAsState()
+        if (diagOn && s.phase != CallPhase.INCOMING && s.phase != CallPhase.IDLE) {
+            DiagOverlay(s.peer, Modifier.align(Alignment.CenterStart).statusBarsPadding().padding(start = 8.dp, top = 90.dp))
+        }
     }
 }
