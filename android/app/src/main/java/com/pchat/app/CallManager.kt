@@ -273,7 +273,8 @@ object CallManager {
     // ------------------------------------------------------------ WebRTC plumbing
 
     @Synchronized
-    private fun ensureFactory(): PeerConnectionFactory {
+    /** Also used by Lan.kt (direct file transfer on the same Wi-Fi). */
+    internal fun ensureFactory(): PeerConnectionFactory {
         factory?.let { return it }
         PeerConnectionFactory.initialize(PeerConnectionFactory.InitializationOptions.builder(app).createInitializationOptions())
         val adm = JavaAudioDeviceModule.builder(app)

@@ -751,6 +751,8 @@ object Engine {
                 val kind = o.getString("kind")
                 if (kind == "sig_typing") {
                     typing.value = typing.value + (o.getString("from") to System.currentTimeMillis())
+                } else if (kind == "sig_lan") {
+                    Lan.onSignal(o.getString("from"), o.getString("payload"))
                 } else {
                     CallManager.onSignal(o.getString("from"), kind, o.getString("payload"))
                 }
@@ -769,9 +771,11 @@ object Engine {
         val convo = if (isGroup(target)) target else if (mine) target else from
         val visible = appVisible && currentConvo == convo
 
+        var lx: String? = null
         val msg: Msg = try {
             val pub = if (mine) null else (pubOf(from) ?: run { refreshUsers(); pubOf(from) })
             val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, target, pub, payload), Charsets.UTF_8))
+            if (!mine) lx = plain.optString("lx").ifEmpty { null }
             val r = plain.optJSONObject("r")
             val f = plain.optJSONObject("f")
             val t = plain.optString("t", "text")
@@ -798,6 +802,7 @@ object Engine {
                 null, null, null, 0, null, 0, 0, 0L, null, null, null, true)
         }
         val isNew = db.insert(msg)
+        if (isNew && lx != null && fileId != null) lanServerMessage(lx!!, msg)
         if (!isNew && msg.reactions.isNotEmpty()) db.setReactions(id, msg.reactions)
         if (!mine) ack(convo, id, if (msg.read) id else 0)
         if (isNew && !msg.read) postNotification(msg)
@@ -1339,11 +1344,11 @@ object Engine {
         val f = File(mediaDir(), "out_${-localId}")
         if (!rec.renameTo(f)) { rec.copyTo(f, overwrite = true); rec.delete() }
         val now = System.currentTimeMillis()
-        db.insert(
-            Msg(localId, convo, me, true, now, "voice", "", null, "voice-$now.m4a", "audio/mp4", f.length(), Crypto.newFileKey(), 0, 0,
+        val vm = Msg(localId, convo, me, true, now, "voice", "", null, "voice-$now.m4a", "audio/mp4", f.length(), Crypto.newFileKey(), 0, 0,
                 reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, f.absolutePath, true,
                 status = 1, dur = durMs, wave = wave)
-        )
+        db.insert(vm)
+        Lan.offer(vm)
         tick.value++
         scope.launch { flushFiles() }
     }
@@ -1494,12 +1499,12 @@ object Engine {
                 val dim = imageSizeOf(f.absolutePath)
                 if (dim != null) { type = "image"; w = dim.first; h = dim.second }
             }
-            db.insert(
-                Msg(localId, convo, me, true, System.currentTimeMillis(), type, "", null, name, mime, size,
+            val fm = Msg(localId, convo, me, true, System.currentTimeMillis(), type, "", null, name, mime, size,
                     Crypto.newFileKey(), w, h,
                     reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) },
                     f.absolutePath, true, status = 1)
-            )
+            db.insert(fm)
+            Lan.offer(fm)
             tick.value++
             scope.launch { flushFiles() }
             staged = null
@@ -1623,7 +1628,10 @@ object Engine {
             db.setUploadId(m.id, "f:$fileId")
         }
 
-        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plainOf(m.copy(fkey = fkey)).toString().toByteArray()), fileId)
+        // 1.8: the transfer id of the direct Wi-Fi copy, so the receiver can use that instead of downloading
+        val plainFile = plainOf(m.copy(fkey = fkey)).also { p -> Lan.idOf(m.id)?.let { p.put("lx", it) } }
+        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plainFile.toString().toByteArray()), fileId)
+        Lan.forget(m.id)
         val dest = File(mediaDir(), fileId!!)
         if (f != null && f.exists() && f.absolutePath != dest.absolutePath) {
             if (known) { if (!dest.exists()) f.copyTo(dest) } else if (!f.renameTo(dest)) { f.copyTo(dest, overwrite = true); f.delete() }
@@ -1634,6 +1642,50 @@ object Engine {
         db.delete(m.id)
         setProgress(m.id, null)
         tick.value++
+    }
+
+    // ---------------- direct transfer on the same Wi-Fi (1.8, see Lan.kt) ----------------
+
+    /** inside media/ so the share / open-with provider can reach a file that came over Wi-Fi */
+    fun lanDir(): File = File(mediaDir(), "lan").also { it.mkdirs() }
+    /** transfer id -> (temporary message id, file) for files that came over Wi-Fi before the server message */
+    private val lanDone = java.util.concurrent.ConcurrentHashMap<String, Pair<Long, File>>()
+    /** transfer id -> the server message, when that came first */
+    private val lanReal = java.util.concurrent.ConcurrentHashMap<String, Msg>()
+
+    /** A file arrived directly over the local network: shown at once, the server copy's message replaces it later. */
+    fun lanArrived(from: String, meta: JSONObject, x: String, file: File) {
+        lanReal.remove(x)?.let { real -> lanAttach(real, file); return }
+        val t = meta.optString("t", "file")
+        val voice = t == "file" && meta.optInt("v", 0) == 1
+        val wf = meta.optJSONArray("wf")
+        val id = -System.nanoTime()
+        db.insert(
+            Msg(id, from, from, false, System.currentTimeMillis(), if (voice) "voice" else if (t == "image") "image" else "file", "",
+                null, meta.optString("n", "file"), meta.optString("m").ifEmpty { null }, meta.optLong("s", file.length()),
+                meta.optString("fk"), meta.optInt("w", 0), meta.optInt("h", 0), 0L, null, null, file.absolutePath,
+                appVisible && currentConvo == from,
+                dur = if (voice) meta.optLong("d", 0).coerceAtLeast(0) else 0,
+                wave = if (voice && wf != null) (0 until minOf(wf.length(), 100)).map { wf.optInt(it).coerceIn(0, 31) } else emptyList())
+        )
+        lanDone[x] = id to file
+        tick.value++
+    }
+
+    private fun lanAttach(real: Msg, file: File) {
+        val fid = real.fileId ?: return
+        val dest = File(mediaDir(), fid)
+        if (dest.exists()) file.delete() else if (!file.renameTo(dest)) { file.copyTo(dest, overwrite = true); file.delete() }
+        db.setLocalPath(real.id, dest.absolutePath)
+        tick.value++
+    }
+
+    /** The server message of a file sent over Wi-Fi too: it takes the file (no download), the temporary message goes. */
+    private fun lanServerMessage(x: String, real: Msg) {
+        val d = lanDone.remove(x)
+        if (d == null) { lanReal[x] = real; return }
+        db.delete(d.first)
+        lanAttach(real, d.second)
     }
 
     // ---------------- downloading ----------------
