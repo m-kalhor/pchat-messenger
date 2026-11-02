@@ -2,8 +2,8 @@
 // network. Always tries the network first (so updates arrive at once) and never touches /api.
 // It also shows Web Push notifications while the app is closed (iPhone, iOS 16.4+) and reports the
 // message as delivered, so the sender's tick turns blue.
-const CACHE = 'sepan-shell-v2';
-const SHELL = ['/', '/app.css', '/app.mjs', '/engine.mjs', '/api.mjs', '/crypto.mjs', '/store.mjs', '/call.mjs', '/webp.mjs', '/emoji.mjs', '/voice.mjs', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
+const CACHE = 'sepan-shell-v3';
+const SHELL = ['/', '/app', '/app.css', '/app.mjs', '/engine.mjs', '/api.mjs', '/crypto.mjs', '/store.mjs', '/call.mjs', '/webp.mjs', '/emoji.mjs', '/voice.mjs', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -17,7 +17,7 @@ self.addEventListener('fetch', (e) => {
   e.respondWith(fetch(e.request).then((res) => {
     if (res.ok) { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(e.request, copy)); }
     return res;
-  }).catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('/'))));
+  }).catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('/app'))));
 });
 
 /** The session token the app keeps in IndexedDB (store.mjs, store "kv"); null if logged out. */

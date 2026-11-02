@@ -1,0 +1,17 @@
+/* public intro page shown on a domain name (web.js introPage) */
+:root{--bg:#f4f7fb;--card:#fff;--text:#1b2733;--mut:#5b6b7b;--pri:#1E88E5;--line:#e3e9f0}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1720;--card:#17212b;--text:#e8eef5;--mut:#8aa0b5;--line:#243140}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.9 Tahoma,"Vazirmatn",system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:32px 16px 48px}
+header{text-align:center;margin-bottom:12px}
+header img{border-radius:20px}
+h1{font-size:26px;margin:12px 0 4px}
+h2{font-size:18px;margin:0 0 6px;color:var(--pri)}
+section{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 20px;margin:14px 0}
+section p{margin:4px 0}
+ul{margin:0;padding-inline-start:22px}
+nav{display:flex;gap:12px;justify-content:center;flex-wrap:wrap;margin:20px 0}
+.btn{display:inline-block;padding:12px 24px;border-radius:12px;background:var(--pri);color:#fff;text-decoration:none;font-weight:bold}
+.btn.alt{background:transparent;color:var(--pri);border:2px solid var(--pri)}
+footer{text-align:center;color:var(--mut);font-size:13px;margin-top:24px}

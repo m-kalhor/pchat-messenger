@@ -8,6 +8,7 @@ const { db, DATA_DIR, getSetting, setSetting, checkPassword, hashPassword } = re
 const core = require('./core');
 const stats = require('./stats');
 const backup = require('./backup');
+const auth = require('./auth');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
 const sessions = new Map(); // token -> { csrf, ts }
@@ -15,7 +16,7 @@ const fails = new Map();
 let gfail = { n: 0, t: 0 }; // global failed-login counter (all IPs)
 const SESSION_MS = 12 * 3600 * 1000;
 const NAME = /^[a-z0-9_]{2,20}$/;
-/** Mobile number for the future SMS login: optional +, 7 to 15 digits (spaces, dashes and brackets are dropped). */
+/** Mobile number for the SMS login: optional +, 7 to 15 digits (spaces, dashes and brackets are dropped). */
 const PHONE = /^\+?[0-9]{7,15}$/;
 const ADMIN_NAME = /^[a-z0-9_.\-]{3,32}$/;
 const adminUser = () => getSetting('admin_user', 'admin');
@@ -59,6 +60,41 @@ function stateDump(ctx) {
     visibility: db.prepare('SELECT viewer, target FROM visibility').all().map((r) => [r.viewer, r.target]),
     blocks: db.prepare('SELECT viewer, target FROM blocks').all().map((r) => [r.viewer, r.target]),
   };
+}
+
+function authInfo(ctx) {
+  const c = auth.smsConfig();
+  const apk = ctx.apkInfo ? ctx.apkInfo() : null;
+  return {
+    api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
+    enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
+    open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
+  };
+}
+
+const APK_MAX = 200 * 1024 * 1024;
+/** Streams the upload to a temp file, checks it is a zip (an APK is one) and moves it in place. */
+function saveApk(req, dest) {
+  return new Promise((resolve, reject) => {
+    const tmp = dest + '.part';
+    const out = fs.createWriteStream(tmp);
+    let size = 0, head = null, failed = false;
+    const fail = (e) => { if (failed) return; failed = true; out.destroy(); try { fs.unlinkSync(tmp); } catch { } reject(e); };
+    req.on('data', (c) => {
+      if (!head) head = c.subarray(0, 4);
+      size += c.length;
+      if (size > APK_MAX) { fail(Object.assign(new Error('too_large'), { code: 413 })); req.destroy(); }
+    });
+    req.on('error', fail);
+    out.on('error', fail);
+    out.on('finish', () => {
+      if (failed) return;
+      if (!head || head.length < 4 || head.readUInt32LE(0) !== 0x04034b50 || size < 1024) return fail(new Error('not_an_apk'));
+      fs.renameSync(tmp, dest);
+      resolve();
+    });
+    req.pipe(out);
+  });
 }
 
 function backupInfo() {
@@ -145,6 +181,16 @@ async function route(ctx, req, res, secure) {
       if (u && typeof u.phone === 'string') { u.phone = u.phone.replace(/[\s\-()]/g, '').replace(/[۰-۹]/g, (d) => d.charCodeAt(0) - 0x6f0).replace(/[٠-٩]/g, (d) => d.charCodeAt(0) - 0x660); if (u.phone && !PHONE.test(u.phone)) return json(res, 400, { error: 'bad_phone' }); }
     }
     for (const name of Object.keys(users)) if (!core.q.user.get(name)) return json(res, 400, { error: 'no_such_user', detail: name });
+    // one number signs in one account: the same mobile on two users would make the SMS login ambiguous
+    const phones = new Map(db.prepare('SELECT username, phone FROM users').all().map((r) => [r.username, r.phone || '']));
+    for (const [name, u] of Object.entries(users)) if (u && typeof u.phone === 'string') phones.set(name, u.phone);
+    const seen = new Map();
+    for (const [name, ph] of phones) {
+      const n = ph && auth.normPhone(ph);
+      if (!n) continue;
+      if (seen.has(n)) return json(res, 400, { error: 'duplicate_phone', detail: seen.get(n) + ', ' + name });
+      seen.set(n, name);
+    }
     for (const [id, name] of Object.entries(cats)) if (!/^\d+$/.test(id) || !core.cleanDisplay(name)) return json(res, 400, { error: 'bad_name', detail: id });
     for (const p of vis) {
       if (!Array.isArray(p) || !NAME.test(p[0] || '') || !NAME.test(p[1] || '') || p[0] === p[1]) return json(res, 400, { error: 'bad_pair' });
@@ -192,7 +238,83 @@ async function route(ctx, req, res, secure) {
     } catch (e) { return json(res, 400, { error: e.message }); }
   }
 
-  let m = /^\/users\/([a-z0-9_]{2,20})\/(update|reset|delete)$/.exec(sub);
+  // ---- public intro page shown when the web app is opened by a domain name ----
+  if (sub === '/site' && req.method === 'GET') {
+    return json(res, 200, { title: getSetting('site_title', ''), about: getSetting('site_about', ''), contact: getSetting('site_contact', '') });
+  }
+  if (sub === '/site' && req.method === 'POST') {
+    const b = await readJson(req, 16384);
+    for (const [k, max] of [['title', 100], ['about', 3000], ['contact', 1000]]) {
+      if (b[k] === undefined) continue;
+      if (typeof b[k] !== 'string' || b[k].length > max) return json(res, 400, { error: 'bad_text' });
+      setSetting('site_' + k, b[k].trim());
+    }
+    return json(res, 200, { ok: true });
+  }
+
+  // ---- sign-in: sms.ir settings, password login on/off, SMS state ----
+  if (sub === '/auth' && req.method === 'GET') return json(res, 200, authInfo(ctx));
+  if (sub === '/auth' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    if (typeof b.api_key === 'string' && b.api_key.trim()) {
+      const k = b.api_key.trim();
+      if (k.length > 200 || /[^\x21-\x7e]/.test(k)) return json(res, 400, { error: 'bad_api_key' });
+      setSetting('sms_api_key', k);
+      setSetting('sms_last_error', 'null'); // a new key: the old failure no longer says anything
+    }
+    if (b.api_key === null) setSetting('sms_api_key', '');
+    if (b.template_id !== undefined) {
+      const t = String(b.template_id).trim();
+      if (t && !/^\d{1,12}$/.test(t)) return json(res, 400, { error: 'bad_template_id' });
+      setSetting('sms_template_id', t);
+    }
+    if (typeof b.param === 'string') {
+      const pn = b.param.trim() || 'CODE';
+      if (!/^[A-Za-z0-9_]{1,40}$/.test(pn)) return json(res, 400, { error: 'bad_param' });
+      setSetting('sms_param', pn);
+    }
+    if (typeof b.enabled === 'boolean') setSetting('sms_enabled', b.enabled ? '1' : '0');
+    if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
+    if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
+    if (b.signup_category !== undefined) {
+      const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);
+      if (c && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(Number(c))) return json(res, 400, { error: 'bad_category' });
+      setSetting('signup_category', c);
+    }
+    return json(res, 200, authInfo(ctx));
+  }
+  // sends one real SMS with a test code, to check the key, the template and that the server reaches sms.ir
+  if (sub === '/auth/test' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const phone = auth.normPhone(b.phone);
+    if (!phone) return json(res, 400, { error: 'bad_phone' });
+    try { await auth.sendSms(phone, String(crypto.randomInt(10000, 100000))); return json(res, 200, { ok: true, ...authInfo(ctx) }); }
+    catch (e) { return json(res, 200, { ok: false, error: e.name === 'TimeoutError' ? 'timeout' : e.message, ...authInfo(ctx) }); }
+  }
+  if (sub === '/auth/credit' && req.method === 'GET') {
+    try { return json(res, 200, { credit: await auth.smsCredit() }); }
+    catch (e) { return json(res, 200, { error: e.name === 'TimeoutError' ? 'timeout' : e.message }); }
+  }
+
+  // ---- the Android app offered for download on the web login page (raw APK as the request body) ----
+  if (sub === '/apk' && req.method === 'POST') {
+    try { await saveApk(req, ctx.apkPath); } catch (e) { return json(res, e.code === 413 ? 413 : 400, { error: e.message }); }
+    return json(res, 200, authInfo(ctx));
+  }
+  if (sub === '/apk' && req.method === 'DELETE') {
+    try { fs.unlinkSync(ctx.apkPath); } catch { }
+    return json(res, 200, authInfo(ctx));
+  }
+
+  let m = /^\/users\/([a-z0-9_]{2,20})\/logincode$/.exec(sub);
+  if (m && req.method === 'POST') {
+    // a one-time sign-in code for a user who has no signed-in device and gets no SMS
+    if (!core.activeUser(m[1])) return json(res, 404, { error: 'no_such_user' });
+    const { code, expires } = auth.issue(m[1], 'admin');
+    return json(res, 200, { code, expires, ttl: auth.TTL.admin / 1000, phone: auth.phoneOf(m[1]) });
+  }
+
+  m = /^\/users\/([a-z0-9_]{2,20})\/(update|reset|delete)$/.exec(sub);
   if (m && req.method === 'POST') {
     const [, name, action] = m;
     const u = core.q.user.get(name);

@@ -4,7 +4,7 @@
   "description": "پیام‌رسان خصوصی و رمزنگاری‌شده",
   "lang": "fa",
   "dir": "rtl",
-  "start_url": "/",
+  "start_url": "/app",
   "scope": "/",
   "display": "standalone",
   "background_color": "#1E88E5",

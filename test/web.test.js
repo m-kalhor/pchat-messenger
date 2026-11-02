@@ -137,6 +137,46 @@ test('web listener: app, API, setup page and CA profile (plain mode)', async (t)
   assert.equal((await get(`http://127.0.0.1:${httpPort}/api/health`)).status, 302, 'no API over plain http');
 });
 
+test('a domain name: intro page at /, the app at /app, http stays on the name, ACME challenge', async (t) => {
+  const certDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pchat-web-'));
+  const ca = makeCa(certDir);
+  if (!ca) return t.skip('openssl not available');
+  const [webPort, httpPort] = [await freePort(), await freePort()];
+  const S = await startServer({ WEB_DISABLE: '0', WEB_PORT: String(webPort), WEB_HTTP_PORT: String(httpPort), WEB_CERT_DIR: certDir, PUBLIC_HOST: '10.9.9.9' });
+  t.after(() => { S.stop(); fs.rmSync(certDir, { recursive: true, force: true }); });
+  await waitFor(`http://127.0.0.1:${webPort}/`);
+  const base = `http://127.0.0.1:${webPort}`;
+  const dom = { headers: { host: 'sepan.example.ir' } };
+  S.db.prepare("INSERT INTO settings(key,value) VALUES('site_contact','info@example.ir <b>') ON CONFLICT(key) DO UPDATE SET value=excluded.value").run();
+
+  const intro = await get(base + '/', dom);
+  assert.equal(intro.status, 200);
+  const html = intro.body.toString();
+  assert.match(html, /ورود به پیام‌رسان/);
+  assert.match(html, /href="\/app"/);
+  assert.match(html, /فقط برای فرستادن کد یک‌بارمصرف/, 'says what the SMS is for');
+  assert.match(html, /info@example\.ir &lt;b&gt;/, 'contact shown, escaped');
+  assert.doesNotMatch(html, /<script/);
+  assert.match((await get(base + '/app', dom)).body.toString(), /app\.mjs/, 'the app itself');
+  assert.equal((await get(base + '/welcome.css', dom)).status, 200);
+  assert.match((await get(base + '/')).body.toString(), /app\.mjs/, 'by IP / is still the app');
+  assert.match((await get(base + '/', { headers: { host: '10.9.9.9:443' } })).body.toString(), /app\.mjs/);
+
+  // plain http: a name stays a name, an IP goes to PUBLIC_HOST
+  const red = await get(`http://127.0.0.1:${httpPort}/`, dom);
+  assert.equal(red.headers.location, `https://sepan.example.ir:${webPort}/`);
+  assert.equal((await get(`http://127.0.0.1:${httpPort}/`, { headers: { host: '1.2.3.4' } })).headers.location, `https://10.9.9.9:${webPort}/`);
+  // Let's Encrypt HTTP-01 challenge files
+  const ch = path.join(S.app.dataDir, 'acme', '.well-known', 'acme-challenge');
+  fs.mkdirSync(ch, { recursive: true });
+  fs.writeFileSync(path.join(ch, 'tok_ABC-1234567'), 'tok_ABC-1234567.thumb');
+  const acme = await get(`http://127.0.0.1:${httpPort}/.well-known/acme-challenge/tok_ABC-1234567`, dom);
+  assert.equal(acme.status, 200);
+  assert.equal(acme.body.toString(), 'tok_ABC-1234567.thumb');
+  assert.equal((await get(`http://127.0.0.1:${httpPort}/.well-known/acme-challenge/nope_nope_nope`, dom)).status, 404);
+  assert.equal((await get(`http://127.0.0.1:${httpPort}/.well-known/acme-challenge/..%2F..%2Fx`, dom)).status, 302);
+});
+
 test('web listener over TLS: certificate chains to the Sepan Root CA', async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pchat-tls-'));
   const ca = makeCa(path.join(dir, 'web'));
@@ -152,6 +192,19 @@ test('web listener over TLS: certificate chains to the Sepan Root CA', async (t)
   const r = await get(`https://127.0.0.1:${webPort}/api/health`, opts);
   assert.equal(r.body.toString(), '{"ok":true}');
   await assert.rejects(get(`https://127.0.0.1:${webPort}/api/health`), 'not trusted without the CA');
+  // a domain with its own certificate (as domain.sh copies it from Let's Encrypt) is picked by SNI
+  const le = path.join(dir, 'le', 'sepan.test');
+  fs.mkdirSync(le, { recursive: true });
+  execFileSync('openssl', ['req', '-x509', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:prime256v1', '-nodes', '-keyout', path.join(le, 'key.pem'),
+    '-out', path.join(le, 'cert.pem'), '-days', '1', '-subj', '/CN=sepan.test', '-addext', 'subjectAltName=DNS:sepan.test'], { stdio: 'ignore' });
+  const peer = (servername) => new Promise((resolve, reject) => {
+    const sock = require('node:tls').connect({ host: '127.0.0.1', port: webPort, servername, rejectUnauthorized: false }, () => {
+      const c = sock.getPeerCertificate(); sock.end(); resolve(c.subject.CN);
+    });
+    sock.on('error', reject);
+  });
+  assert.equal(await peer('sepan.test'), 'sepan.test');
+  assert.equal(await peer('other.test'), '127.0.0.1', 'unknown names keep the private CA certificate');
 });
 
 /** Root CA + server certificate for 127.0.0.1, made the same way as install.sh (sepan-web-cert). */

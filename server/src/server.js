@@ -4,13 +4,14 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, DATA_DIR, hashPassword, checkPassword } = require('./db');
+const { db, DATA_DIR, hashPassword, checkPassword, getSetting } = require('./db');
 const core = require('./core');
 const contacts = require('./contacts');
 const { sanitizeWebp } = require('./webp');
 const stats = require('./stats');
 const backup = require('./backup');
 const push = require('./push');
+const auth = require('./auth');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -37,8 +38,8 @@ const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 const DUMMY = hashPassword('dummy-password');
 
 const q = {
-  addSess: db.prepare('INSERT INTO sessions(th,username,created) VALUES(?,?,?)'),
-  sess: db.prepare('SELECT s.username AS username, s.created AS created, u.disabled AS disabled FROM sessions s JOIN users u ON u.username=s.username WHERE s.th=?'),
+  addSess: db.prepare('INSERT INTO sessions(th,username,created,via,device) VALUES(?,?,?,?,?)'),
+  sess: db.prepare('SELECT s.username AS username, s.created AS created, s.via AS via, u.disabled AS disabled FROM sessions s JOIN users u ON u.username=s.username WHERE s.th=?'),
   delSess: db.prepare('DELETE FROM sessions WHERE th=?'),
   setKey: db.prepare('UPDATE users SET pubkey=? WHERE username=?'),
   setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
@@ -70,6 +71,7 @@ const q = {
   allPins: db.prepare('SELECT * FROM pins'),
   setLastSeen: db.prepare('UPDATE users SET last_seen=? WHERE username=?'),
   setPrivacy: db.prepare('UPDATE users SET hide_seen=?, hide_last_seen=? WHERE username=?'),
+  setFindable: db.prepare('UPDATE users SET findable=? WHERE username=?'),
   rcpt: db.prepare('SELECT delivered, seen FROM receipts WHERE username=? AND convo=?'),
   setRcpt: db.prepare('INSERT INTO receipts(username,convo,delivered,seen) VALUES(?,?,?,?) ON CONFLICT(username,convo) DO UPDATE SET delivered=excluded.delivered, seen=excluded.seen'),
   maxFrom: db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE sender=? AND target=?'),
@@ -123,7 +125,7 @@ function authInfo(req) {
   const row = q.sess.get(th);
   if (!row || row.disabled) return null;
   if (now() - row.created > SESSION_DAYS * DAY) { q.delSess.run(th); return null; }
-  return { user: row.username, th };
+  return { user: row.username, th, created: row.created, via: row.via };
 }
 
 // ---------- login rate limit ----------
@@ -362,6 +364,54 @@ function pinsFor(user) {
   return out;
 }
 
+const smsSent = new Map(); // phone -> time of the last SMS code (one per minute)
+const signupTickets = new Map(); // ticket -> { phone, t }: a number proven by SMS, waiting for its username
+const signupsByIp = new Map();   // ip -> { n, t }: accounts opened from this address in the last day
+const SIGNUPS_PER_IP = +(process.env.SIGNUPS_PER_IP || 5);
+const lookups = new Map(); // username -> { n, t }: numbers looked up today
+const LOOKUP_DAY = +(process.env.LOOKUP_PER_DAY || 3000);
+setInterval(() => {
+  const t = now();
+  for (const [k, v] of signupTickets) if (t - v.t > 15 * 60e3) signupTickets.delete(k);
+  for (const [k, v] of signupsByIp) if (t - v.t > DAY) signupsByIp.delete(k);
+}, 600e3).unref();
+const DEVICE_RE = /[^\p{L}\p{N} .,()\-_/]/gu;
+
+/**
+ * Opens a session for user u (signed in by `via`: password, sms, device or admin) and tells the user's
+ * other devices that a new one signed in. b.device is a short label the app sends ("Android", "iPhone web").
+ */
+function newSession(u, via, b) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const device = String(b.device || '').replace(DEVICE_RE, '').trim().slice(0, 40) || null;
+  q.addSess.run(sha256(token), u.username, now(), via, device);
+  emit(u.username, 'login_alert', { ts: now(), via, device });
+  // with a key backup the account keeps one identity key on every device: a new device restores it instead
+  const kb = keyBackupOf(u);
+  if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024 && (!kb || kb.pub === b.pubkey)) q.setKey.run(b.pubkey, u.username);
+  return { token, username: u.username, key_backup: kb, via };
+}
+
+// ---------- the Android app for download (the admin uploads it in the panel) ----------
+const APK = path.join(DATA_DIR, 'apk', 'sepan.apk');
+function apkInfo() {
+  try { const st = fs.statSync(APK); return st.isFile() && st.size > 0 ? { size: st.size, mtime: st.mtimeMs } : null; } catch { return null; }
+}
+/** GET /download/sepan.apk: public like the setup page (the app holds nothing secret). */
+function serveApk(req, res) {
+  const info = apkInfo();
+  if (!info) return send(res, 404, { error: 'no_apk' });
+  res.writeHead(200, {
+    'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': info.size,
+    'Content-Disposition': 'attachment; filename="sepan.apk"', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff',
+  });
+  if (req.method === 'HEAD') return res.end();
+  const rs = fs.createReadStream(APK);
+  rs.on('error', () => res.destroy());
+  res.on('close', () => rs.destroy());
+  rs.pipe(res);
+}
+
 function freeSpace() { try { const s = fs.statfsSync(FILES_DIR); return s.bavail * s.bsize; } catch { return Infinity; } }
 
 // ---------- routes ----------
@@ -371,9 +421,11 @@ async function route(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
 
   if (p === '/api/health') return send(res, 200, { ok: true });
+  if (p === '/download/sepan.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res);
 
   if (p === '/api/login' && req.method === 'POST') {
     const b = await readJson(req, 4096);
+    if (!auth.passwordLogin()) return send(res, 403, { error: 'password_login_disabled' });
     const username = String(b.username || '').toLowerCase();
     const ip = req.socket.remoteAddress;
     if (limited('ip:' + ip, 20) || limited('u:' + username, 5)) return send(res, 429, { error: 'rate_limited' });
@@ -381,12 +433,77 @@ async function route(req, res) {
     const ok = u ? checkPassword(b.password || '', u.pass) : (checkPassword(b.password || '', DUMMY), false);
     if (!ok || u.disabled) { addFail('ip:' + ip); addFail('u:' + username); return send(res, 401, { error: 'bad_credentials' }); }
     fails.delete('u:' + username);
-    const token = crypto.randomBytes(32).toString('hex');
-    q.addSess.run(sha256(token), username, now());
-    // with a key backup the account keeps one identity key on every device: a new device restores it instead
-    const kb = keyBackupOf(u);
-    if (typeof b.pubkey === 'string' && b.pubkey.length <= 1024 && (!kb || kb.pub === b.pubkey)) q.setKey.run(b.pubkey, username);
-    return send(res, 200, { token, username, key_backup: kb });
+    return send(res, 200, newSession(u, 'password', b));
+  }
+
+  // ---- sign-in by mobile number (see auth.js) ----
+  // what the login screen offers: SMS codes, the old username + password, the Android app download
+  if (p === '/api/auth/config' && req.method === 'GET') {
+    return send(res, 200, { sms: auth.smsReady(), password: auth.passwordLogin(), apk: !!apkInfo(), signup: auth.openSignup() });
+  }
+  // sends a login code by SMS. An unknown number gets the same answer as a known one (no way to probe numbers).
+  if (p === '/api/auth/sms' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const phone = auth.normPhone(b.phone);
+    if (!phone) return send(res, 400, { error: 'bad_phone' });
+    const ip = req.socket.remoteAddress;
+    if (limited('smsip:' + ip, 10) || limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });
+    const wait = Math.ceil((smsSent.get(phone) || 0) + 60e3 - now());
+    if (wait > 0) return send(res, 429, { error: 'wait', wait: Math.ceil(wait / 1000) });
+    if (!auth.smsReady()) return send(res, 503, { error: 'sms_unavailable' });
+    addFail('smsip:' + ip); addFail('sms:' + phone);
+    smsSent.set(phone, now());
+    const username = auth.findUser(phone);
+    // with open sign-up a new number gets a code too; it opens the sign-up form instead of an account
+    const holder = username || (auth.openSignup() && !auth.phoneMap().has(phone) ? 'tel:' + phone : null);
+    if (holder) {
+      const { code } = auth.issue(holder, username ? 'sms' : 'signup');
+      try { await auth.sendSms(phone, code); } catch { smsSent.delete(phone); return send(res, 503, { error: 'sms_unavailable' }); }
+    }
+    return send(res, 200, { ok: true, ttl: auth.TTL.sms / 1000 });
+  }
+  // signs in with a code: from the SMS, from another signed-in device of the user, or from the admin
+  if (p === '/api/auth/code' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    const ident = String(b.phone || b.username || '').slice(0, 40);
+    const ip = req.socket.remoteAddress;
+    const key = 'code:' + (auth.normPhone(ident) || ident.toLowerCase());
+    if (limited('ip:' + ip, 20) || limited(key, 5)) return send(res, 429, { error: 'rate_limited' });
+    const username = auth.findUser(ident);
+    const via = username && auth.consume(username, b.code, ['sms', 'device', 'admin']);
+    if (!via) {
+      // a new number with open sign-up: the code proves the number, the client then asks for a username
+      const phone = !username && auth.openSignup() && auth.normPhone(ident);
+      if (phone && auth.consume('tel:' + phone, b.code, ['signup'])) {
+        fails.delete(key);
+        const ticket = crypto.randomBytes(24).toString('hex');
+        signupTickets.set(ticket, { phone, t: now() });
+        return send(res, 200, { signup: true, ticket, phone });
+      }
+      addFail('ip:' + ip); addFail(key); return send(res, 401, { error: 'bad_code' });
+    }
+    fails.delete(key);
+    return send(res, 200, newSession(core.q.user.get(username), via, b));
+  }
+  // open sign-up, second step: the number was proven by SMS (ticket from /api/auth/code), now the account
+  if (p === '/api/auth/signup' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    const tk = signupTickets.get(String(b.ticket || ''));
+    if (!tk || now() - tk.t > 15 * 60e3 || !auth.openSignup()) return send(res, 400, { error: 'bad_ticket' });
+    const username = String(b.username || '').trim().toLowerCase();
+    if (!core.NAME_RE.test(username) || username === 'all' || /^\d+$/.test(username)) return send(res, 400, { error: 'invalid_username' });
+    if (core.q.user.get(username)) return send(res, 409, { error: 'user_exists' });
+    if (auth.phoneMap().has(tk.phone)) { signupTickets.delete(b.ticket); return send(res, 409, { error: 'phone_taken' }); }
+    const ip = req.socket.remoteAddress;
+    const day = signupsByIp.get(ip);
+    if (day && now() - day.t < DAY && day.n >= SIGNUPS_PER_IP) return send(res, 429, { error: 'rate_limited' });
+    const cat = auth.signupCategory();
+    core.createUser(username, b.display_name, cat ? [cat] : []);
+    db.prepare('UPDATE users SET phone=? WHERE username=?').run(tk.phone, username);
+    signupTickets.delete(b.ticket);
+    signupsByIp.set(ip, day && now() - day.t < DAY ? { n: day.n + 1, t: day.t } : { n: 1, t: now() });
+    if (cat) refreshAll(); // the default group gained a member
+    return send(res, 200, { ...newSession(core.q.user.get(username), 'sms', b), created: true });
   }
 
   const a = authInfo(req);
@@ -395,11 +512,30 @@ async function route(req, res) {
 
   if (p === '/api/logout' && req.method === 'POST') { q.delSess.run(a.th); return send(res, 200, { ok: true }); }
 
+  // a code for signing in on a new device, shown on this (signed-in) one; works without SMS or internet
+  if (p === '/api/auth/devicecode' && req.method === 'POST') {
+    if (limited('dev:' + user, 10)) return send(res, 429, { error: 'rate_limited' });
+    addFail('dev:' + user);
+    const { code, expires } = auth.issue(user, 'device');
+    return send(res, 200, { code, expires, ttl: auth.TTL.device / 1000, phone: !!auth.phoneOf(user) });
+  }
+  // an SMS code that stands in for the login password when the key backup changes (accounts that sign in by SMS)
+  if (p === '/api/auth/reauth' && req.method === 'POST') {
+    const phone = auth.phoneOf(user);
+    if (!phone) return send(res, 400, { error: 'no_phone' });
+    if (!auth.smsReady()) return send(res, 503, { error: 'sms_unavailable' });
+    if (limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });
+    addFail('sms:' + phone);
+    const { code } = auth.issue(user, 'reauth');
+    try { await auth.sendSms(phone, code); } catch { return send(res, 503, { error: 'sms_unavailable' }); }
+    return send(res, 200, { ok: true, ttl: auth.TTL.reauth / 1000 });
+  }
+
   if (p === '/api/me' && req.method === 'GET') {
     const u = core.q.user.get(user);
     return send(res, 200, {
       username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
-      hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen,
+      hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
     });
   }
 
@@ -415,12 +551,14 @@ async function route(req, res) {
     const u = core.q.user.get(user);
     const hs = typeof b.hide_seen === 'boolean' ? b.hide_seen : !!u.hide_seen;
     const hl = typeof b.hide_last_seen === 'boolean' ? b.hide_last_seen : !!u.hide_last_seen;
+    const fd = typeof b.findable === 'boolean' ? b.findable : !!u.findable;
     q.setPrivacy.run(hs ? 1 : 0, hl ? 1 : 0, user);
+    q.setFindable.run(fd ? 1 : 0, user);
     if (hl !== !!u.hide_last_seen) {
       const nu = core.q.user.get(user);
       for (const v of audienceOf(user)) if (v !== user) emit(v, 'presence', { user, ...presenceOf(nu, v) });
     }
-    return send(res, 200, { hide_seen: hs, hide_last_seen: hl });
+    return send(res, 200, { hide_seen: hs, hide_last_seen: hl, findable: fd });
   }
 
   // the app went to the foreground / background on device `dev`
@@ -507,9 +645,13 @@ async function route(req, res) {
   if (p === '/api/keybackup' && req.method === 'POST') {
     const b = await readJson(req, 8192);
     const me = core.q.user.get(user);
-    // the account password is required: it is what the backup is locked with, and a stolen session alone must not swap the key
+    // the account must be confirmed, so a stolen session alone cannot swap the key: by the login password,
+    // by an SMS code (/api/auth/reauth), or by a sign-in with a one-time code in the last 30 minutes
     if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
-    if (typeof b.password !== 'string' || !checkPassword(b.password, me.pass)) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    const pw = typeof b.password === 'string' ? b.password : '';
+    const fresh = a.via !== 'password' && now() - a.created < 30 * 60e3;
+    const proven = pw ? checkPassword(pw, me.pass) || !!auth.consume(user, pw, ['reauth']) : fresh;
+    if (!proven) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
     const kb = cleanKeyBackup(b.key_backup);
     if (!kb) return send(res, 400, { error: 'bad_key_backup' });
     const before = me.pubkey;
@@ -675,6 +817,28 @@ async function route(req, res) {
     if (tr.type === 'group') for (const u of core.membersOf(tr.cat.id)) emit(u, 'pin', { convo: key, messageId: mid, by: user });
     else { emit(tr.peer, 'pin', { convo: user, messageId: mid, by: user }); emit(user, 'pin', { convo: tr.peer, messageId: mid, by: user }); }
     return send(res, 200, { ok: true });
+  }
+
+  // ---- finding members by mobile number (the phone's contacts, or one number typed in) ----
+  // The list is matched and forgotten. The answer holds only members who allow it (name and username, no
+  // more), at most LOOKUP_DAY numbers per user per day, so the directory cannot be harvested.
+  if (p === '/api/contacts/lookup' && req.method === 'POST') {
+    const b = await readJson(req, 262144);
+    const list = (Array.isArray(b.phones) ? b.phones : []).slice(0, 2000).map((x) => auth.normPhone(x)).filter(Boolean);
+    const uniq = [...new Set(list)];
+    const used = lookups.get(user);
+    const day = used && now() - used.t < DAY ? used : { n: 0, t: now() };
+    if (day.n + uniq.length > LOOKUP_DAY) return send(res, 429, { error: 'rate_limited' });
+    lookups.set(user, { n: day.n + uniq.length, t: day.t });
+    const want = new Set(uniq);
+    const known = core.contacts(user);
+    const out = [];
+    for (const r of db.prepare("SELECT username, display_name, phone FROM users WHERE disabled=0 AND findable=1 AND phone IS NOT NULL AND phone<>''").all()) {
+      const ph = auth.normPhone(r.phone);
+      if (!ph || !want.has(ph) || r.username === user || core.isBlocked(user, r.username)) continue;
+      out.push({ phone: ph, username: r.username, display_name: r.display_name || null, connected: contacts.connected(user, r.username), known: known.has(r.username) });
+    }
+    return send(res, 200, { matches: out });
   }
 
   // ---- connection requests between users (fill the visibility matrix without the admin) ----
@@ -846,6 +1010,7 @@ function cleanup() {
     db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     push.cleanup();
+    auth.cleanup();
     db.prepare('DELETE FROM msg_changes WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM sessions WHERE created<?').run(now() - SESSION_DAYS * DAY);
     for (const u of db.prepare('SELECT id FROM uploads WHERE ts<?').all(now() - DAY)) {
@@ -866,11 +1031,14 @@ stats.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
-const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected };
+const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------
-require('./web').start(handler, { plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST });
+const siteInfo = () => ({ title: getSetting('site_title', ''), about: getSetting('site_about', ''), contact: getSetting('site_contact', '') });
+require('./web').start(handler, {
+  plain: PLAIN, certDir: path.join(CERT_DIR, 'web'), publicHost: PUBLIC_HOST, serveApk, apkInfo, site: siteInfo, acmeDir: path.join(DATA_DIR, 'acme'),
+});
 
 server.listen(PORT, '0.0.0.0', () => console.log(`messenger listening on ${PORT} (${PLAIN ? 'PLAIN HTTP - test only' : 'TLS'})`));
 for (const s of ['SIGTERM', 'SIGINT']) process.on(s, () => { server.close(); process.exit(0); });
