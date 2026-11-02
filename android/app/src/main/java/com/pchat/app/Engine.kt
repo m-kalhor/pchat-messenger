@@ -100,6 +100,8 @@ object Engine {
     val connected = MutableStateFlow(false)
     /** message id -> 0..1 for running uploads/downloads */
     val progress = MutableStateFlow<Map<Long, Float>>(emptyMap())
+    /** 1.8: downloads cut off by the network; they continue by themselves from where they stopped once it is back. */
+    val waitingDownloads = MutableStateFlow<Map<Long, Msg>>(emptyMap())
     /** message id -> reason a queued message failed permanently */
     val failures = MutableStateFlow<Map<Long, String>>(emptyMap())
 
@@ -201,6 +203,7 @@ object Engine {
         diag.value = false
         pins.value = emptyMap()
         progress.value = emptyMap()
+        waitingDownloads.value = emptyMap()
         failures.value = emptyMap()
         keyBackedUp.value = null
         keyStep.value = null
@@ -632,6 +635,7 @@ object Engine {
                     // the old TCP connection is probably dead after a network change
                     Api.cancelStream()
                     wakeUp()
+                    resumeDownloads()
                 }
             })
         } catch (e: Exception) { }
@@ -644,6 +648,7 @@ object Engine {
             while (isActive) {
                 delay(10_000)
                 if (connected.value && Api.token != null && db.outbox().isNotEmpty()) flushAll()
+                if (connected.value && Api.token != null) resumeDownloads()
             }
         }
     }
@@ -1633,6 +1638,11 @@ object Engine {
 
     // ---------------- downloading ----------------
 
+    /** Continues the downloads the network cut off (called when the network is back and every few seconds). */
+    fun resumeDownloads() {
+        for (m in waitingDownloads.value.values) if (!progress.value.containsKey(m.id)) scope.launch { downloadMedia(m) }
+    }
+
     private fun readFully(ins: DataInputStream, buf: ByteArray, len: Int) { ins.readFully(buf, 0, len) }
 
     /** Downloads + decrypts a file/image (resumes interrupted downloads). Returns the local path, or null on failure. */
@@ -1655,6 +1665,7 @@ object Engine {
                 if (have > total) { part.delete(); have = 0L }
                 var tries = 0
                 while (have < total) {
+                    // a short drop is bridged here; a longer one hands over to resumeDownloads() (same .part file)
                     if (tries++ > 40 || Api.token == null) throw IOException("download stalled")
                     try {
                         Api.downloadRange(fid, have) { ins ->
@@ -1700,9 +1711,11 @@ object Engine {
                 part.delete()
             }
             db.setLocalPath(m.id, dest.absolutePath)
+            waitingDownloads.value = waitingDownloads.value - m.id
             tick.value++
             dest.absolutePath
         } catch (e: Exception) {
+            waitingDownloads.value = if (isTransient(e) && Api.token != null) waitingDownloads.value + (m.id to m) else waitingDownloads.value - m.id
             null
         } finally {
             setProgress(m.id, null)

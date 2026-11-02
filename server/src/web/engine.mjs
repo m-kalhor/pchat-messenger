@@ -962,7 +962,7 @@ async function uploadFile(m) {
         let r;
         try { r = await api.patchUpload(up, off, body); } catch (e) {
           if (e instanceof api.HttpError && e.status === 409) { off = (await api.uploadStatus(up)).offset; continue; }
-          if (!(e instanceof api.HttpError) && ++netErrors <= 40) { await wait(3000); try { off = (await api.uploadStatus(up)).offset; } catch { } continue; }
+          if (!(e instanceof api.HttpError) && ++netErrors <= 200) { await netBack(Math.min(15000, 3000 * netErrors)); try { off = (await api.uploadStatus(up)).offset; } catch { } continue; }
           throw e;
         }
         off = r.offset;
@@ -999,6 +999,16 @@ const downloading = new Map();
 export const mediaUrl = (m) => blobUrls.get(m.fileId || m.id) || null;
 export const mediaBlob = (m) => blobs.get(m.fileId || m.id) || null;
 
+/** Waits `ms`, but no longer than until the browser is back online (and while offline, until it is). */
+function netBack(ms) {
+  return new Promise((resolve) => {
+    let t = null;
+    const done = () => { clearTimeout(t); removeEventListener('online', done); resolve(); };
+    addEventListener('online', done);
+    t = setTimeout(() => { if (navigator.onLine !== false) done(); else t = setTimeout(done, 10 * 60e3); }, ms);
+  });
+}
+
 /** Downloads and decrypts a file or image. Resolves to an object URL. */
 export function download(m) {
   const id = m.fileId;
@@ -1020,8 +1030,9 @@ export function download(m) {
           const end = Math.min(total, off + 4 * C.CIPHER_CHUNK) - 1;
           let enc;
           try { enc = await api.fileRange(id, off, end); tries = 0; } catch (e) {
-            if (e instanceof api.HttpError || ++tries > 5) throw e;
-            await wait(2000 * tries); continue;
+            // 1.8: a network cut does not lose what is already here: wait for the network and go on from `off`
+            if (e instanceof api.HttpError || ++tries > 200) throw e;
+            await netBack(Math.min(15000, 2000 * tries)); continue;
           }
           for (let p = 0; p < enc.length; p += C.CIPHER_CHUNK) {
             const idx = (off + p) / C.CIPHER_CHUNK;
