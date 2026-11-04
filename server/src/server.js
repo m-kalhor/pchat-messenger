@@ -13,6 +13,7 @@ const backup = require('./backup');
 const push = require('./push');
 const auth = require('./auth');
 const diag = require('./diag');
+const { apkVersion } = require('./apkinfo');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -428,6 +429,12 @@ async function route(req, res) {
 
   if (p === '/api/health') return send(res, 200, { ok: true });
   if (p === '/download/sepan.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res);
+  // 1.9: the version of the APK the admin uploaded, so the app can offer an update (never forced)
+  if (p === '/api/app/version' && req.method === 'GET') {
+    const info = apkInfo();
+    const v = info ? apkVersion(APK) : null;
+    return send(res, 200, v ? { code: v.code, name: v.name, size: info.size } : { code: null });
+  }
 
   if (p === '/api/login' && req.method === 'POST') {
     const b = await readJson(req, 4096);
@@ -668,6 +675,22 @@ async function route(req, res) {
     const before = me.pubkey;
     q.setBackup.run(JSON.stringify(kb), kb.pub, user);
     if (before !== kb.pub) broadcastTo(audienceOf(user).filter((x) => x !== user), 'refresh', {});
+    return send(res, 200, { ok: true });
+  }
+
+  // 1.9: the user changes their own login password: the current one (or an SMS code from /api/auth/reauth),
+  // then the new one; every other session of the user is logged out
+  if (p === '/api/password' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
+    const cur = typeof b.current === 'string' ? b.current : '';
+    const nw = typeof b.password === 'string' ? b.password : '';
+    if (nw.length < 8 || nw.length > 128) return send(res, 400, { error: 'weak_password' });
+    const me = core.q.user.get(user);
+    if (!cur || !(checkPassword(cur, me.pass) || auth.consume(user, cur, ['reauth']))) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    db.prepare('UPDATE users SET pass=? WHERE username=?').run(hashPassword(nw), user);
+    db.prepare('DELETE FROM sessions WHERE username=? AND th<>?').run(user, a.th);
+    kick(user); // the other devices get 401 on reconnect; this one reconnects with its still valid token
     return send(res, 200, { ok: true });
   }
 

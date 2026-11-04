@@ -423,13 +423,13 @@ async function loginTab(box){
       try{await api('POST','/site',{title:stt.value,about:sab.value,contact:sct.value});alert('ذخیره شد');}catch(e){ser.textContent=msg(e);}}},'ذخیره')),ser));
   var file=h('input',{type:'file',accept:'.apk,application/vnd.android.package-archive'}),up=h('span');
   box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'فایل برنامهٔ اندروید برای دانلود'),
-    h('div',{style:'margin-bottom:8px'},A.apk?['فایل فعلی: ',fmtB(A.apk.size),' — ',fmtDate(A.apk.mtime),'  ',h('a',{href:'#',style:'color:#ff8b8b',onclick:guard(async function(e){e.preventDefault();if(!confirm('فایل APK حذف شود؟'))return;await api('DELETE','/apk');render();})},'حذف')]:h('span',{class:'mut'},'هنوز فایلی نیست')),
+    h('div',{style:'margin-bottom:8px'},A.apk?['فایل فعلی: ',A.apk.version?('نسخهٔ '+A.apk.version+' — '):h('span',{style:'color:#ff8b8b'},'نسخه خوانده نشد — '),fmtB(A.apk.size),' — ',fmtDate(A.apk.mtime),'  ',h('a',{href:'#',style:'color:#ff8b8b',onclick:guard(async function(e){e.preventDefault();if(!confirm('فایل APK حذف شود؟'))return;await api('DELETE','/apk');render();})},'حذف')]:h('span',{class:'mut'},'هنوز فایلی نیست')),
     h('div',{class:'row'},file,h('button',{class:'pri',onclick:async function(){
       if(!file.files[0])return;up.textContent='در حال بارگذاری…';
       try{var r=await fetch('/admin/api/apk',{method:'POST',credentials:'same-origin',headers:{'X-CSRF':csrf||'','Content-Type':'application/octet-stream'},body:file.files[0]});
         var j={};try{j=await r.json();}catch(e){}
         if(!r.ok)throw new Error(j.error||('HTTP '+r.status));up.textContent='✓';render();}catch(e){up.textContent='✗ '+msg(e);}}},'بارگذاری'),up),
-    h('div',{class:'mut',style:'white-space:normal'},'این فایل در صفحهٔ ورود نسخهٔ وب (آیفون) با لینک و QR نشان داده می‌شود و از نشانی http://<سرور>/download/sepan.apk هم دانلود می‌شود، حتی بدون اینترنت بین‌الملل.')));
+    h('div',{class:'mut',style:'white-space:normal'},'این فایل در صفحهٔ ورود نسخهٔ وب (آیفون) با لینک و QR نشان داده می‌شود و از نشانی http://<سرور>/download/sepan.apk هم دانلود می‌شود، حتی بدون اینترنت بین‌الملل. وقتی نسخهٔ این فایل از نسخهٔ نصب‌شدهٔ کاربر جدیدتر باشد، اپ اندروید (۱.۹ به بعد) پیشنهاد به‌روزرسانی می‌دهد (اجباری نیست).')));
 }
 
 // ---------------- backups ----------------
