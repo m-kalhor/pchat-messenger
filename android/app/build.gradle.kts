@@ -31,8 +31,8 @@ android {
         applicationId = "com.pchat.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 10
-        versionName = "1.9.0"
+        versionCode = 11
+        versionName = "1.9.1"
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "SERVER_PORT", "$serverPort")
@@ -44,6 +44,9 @@ android {
             storePassword = System.getenv("SEPAN_KEYSTORE_PASSWORD")
             keyAlias = System.getenv("SEPAN_KEY_ALIAS") ?: "sepan"
             keyPassword = System.getenv("SEPAN_KEYSTORE_PASSWORD")
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
         }
     }
 
@@ -51,7 +54,13 @@ android {
         debug {
             if (sepanKeystore != null) signingConfig = signingConfigs.getByName("sepan")
         }
+        // The APK users install is the release build: not debuggable, so Play Protect treats it as a
+        // normal app. Same fixed key as before, so it installs over the earlier debug builds.
+        // Without the key (local builds) it falls back to the per-machine debug key so it still installs.
         release {
+            signingConfig = if (sepanKeystore != null) signingConfigs.getByName("sepan")
+                else signingConfigs.getByName("debug")
+            isDebuggable = false
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
