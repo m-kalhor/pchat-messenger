@@ -161,8 +161,8 @@ class BubbleShape(private val mine: Boolean, private val tail: Boolean, private 
         val small = if (tail) 0f else with(density) { 4.dp.toPx() }
         val body = Path().apply {
             addRoundRect(RoundRect(left, 0f, right, size.height,
-                topLeft = CornerRadius(rp), topRight = CornerRadius(rp),
-                bottomRight = CornerRadius(if (mine) small else rp), bottomLeft = CornerRadius(if (mine) rp else small)))
+                topLeftCornerRadius = CornerRadius(rp), topRightCornerRadius = CornerRadius(rp),
+                bottomRightCornerRadius = CornerRadius(if (mine) small else rp), bottomLeftCornerRadius = CornerRadius(if (mine) rp else small)))
         }
         if (!tail) return Outline.Generic(body)
         val th = minOf(with(density) { 12.dp.toPx() }, size.height)
