@@ -51,8 +51,6 @@ object Prefs {
     /** the admins' ping / route text over the call (1.7 diagnostics) is shown */
     val diagText = MutableStateFlow(true)
     fun setDiagText(v: Boolean) { p.edit().putBoolean("diag_text", v).apply(); diagText.value = v }
-    /** the update to this versionCode was dismissed with «بعداً» in this run of the app */
-    var updateDismissed = 0
 
     // ---- notifications ----
     var notifyPrivate: Boolean

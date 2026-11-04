@@ -84,6 +84,9 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     var showLock by remember { mutableStateOf(false) }
     var showBackup by remember { mutableStateOf(false) }
     var showDevCode by remember { mutableStateOf(false) }
+    var showPassword by remember { mutableStateOf(false) }
+    var checking by remember { mutableStateOf(false) }
+    var update by remember { mutableStateOf<AppUpdate?>(null) }
     val backedUp by Engine.keyBackedUp.collectAsState()
     var lockOn by remember { mutableStateOf(AppLock.enabled) }
     var confirmClear by remember { mutableStateOf(false) }
@@ -102,6 +105,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = Look.barColors(),
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت") } },
                 title = { Text("تنظیمات", fontWeight = FontWeight.Bold) }
             )
@@ -170,6 +174,8 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             for ((v, label) in listOf(Prefs.THEME_SYSTEM to "مطابق تنظیمات گوشی", Prefs.THEME_LIGHT to "روشن", Prefs.THEME_DARK to "تیره")) {
                 RadioRow(label, theme == v) { Prefs.setTheme(v) }
             }
+            val wall by Prefs.wallpaper.collectAsState()
+            SwitchRow("پس‌زمینهٔ طرح‌دار گفتگو", "اگر خاموش کنید، پس‌زمینه ساده می‌شود", wall) { Prefs.setWallpaper(it) }
             val textSize by Prefs.textSize.collectAsState()
             Text("اندازهٔ متن پیام‌ها", fontSize = 15.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
             Row(Modifier.padding(horizontal = 12.dp)) {
@@ -212,6 +218,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 else "مدیر سرور فعلاً درخواست پیام را برای همه بسته است.",
                 allowReq && reqOn
             ) { v -> if (reqOn) scope.launch { Engine.setAllowRequests(v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
+            SettingRow("رمز ورود", "رمزی که با نام کاربری وارد می‌شوید · تغییر") { showPassword = true }
             SettingRow("قفل برنامه", if (lockOn) "روشن" else "خاموش") { showLock = true }
             SettingRow("اثرانگشت کلیدها", "مقایسهٔ کلید امنیتی با مخاطبان") { showKeys = true }
             SettingRow("رمز کلید", when (backedUp) {
@@ -229,6 +236,20 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             }
             SettingRow("فضای استفاده‌شده", (usage?.let { U.size(it) } ?: "در حال محاسبه…") + " · پاک کردن فایل‌های ذخیره‌شده") { confirmClear = true }
 
+            // ---- 1.9: in-app update ----
+            SectionTitle("دربارهٔ سپن")
+            SettingRow("به‌روزرسانی برنامه", "نسخهٔ فعلی: " + Updater.installedName(ctx) + (if (checking) " · در حال بررسی…" else " · بررسی نسخهٔ تازه")) {
+                if (!checking) {
+                    checking = true
+                    scope.launch {
+                        val u = Updater.check(ctx)
+                        checking = false
+                        if (u != null) update = u
+                        else android.widget.Toast.makeText(ctx, "آخرین نسخه را دارید", android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+
             Spacer(Modifier.height(12.dp))
             HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
             SettingRow("خروج از حساب", null, color = MaterialTheme.colorScheme.error, onClick = onLogout)
@@ -240,6 +261,8 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     if (showLock) LockSettingsDialog { showLock = false; lockOn = AppLock.enabled }
     if (showBackup) KeyPasswordDialog { showBackup = false }
     if (showDevCode) DeviceCodeDialog { showDevCode = false }
+    if (showPassword) ChangePasswordDialog { showPassword = false }
+    update?.let { u -> UpdateDialog(u) { update = null } }
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },
         title = { Text("پاک کردن فایل‌ها") },

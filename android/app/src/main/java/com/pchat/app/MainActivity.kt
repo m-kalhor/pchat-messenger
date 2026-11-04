@@ -82,6 +82,7 @@ fun App(deepLink: MutableState<String?>) {
     var settings by remember { mutableStateOf(false) }
     var askBattery by remember { mutableStateOf(false) }
 
+    var updateOffer by remember { mutableStateOf<AppUpdate?>(null) }
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val call by CallManager.state.collectAsState()
     val locked by AppLock.locked.collectAsState()
@@ -101,7 +102,7 @@ fun App(deepLink: MutableState<String?>) {
     }
 
     // voice call held to the ear: switch the screen off with the proximity sensor, like Telegram
-    val earpiece = call.phase != CallPhase.IDLE && call.phase != CallPhase.INCOMING && !call.video && !call.speaker
+    val earpiece = call.phase != CallPhase.IDLE && call.phase != CallPhase.INCOMING && !call.video && call.route == AudioRoute.EARPIECE
     DisposableEffect(earpiece) {
         val pm = ctx.getSystemService(PowerManager::class.java)
         val lock = if (earpiece && pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK))
@@ -119,6 +120,9 @@ fun App(deepLink: MutableState<String?>) {
             if (Build.VERSION.SDK_INT >= 33) notifPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
             val pm = ctx.getSystemService(PowerManager::class.java)
             if (!pm.isIgnoringBatteryOptimizations(ctx.packageName) && !Engine.prefs.getBoolean("battery_asked", false)) askBattery = true
+            // 1.9: a newer APK on the server is offered each time the app is opened (never forced)
+            Updater.cleanup(ctx)
+            updateOffer = Updater.check(ctx)
         } else {
             convo = null
             settings = false
@@ -142,6 +146,11 @@ fun App(deepLink: MutableState<String?>) {
         if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })
         else if (c == null) ChatListScreen(onOpen = { convo = it }, onSettings = { settings = true }, onLogout = { Engine.logout() })
         else ChatScreen(c, onBack = { convo = null }, onOpenUser = { convo = it })
+    }
+
+    val offer = updateOffer
+    if (offer != null && logged && !askBattery && call.phase == CallPhase.IDLE && !locked && ks == null) {
+        UpdateDialog(offer) { updateOffer = null }
     }
 
     if (askBattery) {

@@ -322,10 +322,11 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = Look.barColors(),
                 title = {
                     Column {
                         Text("سپن", fontWeight = FontWeight.Bold)
-                        Text(if (connected) "متصل" else "در حال اتصال…", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        Text(if (connected) "متصل" else "در حال اتصال…", fontSize = 12.sp, color = Look.barSub)
                     }
                 },
                 actions = {
