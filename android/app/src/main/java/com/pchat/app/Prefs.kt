@@ -33,10 +33,26 @@ object Prefs {
     fun load() {
         theme.value = p.getInt("theme", THEME_SYSTEM)
         textSize.value = p.getInt("text_size", 16)
+        wallpaper.value = p.getBoolean("wallpaper", true)
+        diagText.value = p.getBoolean("diag_text", true)
     }
 
     fun setTheme(v: Int) { p.edit().putInt("theme", v).apply(); theme.value = v }
     fun setTextSize(v: Int) { p.edit().putInt("text_size", v).apply(); textSize.value = v }
+
+    // ---- 1.9 ----
+    /** the Bluetooth permission (Android 12+) was asked once already */
+    var btAsked: Boolean
+        get() = p.getBoolean("bt_asked", false)
+        set(v) { p.edit().putBoolean("bt_asked", v).apply() }
+    /** chat background: true = the patterned wallpaper (default), false = plain */
+    val wallpaper = MutableStateFlow(true)
+    fun setWallpaper(v: Boolean) { p.edit().putBoolean("wallpaper", v).apply(); wallpaper.value = v }
+    /** the admins' ping / route text over the call (1.7 diagnostics) is shown */
+    val diagText = MutableStateFlow(true)
+    fun setDiagText(v: Boolean) { p.edit().putBoolean("diag_text", v).apply(); diagText.value = v }
+    /** the update to this versionCode was dismissed with «بعداً» in this run of the app */
+    var updateDismissed = 0
 
     // ---- notifications ----
     var notifyPrivate: Boolean

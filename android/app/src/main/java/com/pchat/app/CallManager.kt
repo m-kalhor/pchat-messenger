@@ -53,6 +53,8 @@ data class CallState(
     val muted: Boolean = false,
     val camOff: Boolean = false,
     val speaker: Boolean = false,
+    val route: AudioRoute = AudioRoute.EARPIECE,
+    val bt: Boolean = false,
     val front: Boolean = true,
     val startedAt: Long = 0L,
     val note: String = ""
@@ -178,12 +180,8 @@ object CallManager {
         state.value = s.copy(camOff = off)
     }
 
-    fun toggleSpeaker() {
-        val s = state.value
-        val on = !s.speaker
-        app.getSystemService(AudioManager::class.java).isSpeakerphoneOn = on
-        state.value = s.copy(speaker = on)
-    }
+    /** 1.9: the audio button cycles earpiece → speaker → Bluetooth headset (see AudioRouter). */
+    fun toggleSpeaker() { AudioRouter.cycle() }
 
     fun switchCamera() {
         capturer?.switchCamera(null)
@@ -453,11 +451,7 @@ object CallManager {
         } else if (cur.incoming) "📞 تماس $kindText بی‌پاسخ" else "📞 تماس $kindText لغو شد / بی‌پاسخ"
         Engine.addCallLog(cur.peer, text, !cur.incoming)
 
-        try {
-            val am = app.getSystemService(AudioManager::class.java)
-            am.mode = AudioManager.MODE_NORMAL
-            am.isSpeakerphoneOn = false
-        } catch (e: Exception) { }
+        AudioRouter.stop()
         try { app.stopService(Intent(app, CallService::class.java)) } catch (e: Exception) { }
         if (note.isNotEmpty()) main.post { Toast.makeText(app, note, Toast.LENGTH_SHORT).show() }
 
@@ -476,9 +470,12 @@ object CallManager {
     }
 
     private fun setupAudioMode(speaker: Boolean) {
-        val am = app.getSystemService(AudioManager::class.java)
-        am.mode = AudioManager.MODE_IN_COMMUNICATION
-        am.isSpeakerphoneOn = speaker
+        AudioRouter.start(app, speaker) { route, bt ->
+            synchronized(lock) {
+                val s = state.value
+                if (s.phase != CallPhase.IDLE) state.value = s.copy(route = route, bt = bt, speaker = route == AudioRoute.SPEAKER)
+            }
+        }
     }
 
     private fun startCallService(video: Boolean) {
