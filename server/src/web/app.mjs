@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.8.0';
+const VERSION = '1.9.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -285,6 +285,7 @@ function applyLook() {
   const t = pref('theme', 'system');
   if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = t;
   document.documentElement.style.setProperty('--fs', pref('fontSize', 16) + 'px');
+  document.documentElement.classList.toggle('plainbg', !pref('wallpaper', true));
 }
 applyLook();
 if (window.visualViewport) {
@@ -1338,6 +1339,7 @@ function SettingsScreen() {
       } }, h('div', { class: 'field' }, h('label', null, 'نام نمایشی'), name), h('div', { class: 'field' }, h('label', null, 'دربارهٔ من'), bio), msg, h('button', { class: 'btn', type: 'submit' }, 'ذخیرهٔ پروفایل')),
       h('div', { class: 'section' }, 'ظاهر'),
       setting('پوسته', null, select('theme', 'system', [['system', 'مثل گوشی'], ['light', 'روشن'], ['dark', 'تیره']], applyLook)),
+      setting('پس‌زمینهٔ طرح‌دار گفتگو', 'اگر خاموش کنید، پس‌زمینه ساده می‌شود', (() => { const c = toggle('wallpaper', true); c.addEventListener('change', applyLook); return c; })()),
       setting('اندازهٔ متن', null, select('fontSize', 16, [[14, 'کوچک'], [16, 'معمولی'], [18, 'بزرگ'], [20, 'خیلی بزرگ']], applyLook)),
       h('div', { class: 'section' }, 'اعلان‌ها'),
       setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
@@ -1367,6 +1369,7 @@ function SettingsScreen() {
       setting('دانلود خودکار عکس‌ها و پیام‌های صوتی', 'تا ۲۵ مگابایت', toggle('autoImages', true)),
       setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن')),
       h('div', { class: 'section' }, 'امنیت'),
+      setting('رمز ورود', 'رمزی که با نام کاربری وارد می‌شوید؛ بعد از تغییر، دستگاه‌های دیگرتان از حساب خارج می‌شوند', h('button', { class: 'btn sm flat', onclick: passwordBox }, 'تغییر')),
       setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
       setting('ورود دستگاه تازه', 'کد یک‌بارمصرف برای ورود روی گوشی یا مرورگر دیگر، بدون پیامک و حتی بدون اینترنت', h('button', { class: 'btn sm flat', onclick: deviceCodeBox }, 'گرفتن کد')),
       h('div', { class: 'hint' }, 'کد امنیتی شما:', h('br'), myFp),
@@ -1380,6 +1383,39 @@ function SettingsScreen() {
   return { el, update: (k) => { if (k === 'users' || k === 'avatar') renderAv(); } };
 }
 // (privacy switches read S.privacy when the screen opens; it is refreshed from the server on start)
+
+/** 1.9: change the login password: the current password (or an SMS code), then the new one twice. */
+function passwordBox() {
+  const f = (ph, ac) => h('input', { type: 'password', placeholder: ph, autocomplete: ac, class: 'ltr' });
+  const cur = f('رمز فعلی یا کد پیامکی', 'current-password'), p1 = f('رمز تازه (دست‌کم ۸ نویسه)', 'new-password'), p2 = f('تکرار رمز تازه', 'new-password');
+  const err = h('div', { class: 'err' });
+  const sms = h('button', { class: 'btn sm flat', type: 'button', onclick: async () => {
+    sms.disabled = true;
+    const e = await E.reauthSms();
+    toast(e || 'کد تأیید به موبایل شما پیامک شد');
+    setTimeout(() => { sms.disabled = false; }, 60000);
+  } }, 'ارسال کد پیامکی');
+  const ok = h('button', { class: 'btn', type: 'submit' }, 'تغییر رمز');
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('form', { class: 'dialog', onsubmit: async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      if (!cur.value) { err.textContent = 'رمز فعلی را وارد کنید'; return; }
+      if (p1.value.length < 8) { err.textContent = 'رمز تازه باید دست‌کم ۸ نویسه باشد'; return; }
+      if (p1.value !== p2.value) { err.textContent = 'رمز تازه و تکرار آن یکی نیستند'; return; }
+      ok.disabled = true;
+      const r = await E.changePassword(cur.value, p1.value);
+      ok.disabled = false;
+      if (r) { err.textContent = r; return; }
+      v.remove();
+      toast('رمز ورود عوض شد؛ دستگاه‌های دیگرتان از حساب خارج شدند');
+    } }, h('h3', null, 'تغییر رمز ورود'),
+      h('div', { class: 'field' }, cur), h('div', { class: 'd', style: { fontSize: '13px', color: 'var(--fg2)' } }, 'رمز فعلی را نمی‌دانید (با پیامک وارد می‌شوید)؟ ', sms),
+      h('div', { class: 'field' }, p1), h('div', { class: 'field' }, p2), err,
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', type: 'button', onclick: () => v.remove() }, 'انصراف'), ok)));
+  document.body.append(v);
+  cur.focus();
+}
 
 /** Shows a one-time code (5 minutes) that signs this account in on another device. */
 async function deviceCodeBox() {
