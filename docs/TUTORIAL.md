@@ -65,14 +65,14 @@ msgadmin adminuser NAME   # تغییر نام کاربری پنل مدیریت
    pchat.serverHost=IP-سرور-شما
    pchat.serverPort=8443
    ```
-   یا موقع ساخت: `./gradlew assembleDebug -Ppchat.serverHost=1.2.3.4`
+   یا موقع ساخت: `./gradlew assembleRelease -Ppchat.serverHost=1.2.3.4`
 2. مطمئن شوید `android/app/src/main/res/raw/server_cert.pem` گواهی همان سرور است.
 3. پوشه‌ی `android/` را در Android Studio باز کنید (File ← Open) و Run بزنید؛ یا در خط فرمان:
    ```bash
    cd android
-   ./gradlew assembleDebug
+   ./gradlew assembleRelease
    ```
-   فایل APK در `android/app/build/outputs/apk/debug/app-debug.apk` ساخته می‌شود.
+   فایل APK در `android/app/build/outputs/apk/release/app-release.apk` ساخته می‌شود.
 
 پیش‌نیاز: JDK 17 و Android SDK (Android Studio هر دو را دارد). هر تغییر در `android/` روی GitHub Actions هم ساخته می‌شود و APK آن در بخش Artifacts همان اجرا قابل دانلود است.
 

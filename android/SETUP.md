@@ -8,9 +8,9 @@
 2. گواهی سرور باید در `app/src/main/res/raw/server_cert.pem` باشد.
 3. پوشه‌ی `android/` را در Android Studio باز کنید، یا:
    ```bash
-   ./gradlew assembleDebug
+   ./gradlew assembleRelease
    ```
-   خروجی: `app/build/outputs/apk/debug/app-debug.apk`
+   خروجی: `app/build/outputs/apk/release/app-release.apk`
 
 پیش‌نیاز: JDK 17 و Android SDK (API 35). حداقل نسخه‌ی اندروید: 8.0 (API 26).
 
