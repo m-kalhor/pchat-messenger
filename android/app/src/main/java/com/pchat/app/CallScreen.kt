@@ -2,6 +2,7 @@ package com.pchat.app
 
 import android.Manifest
 import android.content.Context
+import android.os.Build
 import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -70,6 +71,10 @@ fun rememberCallStarter(): (String, Boolean) -> Unit {
         val need = ArrayList<String>()
         if (!granted(ctx, Manifest.permission.RECORD_AUDIO)) need.add(Manifest.permission.RECORD_AUDIO)
         if (video && !granted(ctx, Manifest.permission.CAMERA)) need.add(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= 31 && !Prefs.btAsked && !granted(ctx, Manifest.permission.BLUETOOTH_CONNECT)) {
+            Prefs.btAsked = true // asked once (1.9: Bluetooth headsets); the call works without it too
+            need.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
         if (need.isEmpty()) {
             CallManager.startCall(peer, video)
         } else {
@@ -93,6 +98,10 @@ private fun rememberAcceptHandler(video: Boolean): () -> Unit {
         val need = ArrayList<String>()
         if (!granted(ctx, Manifest.permission.RECORD_AUDIO)) need.add(Manifest.permission.RECORD_AUDIO)
         if (video && !granted(ctx, Manifest.permission.CAMERA)) need.add(Manifest.permission.CAMERA)
+        if (Build.VERSION.SDK_INT >= 31 && !Prefs.btAsked && !granted(ctx, Manifest.permission.BLUETOOTH_CONNECT)) {
+            Prefs.btAsked = true // asked once (1.9: Bluetooth headsets); the call works without it too
+            need.add(Manifest.permission.BLUETOOTH_CONNECT)
+        }
         if (need.isEmpty()) CallManager.accept() else launcher.launch(need.toTypedArray())
     }
 }
@@ -185,7 +194,13 @@ fun CallScreen() {
                 RoundBtn("📞", "پاسخ", Color(0xFF43A047)) { accept() }
             } else {
                 RoundBtn(if (s.muted) "🔇" else "🎤", "بی‌صدا", if (s.muted) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { CallManager.toggleMute() }
-                RoundBtn(if (s.speaker) "🔊" else "🔈", "بلندگو", if (s.speaker) Color(0xFF3390EC) else Color(0x33FFFFFF)) { CallManager.toggleSpeaker() }
+                // 1.9: with a Bluetooth headset the button cycles phone → speaker → headset
+                val (ico, cap) = when (s.route) {
+                    AudioRoute.BLUETOOTH -> "🎧" to "بلوتوث"
+                    AudioRoute.SPEAKER -> "🔊" to "بلندگو"
+                    AudioRoute.EARPIECE -> (if (s.bt) "📱" else "🔈") to (if (s.bt) "گوشی" else "بلندگو")
+                }
+                RoundBtn(ico, cap, if (s.route != AudioRoute.EARPIECE) Color(0xFF3390EC) else Color(0x33FFFFFF)) { CallManager.toggleSpeaker() }
                 if (s.video && local != null) {
                     RoundBtn(if (s.camOff) "🚫" else "📷", "دوربین", if (s.camOff) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { CallManager.toggleCamera() }
                     RoundBtn("🔄", "چرخش", Color(0x33FFFFFF)) { CallManager.switchCamera() }
@@ -196,7 +211,14 @@ fun CallScreen() {
         // 1.7 test feature: ping and route for the admins listed in the panel (see Diag.kt)
         val diagOn by Engine.diag.collectAsState()
         if (diagOn && s.phase != CallPhase.INCOMING && s.phase != CallPhase.IDLE) {
-            DiagOverlay(s.peer, Modifier.align(Alignment.CenterStart).statusBarsPadding().padding(start = 8.dp, top = 90.dp))
+            // 1.9: the eye button shows / hides the text over the video; the choice is remembered
+            val showText by Prefs.diagText.collectAsState()
+            if (showText) DiagOverlay(s.peer, Modifier.align(Alignment.CenterStart).statusBarsPadding().padding(start = 8.dp, top = 90.dp))
+            Box(
+                Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 12.dp, top = 24.dp).size(40.dp).clip(CircleShape)
+                    .background(if (showText) Color(0x663390EC) else Color(0x33FFFFFF)).clickable { Prefs.setDiagText(!showText) },
+                contentAlignment = Alignment.Center
+            ) { Text(if (showText) "👁" else "🙈", fontSize = 18.sp) }
         }
     }
 }

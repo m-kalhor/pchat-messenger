@@ -354,6 +354,17 @@ object Engine {
         try { Api.deviceCode() to null } catch (e: Exception) { null to errText(e) }
     }
 
+    /** 1.9: changes the login password; returns an error text or null */
+    suspend fun changePassword(current: String, password: String): String? = withContext(Dispatchers.IO) {
+        try { Api.changePassword(current, password); null } catch (e: Api.HttpError) {
+            when (e.error) {
+                "bad_password" -> "رمز فعلی (یا کد پیامکی) درست نیست"
+                "weak_password" -> "رمز تازه باید دست‌کم ۸ نویسه باشد"
+                else -> errText(e)
+            }
+        } catch (e: Exception) { errText(e) }
+    }
+
     /** Sends an SMS code that confirms the account instead of the login password. Returns an error or null. */
     suspend fun reauthSms(): String? = withContext(Dispatchers.IO) {
         try { Api.reauthSms(); null } catch (e: Api.HttpError) {

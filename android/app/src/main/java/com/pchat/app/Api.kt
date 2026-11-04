@@ -155,6 +155,36 @@ object Api {
         JSONObject(exec(req("/api/privacy").post(JSONObject().put("findable", on).toString().toRequestBody(JSON)).build()))
 
     /** Sends an SMS code that stands in for the login password when the key backup changes. */
+    /** 1.9: change the login password (current password or an SMS code); other devices are logged out */
+    fun changePassword(current: String, password: String) {
+        exec(req("/api/password").post(JSONObject().put("current", current).put("password", password).toString().toRequestBody(JSON)).build())
+    }
+
+    /** 1.9: the version of the APK on the server: {code, name, size} or {code: null} */
+    fun appVersion(): JSONObject = JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/version").get().build()))
+
+    /** 1.9: downloads the server's APK into [dest], reporting (bytes, total) */
+    fun downloadApk(dest: java.io.File, onProgress: (Long, Long) -> Unit) {
+        client.newCall(Request.Builder().url(Config.BASE + "/download/sepan.apk").get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) throw HttpError(resp.code, resp.body?.string() ?: "")
+            val body = resp.body ?: throw IOException("empty")
+            val total = body.contentLength()
+            dest.outputStream().use { out ->
+                body.byteStream().use { inp ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        onProgress(done, total)
+                    }
+                }
+            }
+        }
+    }
+
     fun reauthSms() { exec(req("/api/auth/reauth").post("{}".toRequestBody(JSON)).build()) }
 
     /** Stores the password-encrypted identity key on the server (also makes its pub the account's key). */

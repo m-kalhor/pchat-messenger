@@ -37,6 +37,7 @@ export const signup = (ticket, username, display_name, device) => call('POST', '
 export const lookup = (phones) => call('POST', '/api/contacts/lookup', { phones });
 export const getKeyBackup = () => call('GET', '/api/keybackup');
 export const saveKeyBackup = (key_backup, password) => call('POST', '/api/keybackup', { key_backup, password });
+export const changePassword = (current, password) => call('POST', '/api/password', { current, password });
 export const logout = () => call('POST', '/api/logout', {});
 export const me = () => call('GET', '/api/me');
 export const users = () => call('GET', '/api/users');

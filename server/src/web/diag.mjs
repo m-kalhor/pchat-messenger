@@ -4,7 +4,7 @@
 // second. The «مسیر» button asks the server for traceroute from it to both people of the call.
 import * as api from './api.mjs';
 
-let box = null, timer = null, prev = null, peerName = '', getPc = null, routeEl = null, statsEl = null;
+let box = null, timer = null, prev = null, peerName = '', getPc = null, routeEl = null, statsEl = null, eye = null;
 
 const ms = (s) => (s == null || !isFinite(s) ? '–' : Math.round(s * 1000) + ' ms');
 const kbps = (b) => (b == null ? '–' : b >= 1000 ? (b / 1000).toFixed(1) + ' Mb/s' : Math.round(b) + ' kb/s');
@@ -90,13 +90,22 @@ export function attach(callEl, peer, pcGetter) {
   const btn = el('button', 'مسیر (traceroute)');
   btn.onclick = (e) => { e.stopPropagation(); trace(); };
   box.append(statsEl, btn, routeEl);
-  callEl.append(box);
+  // 1.9: an eye button shows / hides the text over the video; the choice is remembered
+  eye = el('button', null, 'diag-eye');
+  const show = (on) => { box.hidden = !on; eye.textContent = on ? '👁' : '🙈'; eye.classList.toggle('on', on); eye.title = on ? 'مخفی کردن نوشته‌ها' : 'نمایش نوشته‌ها'; };
+  show(textOn());
+  eye.onclick = (e) => { e.stopPropagation(); const on = box.hidden; try { localStorage.setItem('sepan.diagText', on ? '1' : '0'); } catch { } show(on); };
+  callEl.append(box, eye);
   sample();
   timer = setInterval(sample, 1000);
 }
 
+function textOn() { try { return localStorage.getItem('sepan.diagText') !== '0'; } catch { return true; } }
+
 export function detach() {
   clearInterval(timer); timer = null;
+  if (eye) eye.remove();
+  eye = null;
   if (box) box.remove();
   box = null; statsEl = null; routeEl = null; prev = null;
 }

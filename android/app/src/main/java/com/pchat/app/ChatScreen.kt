@@ -71,6 +71,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -343,6 +344,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     Scaffold(
         topBar = {
             TopAppBar(
+                colors = Look.barColors(),
                 navigationIcon = {
                     IconButton(onClick = { if (searching) { searching = false; query = "" } else onBack() }) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت")
@@ -352,7 +354,12 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     if (searching) {
                         OutlinedTextField(
                             value = query, onValueChange = { query = it }, singleLine = true,
-                            placeholder = { Text("جستجو در این گفتگو…") }, modifier = Modifier.fillMaxWidth()
+                            placeholder = { Text("جستجو در این گفتگو…") }, modifier = Modifier.fillMaxWidth(),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedTextColor = Color.White, unfocusedTextColor = Color.White, cursorColor = Color.White,
+                                focusedBorderColor = Color.White.copy(alpha = 0.7f), unfocusedBorderColor = Color.White.copy(alpha = 0.4f),
+                                focusedPlaceholderColor = Look.barSub, unfocusedPlaceholderColor = Look.barSub
+                            )
                         )
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !isGroup) { showProfile = true }) {
@@ -360,7 +367,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                             Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(Engine.titleOf(convo), fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                                Text(subtitle, fontSize = 12.sp, color = Look.barSub)
                             }
                         }
                     }
@@ -390,7 +397,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
             )
         }
     ) { pad ->
-        Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize().background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))) {
+        Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize().then(Look.chatBackground())) {
             if (keyWarn) {
                 Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -458,8 +465,11 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         items(rowsList.size, key = { i -> val x = rowsList[i]; if (x is Msg) x.id else "d$x" }) { i ->
                             val it = rowsList[i]
                             if (it is Msg) {
+                                // 1.9: the tail goes on the last bubble of a run (the list is reversed: i - 1 is newer)
+                                val newer = rowsList.getOrNull(i - 1)
+                                val tail = !(newer is Msg && newer.mine == it.mine && newer.sender == it.sender && newer.type != "call")
                                 Bubble(
-                                    m = it, group = isGroup, progress = progress[it.id], failure = failures[it.id],
+                                    m = it, group = isGroup, tail = tail, progress = progress[it.id], failure = failures[it.id],
                                     pinned = pinnedId == it.id, tick = Engine.tickOf(it, receipts).also { hideSeen },
                                     onReact = { e -> react(it, e) }, onMoreReactions = { reactFor = it },
                                     onReactors = { reactorsOf = it }, onSeenBy = { seenBy = it },
@@ -707,7 +717,7 @@ private fun ProgressBar(p: Float, modifier: Modifier = Modifier) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Bubble(
-    m: Msg, group: Boolean, progress: Float?, failure: String?, pinned: Boolean,
+    m: Msg, group: Boolean, progress: Float?, tail: Boolean = true, failure: String?, pinned: Boolean,
     onImage: (String) -> Unit, onReply: () -> Unit, onPin: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit,
     selecting: Boolean = false, selected: Boolean = false, onSelect: () -> Unit = {}, onEdit: () -> Unit = {},
     onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {},
@@ -718,10 +728,11 @@ fun Bubble(
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    val dark = isSystemInDarkTheme()
+    val dark = Look.dark()
     val bg = if (m.mine) (if (dark) Color(0xFF2B5278) else Color(0xFFEFFDDE)) else (if (dark) Color(0xFF182533) else Color.White)
     val fg = if (dark) Color(0xFFF5F5F5) else Color(0xFF111111)
-    val sub = fg.copy(alpha = 0.55f)
+    // 1.9: like Telegram, the time and ticks on my bubbles are green in the light theme
+    val sub = if (m.mine && !dark) Color(0xFF5FA55A) else fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
     var playVideo by remember { mutableStateOf<String?>(null) }
     playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, m.mime) { playVideo = null } }
@@ -729,7 +740,7 @@ fun Bubble(
     val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
     val autoVoice = m.type == "voice" && m.localPath == null && m.fileId != null && autoAllowed
-    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF2AA5E8)
+    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF4FAE4E)
     val reactable = m.id > 0 && m.status == 0 && m.type != "call" && m.text != LOCKED_TEXT
     val bigEmoji = remember(m.text, m.type, m.replyId) { m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0 }
 
@@ -741,20 +752,20 @@ fun Bubble(
         Modifier.fillMaxWidth()
             .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
             .then(if (selecting) Modifier.clickable(onClick = onSelect) else Modifier)
-            .padding(horizontal = 8.dp, vertical = 2.dp),
+            .padding(horizontal = 4.dp, vertical = 2.dp),
         horizontalArrangement = if (m.mine) Arrangement.End else Arrangement.Start
     ) {
         Box {
             Surface(
                 color = if (bigEmoji) Color.Transparent else bg,
-                shape = RoundedCornerShape(topStart = 14.dp, topEnd = 14.dp, bottomStart = if (m.mine) 14.dp else 3.dp, bottomEnd = if (m.mine) 3.dp else 14.dp),
+                shape = if (bigEmoji) RoundedCornerShape(14.dp) else BubbleShape(m.mine, tail),
                 shadowElevation = if (bigEmoji) 0.dp else 1.dp,
                 modifier = Modifier.widthIn(max = 300.dp).combinedClickable(
                     onClick = { if (selecting) onSelect() },
                     onLongClick = { if (selecting) onSelect() else if (m.type != "call") menu = true }
                 )
             ) {
-                Column(Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                Column(Modifier.padding(start = if (m.mine || bigEmoji) 10.dp else 16.dp, end = if (m.mine && !bigEmoji) 16.dp else 10.dp, top = 6.dp, bottom = 6.dp)) {
                     if (group && !m.mine) {
                         Text(Engine.nameOf(m.sender), color = U.colorFor(m.sender), fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     }

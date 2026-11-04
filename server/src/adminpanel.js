@@ -1,4 +1,5 @@
 'use strict';
+const { apkVersion } = require('./apkinfo');
 const http = require('node:http');
 const https = require('node:https');
 const fs = require('node:fs');
@@ -64,7 +65,8 @@ function stateDump(ctx) {
 
 function authInfo(ctx) {
   const c = auth.smsConfig();
-  const apk = ctx.apkInfo ? ctx.apkInfo() : null;
+  let apk = ctx.apkInfo ? ctx.apkInfo() : null;
+  if (apk && ctx.apkPath) { const v = apkVersion(ctx.apkPath); apk = { ...apk, version: v ? v.name : null, version_code: v ? v.code : null }; }
   return {
     api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
     enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,

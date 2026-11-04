@@ -78,6 +78,8 @@ export function errText(e) {
     case 'not_connected': return 'تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد';
     case 'sms_foreign': return 'پیامک فقط به شماره‌های ایران (‎+98) فرستاده می‌شود. کد را از دستگاه دیگرتان یا از مدیر بگیرید و «کد را دارم» را بزنید.';
     case 'bad_username': return 'نام کاربری درست نیست';
+    case 'bad_password': return 'رمز فعلی (یا کد پیامکی) درست نیست';
+    case 'weak_password': return 'رمز تازه باید دست‌کم ۸ نویسه باشد';
     default: break;
   }
   if (e instanceof api.HttpError) return 'خطای سرور (' + e.status + ')';
@@ -185,6 +187,8 @@ async function finishLogin(r, password) {
 let loginPass = null;
 export const needsAccountPassword = () => loginPass === null;
 /** Sends an SMS code that confirms the account instead of the login password. */
+/** 1.9: change the login password (current one or an SMS code); other devices are logged out */
+export async function changePassword(current, password) { try { await api.changePassword(current, password); return null; } catch (e) { return errText(e); } }
 export async function reauthSms() { try { await api.reauthSms(); return null; } catch (e) { return errText(e); } }
 /** A one-time code for signing in on a new device: { code, ttl, phone } or { error }. */
 export async function deviceCode() { try { return await api.deviceCode(); } catch (e) { return { error: errText(e) }; } }
