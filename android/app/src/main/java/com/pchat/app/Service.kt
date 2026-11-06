@@ -82,7 +82,17 @@ class BootReceiver : BroadcastReceiver() {
 
 /** Foreground service that keeps microphone/camera alive while a call is running. */
 class CallService : Service() {
+    companion object {
+        /** True once startForeground() has run; only then may the service be stopped from outside. */
+        @Volatile var foreground = false
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onDestroy() {
+        foreground = false
+        super.onDestroy()
+    }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val video = intent?.getBooleanExtra("video", false) ?: false
@@ -92,13 +102,24 @@ class CallService : Service() {
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
-        if (Build.VERSION.SDK_INT >= 30) {
-            var t = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
-            if (video) t = t or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
-            startForeground(2, n, t)
-        } else {
-            startForeground(2, n)
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                var t = ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                if (video) t = t or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                startForeground(2, n, t)
+            } else {
+                startForeground(2, n)
+            }
+        } catch (e: Exception) {
+            // e.g. camera/microphone permission revoked: retry as a plain microphone service
+            try {
+                if (Build.VERSION.SDK_INT >= 30) startForeground(2, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
+                else startForeground(2, n)
+            } catch (e2: Exception) { }
         }
+        foreground = true
+        // the call may have ended before Android got here; then leave quietly
+        if (CallManager.state.value.phase == CallPhase.IDLE) stopSelf()
         return START_NOT_STICKY
     }
 }
