@@ -113,6 +113,12 @@ object CallManager {
 
     fun startCall(peer: String, video: Boolean) {
         val id = UUID.randomUUID().toString().take(12)
+        // 1.9.2: someone who never logged in has no key yet, so the invite cannot be encrypted.
+        // Say so up front instead of starting (and instantly tearing down) a call.
+        if (Engine.users.value.firstOrNull { it.username == peer }?.pubkey.isNullOrEmpty()) {
+            main.post { Toast.makeText(app, "این کاربر هنوز وارد سپن نشده؛ بعد از اولین ورودش می‌توانید با او تماس بگیرید", Toast.LENGTH_LONG).show() }
+            return
+        }
         synchronized(lock) {
             if (state.value.phase != CallPhase.IDLE) return
             state.value = CallState(CallPhase.OUTGOING, peer, video, id, incoming = false, speaker = video, note = "در حال برقراری تماس…")
@@ -122,12 +128,16 @@ object CallManager {
                 turnInfo = fetchTurn()
                 val f = ensureFactory()
                 setupAudioMode(video)
-                startCallService(video && hasCamera())
                 val p = createPeer(f, video)
                 val offer = createOffer(p)
                 setLocal(p, offer)
                 val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description))
                 if (!delivered) { endCall("کاربر الان آنلاین نیست", false); return@launch }
+                // 1.9.2: the foreground service starts only once the invite really reached the peer.
+                // Starting it earlier and stopping it a few ms later (peer offline) crashed the app with
+                // ForegroundServiceDidNotStartInTimeException.
+                if (state.value.phase == CallPhase.IDLE) return@launch
+                startCallService(video && hasCamera())
                 armTimeout(45_000L, "پاسخی داده نشد")
             } catch (e: Api.HttpError) {
                 // 1.7: someone who has not accepted my message request: the call is only noted on the request
@@ -452,7 +462,7 @@ object CallManager {
         Engine.addCallLog(cur.peer, text, !cur.incoming)
 
         AudioRouter.stop()
-        try { app.stopService(Intent(app, CallService::class.java)) } catch (e: Exception) { }
+        stopCallService()
         if (note.isNotEmpty()) main.post { Toast.makeText(app, note, Toast.LENGTH_SHORT).show() }
 
         Engine.scope.launch(Dispatchers.Default) {
@@ -479,7 +489,19 @@ object CallManager {
     }
 
     private fun startCallService(video: Boolean) {
-        ContextCompat.startForegroundService(app, Intent(app, CallService::class.java).putExtra("video", video))
+        try {
+            ContextCompat.startForegroundService(app, Intent(app, CallService::class.java).putExtra("video", video))
+        } catch (e: Exception) { }
+    }
+
+    /**
+     * Stopping a service started with startForegroundService() before it reached startForeground()
+     * makes Android kill the app. If it is not in the foreground yet, leave it alone: CallService
+     * notices the call is already over right after startForeground() and stops itself.
+     */
+    private fun stopCallService() {
+        if (!CallService.foreground) return
+        try { app.stopService(Intent(app, CallService::class.java)) } catch (e: Exception) { }
     }
 
     private fun armTimeout(ms: Long, note: String) {
