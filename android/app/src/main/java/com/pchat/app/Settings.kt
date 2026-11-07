@@ -102,6 +102,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
         }
     }
 
+    SystemBars.HeaderShown()
     Scaffold(
         topBar = {
             TopAppBar(

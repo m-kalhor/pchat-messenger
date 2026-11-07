@@ -147,6 +147,7 @@ fun CallScreen() {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
     val accept = rememberAcceptHandler(s.video)
+    SystemBars.DarkWhileShown()
 
     val status = when (s.phase) {
         CallPhase.INCOMING -> if (s.video) "تماس تصویری ورودی" else "تماس صوتی ورودی"
