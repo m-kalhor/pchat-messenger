@@ -10,6 +10,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -59,6 +60,30 @@ class MainActivity : ComponentActivity() {
     override fun onStop() { super.onStop(); Engine.appVisible = false; Engine.setActive(false); VoicePlayer.stop(); AppLock.onAppStop() }
 }
 
+/**
+ * Which colour the system bar icons need. They follow the app's own theme (not the
+ * phone's dark mode); screens with the blue header want white status-bar icons, and
+ * full-screen dark screens in the main window (the call screen) want white icons on both bars.
+ */
+object SystemBars {
+    val headerScreens = androidx.compose.runtime.mutableIntStateOf(0)
+    val darkScreens = androidx.compose.runtime.mutableIntStateOf(0)
+
+    @Composable
+    fun HeaderShown() = Counted(headerScreens)
+
+    @Composable
+    fun DarkWhileShown() = Counted(darkScreens)
+
+    @Composable
+    private fun Counted(n: androidx.compose.runtime.MutableIntState) {
+        DisposableEffect(Unit) {
+            n.intValue++
+            onDispose { n.intValue-- }
+        }
+    }
+}
+
 @Composable
 fun PChatTheme(content: @Composable () -> Unit) {
     val theme by Prefs.theme.collectAsState()
@@ -67,6 +92,19 @@ fun PChatTheme(content: @Composable () -> Unit) {
         darkColorScheme(primary = Color(0xFF5EB5F7), background = Color(0xFF0E1621), surface = Color(0xFF17212B), surfaceVariant = Color(0xFF0E1621))
     } else {
         lightColorScheme(primary = Color(0xFF3390EC), background = Color.White, surface = Color.White, surfaceVariant = Color(0xFFDDE6EE))
+    }
+    // light bars = dark icons (on a white background); dark bars = white icons
+    val activity = LocalContext.current as? ComponentActivity
+    val headerScreens by SystemBars.headerScreens
+    val darkScreens by SystemBars.darkScreens
+    val darkNav = dark || darkScreens > 0
+    val darkStatus = darkNav || headerScreens > 0
+    LaunchedEffect(darkStatus, darkNav, activity) {
+        val clear = android.graphics.Color.TRANSPARENT
+        activity?.enableEdgeToEdge(
+            statusBarStyle = if (darkStatus) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear),
+            navigationBarStyle = if (darkNav) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
+        )
     }
     MaterialTheme(colorScheme = scheme) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) { content() }

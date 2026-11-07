@@ -341,6 +341,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val pinnedId = pins[convo]
     val pinnedMsg = remember(pinnedId, tick) { pinnedId?.let { Engine.db.get(it) } }
 
+    SystemBars.HeaderShown()
     Scaffold(
         topBar = {
             TopAppBar(
