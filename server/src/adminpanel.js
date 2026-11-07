@@ -11,6 +11,7 @@ const stats = require('./stats');
 const backup = require('./backup');
 const auth = require('./auth');
 const diag = require('./diag');
+const stickers = require('./stickers');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
 const sessions = new Map(); // token -> { csrf, ts }
@@ -313,6 +314,55 @@ async function route(ctx, req, res, secure) {
     return json(res, 200, authInfo(ctx));
   }
 
+  // ---- 1.10 sticker packs: official packs for everyone, limits for the users' own packs ----
+  if (sub.startsWith('/stickers')) {
+    try {
+      if (sub === '/stickers' && req.method === 'GET') return json(res, 200, { config: stickers.config(), packs: stickers.adminList() });
+      if (sub === '/stickers/config' && req.method === 'POST') {
+        const b = await readJson(req, 2048);
+        const c = stickers.saveConfig(b);
+        ctx.stickersChanged && ctx.stickersChanged();
+        return json(res, 200, { config: c, packs: stickers.adminList() });
+      }
+      if (sub === '/stickers/packs' && req.method === 'POST') {
+        const b = await readJson(req, 2048);
+        const id = stickers.createPack(null, b.title);
+        ctx.stickersChanged && ctx.stickersChanged();
+        return json(res, 200, { id });
+      }
+      let sm = /^\/stickers\/pack\/([a-f0-9]{16})(?:\/(sticker|rename|delete))?$/.exec(sub);
+      if (sm) {
+        const [, id, act] = sm;
+        if (!act && req.method === 'GET') { const pk = stickers.packFor(null, id); return pk ? json(res, 200, pk) : json(res, 404, { error: 'no_such_pack' }); }
+        if (act === 'delete' && req.method === 'POST') { stickers.deletePack(null, id); ctx.stickersChanged && ctx.stickersChanged(); return json(res, 200, { ok: true }); }
+        if (act === 'rename' && req.method === 'POST') { const b = await readJson(req, 2048); stickers.renamePack(null, id, b.title); ctx.stickersChanged && ctx.stickersChanged(); return json(res, 200, { ok: true }); }
+        if (act === 'sticker' && req.method === 'POST') {
+          const buf = await new Promise((resolve, reject) => {
+            const chunks = []; let size = 0;
+            req.on('data', (c) => { size += c.length; if (size > 1024 * 1024) { reject(Object.assign(new Error('sticker_too_large'), { code: 413 })); req.destroy(); } else chunks.push(c); });
+            req.on('end', () => resolve(Buffer.concat(chunks)));
+            req.on('error', reject);
+          });
+          const s = stickers.addSticker(null, id, buf, url.searchParams.get('emoji'));
+          ctx.stickersChanged && ctx.stickersChanged();
+          return json(res, 200, s);
+        }
+      }
+      sm = /^\/stickers\/sticker\/([a-f0-9]{32})(\/delete)?$/.exec(sub);
+      if (sm && sm[2] && req.method === 'POST') { stickers.deleteSticker(null, sm[1]); ctx.stickersChanged && ctx.stickersChanged(); return json(res, 200, { ok: true }); }
+      if (sm && !sm[2] && req.method === 'GET') {
+        const img = stickers.image(sm[1]);
+        if (!img) return json(res, 404, { error: 'no_such_sticker' });
+        res.writeHead(200, { 'Content-Type': img.mime, 'Content-Length': img.data.length, 'Cache-Control': 'private, max-age=86400' });
+        return res.end(img.data);
+      }
+    } catch (e) {
+      if (e instanceof stickers.StickerError) return json(res, e.status, { error: e.message });
+      throw e;
+    }
+    return json(res, 404, { error: 'not_found' });
+  }
+
   let m = /^\/users\/([a-z0-9_]{2,20})\/logincode$/.exec(sub);
   if (m && req.method === 'POST') {
     // a one-time sign-in code for a user who has no signed-in device and gets no SMS
@@ -333,6 +383,7 @@ async function route(ctx, req, res, secure) {
     }
     if (action === 'delete') {
       core.deleteUser(name);
+      stickers.deleteUser(name);
       ctx.kick(name);
       try { fs.unlinkSync(path.join(DATA_DIR, 'avatars', name + '.webp')); } catch { }
       ctx.refreshAll();

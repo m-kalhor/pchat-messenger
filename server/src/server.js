@@ -14,6 +14,7 @@ const push = require('./push');
 const auth = require('./auth');
 const diag = require('./diag');
 const { apkVersion } = require('./apkinfo');
+const stickers = require('./stickers');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -734,6 +735,12 @@ async function route(req, res) {
     return res.end(buf);
   }
 
+  // ---- 1.10 sticker packs (see stickers.js) ----
+  if (p.startsWith('/api/sticker')) {
+    const r = await stickerRoute(req, res, p, url, user);
+    if (r !== false) return;
+  }
+
   if (p === '/api/events' && req.method === 'GET') {
     const since = Number(url.searchParams.get('since') || req.headers['last-event-id'] || 0) || 0;
     req.socket.setTimeout(0);
@@ -1078,6 +1085,66 @@ async function route(req, res) {
 
   return send(res, 404, { error: 'not_found' });
 }
+/** The /api/stickers… and /api/sticker/<id> routes; false when the path is not one of them. */
+async function stickerRoute(req, res, p, url, user) {
+  const im = /^\/api\/sticker\/([a-f0-9]{32})$/.exec(p);
+  if (im && req.method === 'GET') {
+    const img = stickers.image(im[1]);
+    if (!img) return send(res, 404, { error: 'no_such_sticker' });
+    res.writeHead(200, { 'Content-Type': img.mime, 'Content-Length': img.data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    return res.end(img.data);
+  }
+  // the user's other devices reload their sticker panel
+  const changed = (users) => { for (const u of users || [user]) emit(u, 'stickers', {}); };
+  try {
+    if (p === '/api/stickers' && req.method === 'GET') return send(res, 200, stickers.listFor(user));
+    if (p === '/api/stickers/packs' && req.method === 'POST') {
+      const b = await readJson(req, 2048);
+      const id = stickers.createPack(user, b.title);
+      changed();
+      return send(res, 200, stickers.packFor(user, id));
+    }
+    if (p === '/api/stickers/order' && req.method === 'POST') {
+      const b = await readJson(req, 65536);
+      stickers.reorder(user, b.packs);
+      changed();
+      return send(res, 200, { ok: true });
+    }
+    const pm = /^\/api\/stickers\/pack\/([a-f0-9]{16})(?:\/(add|remove|rename|sticker))?$/.exec(p);
+    if (pm) {
+      const [, id, act] = pm;
+      if (!act && req.method === 'GET') {
+        const pk = stickers.packFor(user, id);
+        return pk ? send(res, 200, pk) : send(res, 404, { error: 'no_such_pack' });
+      }
+      if (!act && req.method === 'DELETE') { changed(stickers.deletePack(user, id)); return send(res, 200, { ok: true }); }
+      if (act === 'add' && req.method === 'POST') { stickers.addToCollection(user, id); changed(); return send(res, 200, stickers.packFor(user, id)); }
+      if (act === 'remove' && req.method === 'POST') { stickers.removeFromCollection(user, id); changed(); return send(res, 200, { ok: true }); }
+      if (act === 'rename' && req.method === 'POST') {
+        const b = await readJson(req, 2048);
+        stickers.renamePack(user, id, b.title);
+        changed();
+        return send(res, 200, stickers.packFor(user, id));
+      }
+      if (act === 'sticker' && req.method === 'POST') {
+        const max = stickers.config().max_kb * 1024;
+        const len = Number(req.headers['content-length']);
+        if (!len || len > max) { res.setHeader('Connection', 'close'); return send(res, 413, { error: 'sticker_too_large', maxBytes: max }); }
+        if (limited('stk:' + user, 300)) return send(res, 429, { error: 'rate_limited' });
+        addFail('stk:' + user);
+        const s = stickers.addSticker(user, id, await readBody(req, max), url.searchParams.get('emoji'));
+        changed();
+        return send(res, 200, s);
+      }
+    }
+    const sm = /^\/api\/stickers\/sticker\/([a-f0-9]{32})$/.exec(p);
+    if (sm && req.method === 'DELETE') { stickers.deleteSticker(user, sm[1]); changed(); return send(res, 200, { ok: true }); }
+  } catch (e) {
+    if (e instanceof stickers.StickerError) return send(res, e.status, { error: e.message });
+    throw e;
+  }
+  return false;
+}
 const inflight = new Set();
 
 const handler = (req, res) => {
@@ -1130,7 +1197,7 @@ stats.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
-const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
+const ctx = { kick, refreshAll, stickersChanged: (users) => { for (const u of users || connectedUsers()) emit(u, 'stickers', {}); }, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------

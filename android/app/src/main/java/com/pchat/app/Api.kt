@@ -250,6 +250,33 @@ object Api {
         }
     }
 
+    // ---- 1.10 sticker packs ----
+    fun stickers(): JSONObject = JSONObject(exec(req("/api/stickers").get().build()))
+    fun stickerPack(id: String): JSONObject = JSONObject(exec(req("/api/stickers/pack/$id").get().build()))
+    fun createStickerPack(title: String): JSONObject =
+        JSONObject(exec(req("/api/stickers/packs").post(JSONObject().put("title", title).toString().toRequestBody(JSON)).build()))
+    fun stickerPackAction(id: String, action: String) { exec(req("/api/stickers/pack/$id/$action").post("{}".toRequestBody(JSON)).build()) }
+    fun renameStickerPack(id: String, title: String) {
+        exec(req("/api/stickers/pack/$id/rename").post(JSONObject().put("title", title).toString().toRequestBody(JSON)).build())
+    }
+    fun deleteStickerPack(id: String) { exec(req("/api/stickers/pack/$id").delete().build()) }
+    fun orderStickerPacks(ids: List<String>) {
+        exec(req("/api/stickers/order").post(JSONObject().put("packs", JSONArray(ids)).toString().toRequestBody(JSON)).build())
+    }
+    /** data: a static WebP or PNG of at most 512x512. */
+    fun addSticker(packId: String, data: ByteArray, mime: String, emoji: String?): JSONObject {
+        val q = if (emoji.isNullOrBlank()) "" else "?emoji=" + java.net.URLEncoder.encode(emoji, "UTF-8")
+        return JSONObject(exec(req("/api/stickers/pack/$packId/sticker$q").post(data.toRequestBody(mime.toMediaType())).build()))
+    }
+    fun deleteSticker(id: String) { exec(req("/api/stickers/sticker/$id").delete().build()) }
+    /** The sticker image; HttpError 404 when its pack was deleted. */
+    fun stickerImage(id: String): ByteArray {
+        client.newCall(req("/api/sticker/$id").get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) throw HttpError(resp.code, "sticker")
+            return resp.body!!.bytes()
+        }
+    }
+
     fun pin(target: String, messageId: Long?) {
         val b = JSONObject().put("target", target).put("messageId", if (messageId == null) JSONObject.NULL else messageId)
         exec(req("/api/pin").post(b.toString().toRequestBody(JSON)).build())

@@ -653,13 +653,18 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         }
                     ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
                 }
-                if (emojiOpen && recorder == null) EmojiPanel { e ->
+                if (emojiOpen && recorder == null) EmojiStickerPanel(onEmoji = { e ->
                     val cur = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
                     val a = minOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
                     val b = maxOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
                     val t = text.substring(0, a) + e + text.substring(b)
                     if (t.length <= 4000) { text = t; field = TextFieldValue(t, TextRange(a + e.length)) }
-                }
+                }, onSticker = { k ->
+                    // 1.10: a sticker goes out at once (like Telegram); a reply in progress goes with it
+                    val r = replyTo
+                    replyTo = null
+                    Engine.sendSticker(convo, k, r)
+                })
               }
             }
         }
@@ -743,7 +748,10 @@ fun Bubble(
     val autoVoice = m.type == "voice" && m.localPath == null && m.fileId != null && autoAllowed
     val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF4FAE4E)
     val reactable = m.id > 0 && m.status == 0 && m.type != "call" && m.text != LOCKED_TEXT
-    val bigEmoji = remember(m.text, m.type, m.replyId) { m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0 }
+    val bigEmoji = remember(m.text, m.type, m.replyId) { (m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0) || m.type == "sticker" }
+    var showPack by remember { mutableStateOf<String?>(null) }
+    showPack?.let { StickerPackDialog(it) { showPack = null } }
+    val stickerGone by Stickers.gone.collectAsState()
 
     LaunchedEffect(m.id, m.localPath) {
         if (autoImage || autoVoice) Engine.downloadMedia(m)
@@ -824,6 +832,7 @@ fun Bubble(
                         }
                         "voice" -> VoiceContent(m, progress, sub)
                         "location" -> m.loc?.let { LocationContent(it, fg, sub) } ?: Text(m.text, color = fg, fontSize = textSize.sp)
+                        "sticker" -> if (m.stk != null) StickerContent(m) else Text(m.text, color = fg, fontSize = textSize.sp)
                         "call" -> Text(m.text, color = sub, fontSize = 14.sp)
                         else -> if (bigEmoji) BigEmoji(m.text, m.id, textSize * 2) else MentionText(m.text, fg, textSize.sp, LocalOpenMention.current)
                     }
@@ -884,6 +893,14 @@ fun Bubble(
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("فوروارد") }, onClick = { menu = false; onForward() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
                 if (m.type == "text") DropdownMenuItem(text = { Text("کپی") }, onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) })
+                m.stk?.let { k ->
+                    DropdownMenuItem(text = { Text(if (Stickers.isFav(k.id)) "برداشتن از علاقه‌مندی‌ها" else "⭐ افزودن به علاقه‌مندی‌ها") }, onClick = {
+                        menu = false
+                        val fav = Stickers.toggleFav(k)
+                        Toast.makeText(ctx, if (fav) "به علاقه‌مندی‌ها اضافه شد ⭐" else "از علاقه‌مندی‌ها برداشته شد", Toast.LENGTH_SHORT).show()
+                    })
+                    if (k.id !in stickerGone) DropdownMenuItem(text = { Text("🎭 نمایش پک") }, onClick = { menu = false; showPack = k.p })
+                }
                 if (m.id > 0) DropdownMenuItem(text = { Text("اطلاعات پیام") }, onClick = { menu = false; onInfo() })
                 if (group && m.mine && m.id > 0 && m.status == 0) DropdownMenuItem(text = { Text("دیده شده توسط…") }, onClick = { menu = false; onSeenBy() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text(if (pinned) "برداشتن پین" else "پین کردن") }, onClick = { menu = false; onPin() })
