@@ -1,4 +1,4 @@
-// Renders the starter sticker pack «شکلک‌های سپن» into server/src/stickers-default/.
+// Renders the starter sticker pack «شکلک‌های سپن» into server/src/stickers-default/sepan/.
 // Art: Noto Color Emoji (SIL OFL 1.1) and the Vazirmatn font (SIL OFL 1.1). Needs Playwright + Chromium.
 //   node docs/stickers/make-starter-pack.mjs /path/to/Vazirmatn-Black.ttf
 import { chromium } from 'playwright';
@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
-const out = path.join(root, 'server/src/stickers-default');
+const out = path.join(root, 'server/src/stickers-default/sepan');
 const font = process.argv[2];
 if (!font || !fs.existsSync(font)) { console.error('usage: make-starter-pack.mjs <Vazirmatn-Black.ttf>'); process.exit(1); }
 
