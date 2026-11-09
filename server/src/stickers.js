@@ -230,21 +230,30 @@ function deleteUser(user) {
 }
 
 /**
- * 1.10.2: the starter pack «شکلک‌های سپن» (stickers-default/) is added as an official pack the first time
- * the server starts. Only once: if the admin deletes it, it stays deleted.
+ * 1.10.2+: built-in official packs in stickers-default/<name>/ (pack.json + images): «شکلک‌های سپن» (sepan)
+ * and, since 1.10.3, «شکلک‌های سه‌بعدی» (fluent3d). Each is added once, the first time a server version that
+ * has it starts; if the admin deletes it, it stays deleted. Returns the ids of the packs added now.
  */
-function seedDefault(dir = path.join(__dirname, 'stickers-default')) {
-  if (getSetting('stk_seeded', '')) return null;
-  let man;
-  try { man = JSON.parse(fs.readFileSync(path.join(dir, 'pack.json'), 'utf8')); } catch { return null; }
-  const id = createPack(null, man.title);
-  for (const s of man.stickers || []) {
-    try { addSticker(null, id, fs.readFileSync(path.join(dir, path.basename(String(s.file)))), s.emoji); } catch (e) { console.error('[stickers] starter sticker', s.file, e.message); }
+function seedDefault(base = path.join(__dirname, 'stickers-default')) {
+  const added = [];
+  let dirs = [];
+  try { dirs = fs.readdirSync(base, { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name).sort(); } catch { return added; }
+  for (const name of dirs) {
+    const key = name === 'sepan' ? 'stk_seeded' : 'stk_seeded_' + name; // 1.10.2 used stk_seeded for the first pack
+    if (getSetting(key, '')) continue;
+    const dir = path.join(base, name);
+    let man;
+    try { man = JSON.parse(fs.readFileSync(path.join(dir, 'pack.json'), 'utf8')); } catch { continue; }
+    const id = createPack(null, man.title);
+    for (const s of man.stickers || []) {
+      try { addSticker(null, id, fs.readFileSync(path.join(dir, path.basename(String(s.file)))), s.emoji); } catch (e) { console.error('[stickers] built-in sticker', name, s.file, e.message); }
+    }
+    setSetting(key, id);
+    added.push(id);
   }
-  setSetting('stk_seeded', id);
-  return id;
+  return added;
 }
-try { seedDefault(); } catch (e) { console.error('[stickers] starter pack:', e.message); }
+try { seedDefault(); } catch (e) { console.error('[stickers] built-in packs:', e.message); }
 
 module.exports = {
   StickerError, seedDefault, config, saveConfig, listFor, packFor, createPack, renamePack, deletePack, addSticker, deleteSticker,
