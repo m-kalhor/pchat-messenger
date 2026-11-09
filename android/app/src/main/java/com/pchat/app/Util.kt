@@ -97,7 +97,7 @@ object U {
     }
 }
 
-private fun exifRotation(ins: InputStream): Int = try {
+internal fun exifRotation(ins: InputStream): Int = try {
     when (ExifInterface(ins).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
         ExifInterface.ORIENTATION_ROTATE_90 -> 90
         ExifInterface.ORIENTATION_ROTATE_180 -> 180
