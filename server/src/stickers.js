@@ -230,7 +230,7 @@ function deleteUser(user) {
 }
 
 /**
- * 1.10.1: the starter pack «شکلک‌های سپن» (stickers-default/) is added as an official pack the first time
+ * 1.10.2: the starter pack «شکلک‌های سپن» (stickers-default/) is added as an official pack the first time
  * the server starts. Only once: if the admin deletes it, it stays deleted.
  */
 function seedDefault(dir = path.join(__dirname, 'stickers-default')) {

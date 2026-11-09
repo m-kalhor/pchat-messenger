@@ -707,6 +707,7 @@ object Engine {
                         flushAll()
                         synchronized(acks) { acked.clear() }
                         scope.launch { delay(2500); syncReceipts() }
+                        scope.launch { delay(4000); Updater.checkAndNotify(app, appVisible) }
                     },
                     onEvent = { ev, data -> try { handleEvent(ev, data) } catch (e: Exception) { } }
                 )
@@ -768,6 +769,7 @@ object Engine {
             "contacts" -> try { refreshRequests() } catch (e: Exception) { }
             "login_alert" -> postLoginAlert(o)
             "stickers" -> scope.launch { Stickers.refresh() }
+            "app_update" -> scope.launch { Updater.checkAndNotify(app, appVisible) }
             "pin" -> {
                 val convo = o.getString("convo")
                 if (o.isNull("messageId")) pins.value = pins.value - convo

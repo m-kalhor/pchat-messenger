@@ -310,6 +310,7 @@ async function route(ctx, req, res, secure) {
   // ---- the Android app offered for download on the web login page (raw APK as the request body) ----
   if (sub === '/apk' && req.method === 'POST') {
     try { await saveApk(req, ctx.apkPath); } catch (e) { return json(res, e.code === 413 ? 413 : 400, { error: e.message }); }
+    if (ctx.appUpdated) ctx.appUpdated(); // 1.10.2: open Android apps check now and tell the user about the new version
     return json(res, 200, authInfo(ctx));
   }
   if (sub === '/apk' && req.method === 'DELETE') {

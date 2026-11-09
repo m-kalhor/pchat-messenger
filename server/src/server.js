@@ -1196,7 +1196,7 @@ stats.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
-const ctx = { kick, refreshAll, stickersChanged: (users) => { for (const u of users || connectedUsers()) emit(u, 'stickers', {}); }, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
+const ctx = { kick, refreshAll, stickersChanged: (users) => { for (const u of users || connectedUsers()) emit(u, 'stickers', {}); }, appUpdated: () => { for (const u of connectedUsers()) emit(u, 'app_update', {}); }, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------

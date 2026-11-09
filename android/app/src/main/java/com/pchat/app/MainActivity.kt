@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         Engine.init(this)
         deepLink.value = intent.getStringExtra("convo")
+        if (intent.getBooleanExtra("update", false)) Updater.showAgain()
         setContent { PChatTheme { App(deepLink) } }
     }
 
@@ -54,6 +55,7 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         deepLink.value = intent.getStringExtra("convo")
+        if (intent.getBooleanExtra("update", false)) Updater.showAgain()
     }
 
     override fun onStart() { super.onStart(); Engine.appVisible = true; Engine.setActive(true); AppLock.onAppStart(); Engine.refreshDirectory() }
@@ -120,7 +122,7 @@ fun App(deepLink: MutableState<String?>) {
     var settings by remember { mutableStateOf(false) }
     var askBattery by remember { mutableStateOf(false) }
 
-    var updateOffer by remember { mutableStateOf<AppUpdate?>(null) }
+    val updateOffer by Updater.offer.collectAsState()
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val call by CallManager.state.collectAsState()
     val locked by AppLock.locked.collectAsState()
@@ -160,7 +162,7 @@ fun App(deepLink: MutableState<String?>) {
             if (!pm.isIgnoringBatteryOptimizations(ctx.packageName) && !Engine.prefs.getBoolean("battery_asked", false)) askBattery = true
             // 1.9: a newer APK on the server is offered each time the app is opened (never forced)
             Updater.cleanup(ctx)
-            updateOffer = Updater.check(ctx)
+            Updater.check(ctx)?.let { Updater.offer.value = it }
         } else {
             convo = null
             settings = false
@@ -187,8 +189,8 @@ fun App(deepLink: MutableState<String?>) {
     }
 
     val offer = updateOffer
-    if (offer != null && logged && !askBattery && call.phase == CallPhase.IDLE && !locked && ks == null) {
-        UpdateDialog(offer) { updateOffer = null }
+    if (offer != null && offer.code != Updater.dismissed && logged && !askBattery && call.phase == CallPhase.IDLE && !locked && ks == null) {
+        UpdateDialog(offer) { Updater.dismissed = offer.code; Updater.offer.value = null }
     }
 
     if (askBattery) {
