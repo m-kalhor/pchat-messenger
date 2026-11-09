@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.10.2';
+const VERSION = '1.11.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -154,6 +154,51 @@ function confirmBox(title, text, okLabel, danger = false) {
       h('div', { class: 'dialog' }, h('h3', null, title), h('p', null, text),
         h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(false) }, 'انصراف'),
           h('button', { class: 'btn' + (danger ? ' danger' : ''), onclick: () => close(true) }, okLabel))));
+    document.body.append(v);
+  });
+}
+
+/** Longest side and JPEG quality of a «compressed» photo (about 200-400 KB, fine for chat). */
+const PHOTO_MAX_SIDE = 1600, PHOTO_QUALITY = 0.8;
+/** Shrinks a photo to PHOTO_MAX_SIDE as JPEG (drops EXIF/GPS). GIFs, unreadable or already-small files stay as they are. */
+async function compressPhoto(file) {
+  if (file.type === 'image/gif') return file;
+  try {
+    let src;
+    try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {
+      src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+    }
+    const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight;
+    const k = Math.min(1, PHOTO_MAX_SIDE / Math.max(w0, h0));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w0 * k)); c.height = Math.max(1, Math.round(h0 * k));
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); // transparent PNGs get a white background, not black
+    g.drawImage(src, 0, 0, c.width, c.height);
+    if (src.close) src.close(); else URL.revokeObjectURL(src.src);
+    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', PHOTO_QUALITY));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], (file.name || 'photo').replace(/\.[^.]*$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch { return file; }
+}
+/** Preview of the picked photo(s) with a «compress» switch whose last value is remembered; resolves true/false, or null if cancelled. */
+function photoSendBox(files) {
+  return new Promise((resolve) => {
+    const urls = files.slice(0, 6).map((f) => URL.createObjectURL(f));
+    const total = files.reduce((a, f) => a + f.size, 0);
+    const box = h('input', { type: 'checkbox', checked: pref('photoCompress', true) });
+    const note = h('div', { style: { fontSize: '12px', color: 'var(--fg2)' } });
+    const upd = () => { note.textContent = box.checked ? 'حجم کمتر، کیفیت مناسب چت' : 'عکس اصلی (' + fmtSize(total) + ')'; };
+    box.addEventListener('change', upd); upd();
+    const close = (r) => { v.remove(); urls.forEach((u) => URL.revokeObjectURL(u)); if (r != null) setPref('photoCompress', box.checked); resolve(r); };
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(null); } },
+      h('div', { class: 'dialog' }, h('h3', null, files.length > 1 ? 'ارسال ' + faNum(files.length) + ' عکس' : 'ارسال عکس'),
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', margin: '0 0 12px' } },
+          urls.map((u) => h('img', { src: u, alt: '', style: { maxWidth: urls.length > 1 ? '120px' : '100%', maxHeight: urls.length > 1 ? '120px' : '50vh', objectFit: 'cover', borderRadius: '8px' } }))),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '0 0 14px', cursor: 'pointer' } }, box,
+          h('div', null, h('div', { style: { fontWeight: '600' } }, 'فشرده‌سازی'), note)),
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(null) }, 'انصراف'),
+          h('button', { class: 'btn', onclick: () => close(box.checked) }, 'ارسال'))));
     document.body.append(v);
   });
 }
@@ -768,6 +813,8 @@ function ChatScreen(convo) {
 
   const ta = h('textarea', { rows: 1, placeholder: 'پیام', dir: 'auto' });
   const fileIn = h('input', { type: 'file', multiple: true, class: 'hidden' });
+  const photoIn = h('input', { type: 'file', multiple: true, accept: 'image/*', class: 'hidden' });
+  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden' });
   const replyBar = h('div', { class: 'replybar hidden' });
   const selCount = h('div', { class: 'grow' });
   const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, '✕'), selCount,
@@ -781,7 +828,9 @@ function ChatScreen(convo) {
   const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, '🎤');
   const recBar = h('div', { class: 'recbar hidden' });
   const attachBtn = h('button', { class: 'icon', title: 'پیوست', onclick: () => sheet(null, [
-    { label: '🖼 عکس یا فایل', run: () => fileIn.click() },
+    { label: '🖼 عکس از گالری', run: () => photoIn.click() },
+    { label: '📷 عکس با دوربین', run: () => camIn.click() },
+    { label: '📎 فایل', run: () => fileIn.click() },
     { label: '📍 موقعیت مکانی', run: shareLocation },
   ]) }, '📎');
   async function shareLocation() {
@@ -804,7 +853,7 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, pinBar, reqBar, msgs, jump,
-    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn, micBtn), emojiPanel, fileIn));
+    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn, micBtn), emojiPanel, fileIn, photoIn, camIn));
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);
@@ -1178,6 +1227,20 @@ function ChatScreen(convo) {
     fileIn.value = '';
     forceBottom = true;
     for (const f of files) { const err = await E.sendFile(convo, f, reply); if (err) toast(err); }
+    setReply(null);
+  });
+  for (const inp of [photoIn, camIn]) inp.addEventListener('change', async () => {
+    const files = [...inp.files].filter((f) => /^image\//.test(f.type));
+    inp.value = '';
+    if (!files.length) return;
+    const compress = await photoSendBox(files);
+    if (compress == null) return;
+    forceBottom = true;
+    for (const f of files) {
+      const out = compress ? await compressPhoto(f) : f;
+      const err = await E.sendFile(convo, out, reply);
+      if (err) toast(err);
+    }
     setReply(null);
   });
   let panelMode = pref('panelMode', 'emoji');
