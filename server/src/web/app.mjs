@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.11.0';
+const VERSION = '1.12.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -305,24 +305,77 @@ function infoSheet(m) {
 function viewer(url, m) {
   const v = h('div', { class: 'viewer' },
     h('div', { class: 'vbar' }, h('button', { class: 'icon', title: 'بستن', onclick: () => v.remove() }, '✕'),
-      m ? h('button', { class: 'icon', title: 'ذخیره', onclick: () => saveMedia(m) }, '⤓') : null),
+      // 1.12: ⋮ = save to…, save to gallery / share
+      m ? h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(null, mediaItems(m)) }, '⋮') : null),
     h('img', { src: url, alt: '' }));
   document.body.append(v);
 }
 
-/** Save / share a downloaded file: the iOS share sheet offers "Save Image" and "Save to Files". */
-async function saveMedia(m) {
-  const blob = E.mediaBlob(m), url = E.mediaUrl(m);
-  if (!url) return;
-  const name = m.name || (m.type === 'image' ? 'photo.jpg' : 'file');
-  if (blob && navigator.canShare) {
-    const f = new File([blob], name, { type: blob.type || m.mime || 'application/octet-stream' });
-    if (navigator.canShare({ files: [f] })) {
-      try { await navigator.share({ files: [f] }); return; } catch (e) { if (e.name === 'AbortError') return; }
-    }
+/** Name with an extension for a message's media. */
+function mediaName(m, blob) {
+  if (m.name) return m.name;
+  const mime = (blob && blob.type) || m.mime || (m.type === 'image' ? 'image/jpeg' : '');
+  const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'video/mp4': 'mp4', 'audio/ogg': 'ogg', 'audio/webm': 'webm', 'audio/mp4': 'm4a' }[mime] || 'bin';
+  const pre = mime.startsWith('image/') ? 'IMG' : mime.startsWith('video/') ? 'VID' : m.type === 'voice' ? 'VOICE' : 'FILE';
+  const d = new Date(m.ts || Date.now()), z = (n) => String(n).padStart(2, '0');
+  return `${pre}_Sepan_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.${ext}`;
+}
+
+/** The decrypted file of a message, downloading it first when needed. */
+async function mediaFile(m) {
+  if (!E.mediaBlob(m)) {
+    if (!m.fileId) return null;
+    toast('در حال دریافت…');
+    try { await E.download(m); } catch { toast('دریافت فایل ناموفق بود'); return null; }
   }
-  const a = h('a', { href: url, download: name });
+  const blob = E.mediaBlob(m);
+  if (!blob) return null;
+  return new File([blob], mediaName(m, blob), { type: blob.type || m.mime || 'application/octet-stream' });
+}
+
+const canShareFiles = () => !!(navigator.canShare && navigator.share);
+
+/** 1.12 save / share items for photos, videos, files and voice messages (message menu and viewer ⋮). */
+function mediaItems(m) {
+  const visual = m.type === 'image' || /^(image|video)\//.test(m.mime || '');
+  return [
+    canShareFiles() && { label: visual ? 'ذخیره در گالری / اشتراک‌گذاری' : 'اشتراک‌گذاری', run: () => shareMedia(m) },
+    { label: 'ذخیره در…', run: () => saveMediaAs(m) },
+  ];
+}
+
+/** Share sheet; on iPhone it offers «Save Image» / «Save Video» (gallery) and «Save to Files». */
+async function shareMedia(m) {
+  const f = await mediaFile(m);
+  if (!f) return;
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f] }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  saveMediaAs(m);
+}
+
+/** «ذخیره در…»: the folder picker where the browser has one (Chrome / Edge on a computer), otherwise a normal download. */
+async function saveMediaAs(m) {
+  const f = await mediaFile(m);
+  if (!f) return;
+  if (window.showSaveFilePicker) {
+    try {
+      const ext = f.name.includes('.') ? '.' + f.name.split('.').pop() : '';
+      const hnd = await window.showSaveFilePicker({ suggestedName: f.name, types: ext && f.type ? [{ accept: { [f.type]: [ext] } }] : undefined });
+      const w = await hnd.createWritable(); await w.write(f); await w.close();
+      toast('ذخیره شد'); return;
+    } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(f);
+  const a = h('a', { href: url, download: f.name });
   document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/** Tap on a downloaded file: share sheet on phones, otherwise save. */
+async function saveMedia(m) {
+  if (canShareFiles()) return shareMedia(m);
+  return saveMediaAs(m);
 }
 
 // ---------------- theme / text size / viewport ----------------
@@ -965,14 +1018,23 @@ function ChatScreen(convo) {
     if (m.type === 'image') {
       const w = Math.min(260, m.w || 260), hgt = m.w && m.h ? Math.round(w * m.h / m.w) : 180;
       const box = { width: w + 'px', height: Math.min(hgt, 360) + 'px' };
-      if (url) return h('img', { class: 'img', src: url, alt: '', style: box, onclick: (e) => { e.stopPropagation(); viewer(url, m); } });
+      if (url) {
+        // 1.12: a long press (or right click) opens the message menu, a tap opens the viewer
+        const img = h('img', { class: 'img', src: url, alt: '', style: box, onclick: (e) => { e.stopPropagation(); if (!wasLong()) viewer(url, m); } });
+        const wasLong = onLongPress(img, () => { if (!selected) menu(m); });
+        return img;
+      }
       if (m.fileId && !fail && prog == null && m.size <= 25 * 1024 * 1024 && pref('autoImages', true)) E.download(m).catch(() => { });
       return h('div', { class: 'img-ph', style: box, onclick: (e) => { e.stopPropagation(); S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
         prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '🖼 ' + fmtSize(m.size));
     }
     if ((m.mime || '').startsWith('video/')) {
       // videos play right here in the chat (1.7), with the browser's own controls (full screen, speed)
-      if (url) return h('video', { class: 'vid', src: url, controls: true, playsInline: true, preload: 'metadata', onclick: (e) => e.stopPropagation() });
+      if (url) {
+        const vid = h('video', { class: 'vid', src: url, controls: true, playsInline: true, preload: 'metadata', onclick: (e) => e.stopPropagation() });
+        onLongPress(vid, () => { if (!selected) menu(m); });
+        return vid;
+      }
       return h('div', { class: 'img-ph vid-ph', onclick: (e) => { e.stopPropagation(); if (!m.fileId) return; S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
         prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '▶ ویدیو · ' + fmtSize(m.size));
     }
@@ -1087,7 +1149,7 @@ function ChatScreen(convo) {
       m.type === 'sticker' && m.stk && { label: isFav(m.stk.id) ? 'برداشتن از علاقه‌مندی‌ها' : '⭐ افزودن به علاقه‌مندی‌ها', run: () => toggleFav(m.stk) },
       m.type === 'sticker' && m.stk && E.stickerCached(m.stk.id) !== null && { label: '🎭 نمایش پک', run: () => packSheet(m.stk.p) },
       m.type === 'text' && { label: 'کپی', run: () => navigator.clipboard.writeText(m.text).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
-      (m.type === 'image' || m.type === 'file') && E.mediaUrl(m) && { label: m.type === 'image' ? 'ذخیرهٔ عکس / اشتراک' : 'ذخیره در Files / اشتراک', run: () => saveMedia(m) },
+      ...(m.status === 0 && m.fileId && ['image', 'file', 'voice'].includes(m.type) ? mediaItems(m) : []),
       m.id > 0 && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
       m.status === 2 && { label: 'تلاش دوباره', run: () => E.retry(m) },
       m.mine && m.id > 0 && m.status === 0 && { label: 'حذف برای همه', danger: true, run: async () => {
