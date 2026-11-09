@@ -37,7 +37,14 @@ data class ContactRequest(
 /** incoming (new), declined (can still be accepted), blocked, outgoing (mine, always shown as waiting) */
 data class RequestLists(val incoming: List<ContactRequest>, val declined: List<ContactRequest>, val blocked: List<ContactRequest>, val outgoing: List<ContactRequest>)
 data class GroupInfo(val key: String, val name: String, val members: List<String>)
-class TurnInfo(val urls: List<String>, val user: String, val cred: String, val expiresAt: Long)
+/**
+ * TURN credentials plus (1.10.1) the call path settings from the admin panel: [policy] auto / relay / direct,
+ * the limits for switching a bad direct call to the relay, and the video bitrate cap (0 = none).
+ */
+class TurnInfo(
+    val urls: List<String>, val user: String, val cred: String, val expiresAt: Long,
+    val policy: String = "direct", val switchRtt: Int = 400, val switchLoss: Int = 8, val videoKbps: Int = 0
+)
 class PatchResult(val offset: Long, val done: Boolean, val fileId: String?)
 
 fun parseUsers(raw: String): List<UserInfo> {
@@ -355,7 +362,8 @@ object Api {
         return TurnInfo(
             (0 until arr.length()).map { arr.getString(it) },
             o.getString("username"), o.getString("credential"),
-            System.currentTimeMillis() + o.getLong("ttl") * 1000
+            System.currentTimeMillis() + o.getLong("ttl") * 1000,
+            o.optString("policy", "direct"), o.optInt("switch_rtt", 400), o.optInt("switch_loss", 8), o.optInt("video_kbps", 0)
         )
     }
 

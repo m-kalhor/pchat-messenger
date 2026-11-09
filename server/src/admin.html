@@ -90,7 +90,7 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_api_key:'کلید API نامعتبر است',bad_template_id:'شناسهٔ قالب باید عدد باشد',bad_param:'نام پارامتر فقط حروف لاتین، رقم و _',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'کلید API یا شناسهٔ قالب تنظیم نشده',timeout:'سرور به sms.ir نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
+var ERR={bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_api_key:'کلید API نامعتبر است',bad_template_id:'شناسهٔ قالب باید عدد باشد',bad_param:'نام پارامتر فقط حروف لاتین، رقم و _',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'کلید API یا شناسهٔ قالب تنظیم نشده',timeout:'سرور به sms.ir نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
 function msg2(e){return e?(ERR[e]||e):'';}
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
@@ -160,7 +160,7 @@ async function reload(){S=await api('GET','/state');prune();render();}
 
 function render(){
   clearInterval(timer);
-  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود و پیامک'],['stk','استیکرها'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
+  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود، پیامک و تماس'],['stk','استیکرها'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
   var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
   var box=h('main');
   var cnt=h('span',{class:'cnt'}),save=h('button',{class:'grn',onclick:saveAll},'ذخیرهٔ همهٔ تغییرات');
@@ -401,6 +401,20 @@ async function loginTab(box){
     h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'این کاربران در تماس صوتی و تصویری پینگ (تأخیر رفت‌وبرگشت)، لرزش، بستهٔ گم‌شده و نوع اتصال را کنار صفحه می‌بینند و با دکمهٔ «مسیر» هاب‌های بین راه را (traceroute از سرور تا هر دو طرف). برای خاموش کردن، فهرست را خالی کنید و ذخیره بزنید.'),
     h('div',{class:'row'},h('span',null,'نام‌های کاربری:'),du,h('button',{class:'grn',onclick:async function(){de.textContent='';
       try{var j=await api('POST','/auth',{diag_users:du.value});du.value=j.diag_users;de.textContent='✓ ذخیره شد';}catch(e){de.textContent='✗ '+msg(e);}}},'ذخیره'),de)));
+  // 1.10.1: call path settings (callcfg.js). Every change works at the next call, no app update needed.
+  var CC=A.calls||{},cro=h('select',null,[['auto','خودکار: اول مستقیم، اگر کند بود از طریق سرور (پیشنهادی)'],['relay','همیشه از طریق سرور'],['direct','همیشه مستقیم (مثل نسخهٔ قبل، بدون جابه‌جایی)']].map(function(o){var x=h('option',{value:o[0]},o[1]);if(CC.route===o[0])x.selected=true;return x;}));
+  var crt=h('input',{value:CC.rtt,style:'direction:ltr;width:80px',inputmode:'numeric'}),cls=h('input',{value:CC.loss,style:'direction:ltr;width:60px',inputmode:'numeric'});
+  var cvk=h('input',{value:CC.video_kbps,style:'direction:ltr;width:90px',inputmode:'numeric'}),ctl=h('input',{type:'checkbox',checked:!!CC.tls}),ce=h('span');
+  async function saveCalls(body){ce.textContent='';try{var j=await api('POST','/auth',{calls:body});A=j;ce.textContent='✓ ذخیره شد';render();}catch(e){ce.textContent='✗ '+msg(e);}}
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'تنظیمات تماس'),
+    h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'تغییرها از تماس بعدی اعمال می‌شوند و نیاز به به‌روزرسانی اپ ندارند. در حالت خودکار اگر پینگ یا افت بسته در مسیر مستقیم حدود ۶ ثانیه از حد زیر بیشتر باشد، تماس بدون قطع شدن به سرور منتقل می‌شود (فقط بین اپ‌های ۱.۱۰.۱ به بعد).'),
+    h('div',{class:'row'},h('span',null,'مسیر تماس:'),cro),
+    h('div',{class:'row'},h('span',null,'حد پینگ (ms):'),crt,h('span',null,'حد افت بسته (٪):'),cls),
+    h('div',{class:'row'},h('span',null,'سقف بیت‌ریت تصویر (kb/s):'),cvk,h('span',{class:'mut'},'۰ یعنی بدون سقف')),
+    h('div',{class:'row'},h('label',null,ctl,' TURN روی TLS (پورت 5349) برای اپراتورهایی که UDP را کند یا مسدود می‌کنند'),CC.tls_available?null:h('span',{class:'mut'},'(فعال نیست: به دامنه با گواهی Let\'s Encrypt نیاز دارد)')),
+    h('div',{class:'row'},h('button',{class:'grn',onclick:function(){saveCalls({route:cro.value,rtt:Number(crt.value),loss:Number(cls.value),video_kbps:Number(cvk.value),tls:ctl.checked});}},'ذخیره'),
+      h('button',{class:'sec',onclick:function(){if(confirm('تنظیمات پیشنهادی (خودکار، ۴۰۰ms، ۸٪، ۸۰۰kb/s، TLS روشن)؟'))saveCalls({reset:'default'});}},'پیش‌فرض'),
+      h('button',{class:'sec',onclick:function(){if(confirm('برگشت به رفتار نسخهٔ ۱.۱۰.۰ (همیشه مستقیم، بدون سقف تصویر، بدون TLS)؟'))saveCalls({reset:'old'});}},'مثل نسخهٔ قبل'),ce)));
   var tp=h('input',{placeholder:'+98912…',style:'direction:ltr;width:150px',inputmode:'tel'}),tr=h('span');
   var cr=h('span');
   box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'آزمایش'),
