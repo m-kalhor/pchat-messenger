@@ -13,6 +13,7 @@ import android.os.Looper
 import android.widget.Toast
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -30,6 +31,7 @@ import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
 import org.webrtc.PeerConnection
 import org.webrtc.PeerConnectionFactory
+import org.webrtc.RTCStatsReport
 import org.webrtc.RtpTransceiver
 import org.webrtc.SdpObserver
 import org.webrtc.SessionDescription
@@ -98,6 +100,14 @@ object CallManager {
     private var ringtone: Ringtone? = null
     private var timeoutTask: Runnable? = null
     private var disconnectTask: Runnable? = null
+    // 1.10.1: switch a bad direct call to the server relay (admin panel «تنظیمات تماس», mode «خودکار»)
+    private var rtcConfig: PeerConnection.RTCConfiguration? = null
+    private var peerRelay = false   // the other app understands sig_relay / sig_reoffer / sig_reanswer
+    private var switching = false
+    private var relayed = false
+    private var iceHold = false
+    private val heldIce = ArrayList<IceCandidate>()
+    private var watchJob: Job? = null
 
     private class Res(
         val pc: PeerConnection?, val at: AudioTrack?, val asrc: AudioSource?, val lv: VideoTrack?,
@@ -131,7 +141,7 @@ object CallManager {
                 val p = createPeer(f, video)
                 val offer = createOffer(p)
                 setLocal(p, offer)
-                val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description))
+                val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description).put("relay", 1))
                 if (!delivered) { endCall("کاربر الان آنلاین نیست", false); return@launch }
                 // 1.9.2: the foreground service starts only once the invite really reached the peer.
                 // Starting it earlier and stopping it a few ms later (peer offline) crashed the app with
@@ -166,7 +176,7 @@ object CallManager {
                 flushIce(s.callId)
                 val ans = createAnswer(p)
                 setLocal(p, ans)
-                sendSignal(s.peer, "sig_accept", JSONObject().put("callId", s.callId).put("sdp", ans.description))
+                sendSignal(s.peer, "sig_accept", JSONObject().put("callId", s.callId).put("sdp", ans.description).put("relay", 1))
             } catch (e: Exception) {
                 endCall("خطا در اتصال تماس", true)
             }
@@ -205,8 +215,11 @@ object CallManager {
         val j = try { JSONObject(plain) } catch (e: Exception) { return }
         val callId = j.optString("callId")
         when (kind) {
-            "sig_invite" -> onInvite(from, callId, j.optBoolean("video"), j.optString("sdp"))
-            "sig_accept" -> onAccepted(from, callId, j.optString("sdp"))
+            "sig_invite" -> onInvite(from, callId, j.optBoolean("video"), j.optString("sdp"), j.optInt("relay") == 1)
+            "sig_accept" -> onAccepted(from, callId, j.optString("sdp"), j.optInt("relay") == 1)
+            "sig_relay" -> if (matches(from, callId) && !state.value.incoming) Engine.scope.launch { switchToRelay() }
+            "sig_reoffer" -> if (matches(from, callId)) Engine.scope.launch { onReoffer(callId, j.optString("sdp")) }
+            "sig_reanswer" -> if (matches(from, callId)) onReanswer(callId, j.optString("sdp"))
             "sig_ice" -> onRemoteIce(callId, IceCandidate(j.optString("mid"), j.optInt("idx"), j.optString("cand")))
             "sig_reject" -> if (matches(from, callId)) {
                 endCall(if (j.optString("reason") == "busy") "طرف مقابل در تماس دیگری است" else "تماس رد شد", false)
@@ -220,12 +233,13 @@ object CallManager {
         return s.phase != CallPhase.IDLE && s.peer == from && s.callId == callId
     }
 
-    private fun onInvite(from: String, callId: String, video: Boolean, sdp: String) {
+    private fun onInvite(from: String, callId: String, video: Boolean, sdp: String, relay: Boolean) {
         if (callId.isEmpty() || sdp.isEmpty()) return
         val busy = synchronized(lock) {
             if (state.value.phase != CallPhase.IDLE) true
             else {
                 offerSdp = sdp
+                peerRelay = relay
                 state.value = CallState(CallPhase.INCOMING, from, video, callId, incoming = true, speaker = video, note = "تماس ورودی")
                 false
             }
@@ -241,9 +255,10 @@ object CallManager {
         armTimeout(45_000L, "تماس بی‌پاسخ ماند")
     }
 
-    private fun onAccepted(from: String, callId: String, sdp: String) {
+    private fun onAccepted(from: String, callId: String, sdp: String, relay: Boolean) {
         val p = synchronized(lock) {
             if (!matches(from, callId) || state.value.phase != CallPhase.OUTGOING) return
+            peerRelay = relay
             pc
         } ?: return
         cancelTimeout()
@@ -298,9 +313,9 @@ object CallManager {
         return f
     }
 
-    private fun fetchTurn(): TurnInfo {
-        turnInfo?.let { if (it.expiresAt > System.currentTimeMillis() + 600_000L) return it }
-        return Api.turn()
+    /** 1.10.1: asked for every call so a change in the admin panel works at once; the last answer if offline. */
+    private fun fetchTurn(): TurnInfo = try { Api.turn() } catch (e: Exception) {
+        turnInfo?.takeIf { it.expiresAt > System.currentTimeMillis() + 600_000L } ?: throw e
     }
 
     private fun hasCamera() = ContextCompat.checkSelfPermission(app, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
@@ -308,12 +323,16 @@ object CallManager {
     private fun createPeer(f: PeerConnectionFactory, video: Boolean): PeerConnection {
         val t = turnInfo!!
         val servers = listOf(PeerConnection.IceServer.builder(t.urls).setUsername(t.user).setPassword(t.cred).createIceServer())
+        synchronized(lock) { switching = false; relayed = t.policy == "relay"; iceHold = false; heldIce.clear() }
         val cfg = PeerConnection.RTCConfiguration(servers).apply {
+            // «همیشه از طریق سرور» in the admin panel: only relay candidates from the start
+            iceTransportsType = if (relayed) PeerConnection.IceTransportsType.RELAY else PeerConnection.IceTransportsType.ALL
             sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
             continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
             bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         }
+        rtcConfig = cfg
         val p = f.createPeerConnection(cfg, observer) ?: throw IllegalStateException("PeerConnection ساخته نشد")
         val asrc = f.createAudioSource(MediaConstraints())
         val at = f.createAudioTrack("a0", asrc)
@@ -345,6 +364,7 @@ object CallManager {
             val callId = state.value.callId
             val peer = state.value.peer
             if (callId.isEmpty()) return
+            synchronized(lock) { if (iceHold) { heldIce.add(c); return } }
             Engine.scope.launch {
                 try {
                     sendSignal(peer, "sig_ice", JSONObject().put("callId", callId).put("mid", c.sdpMid).put("idx", c.sdpMLineIndex).put("cand", c.sdp))
@@ -363,6 +383,8 @@ object CallManager {
                             state.value = cur.copy(phase = CallPhase.ACTIVE, startedAt = if (cur.startedAt == 0L) System.currentTimeMillis() else cur.startedAt, note = "")
                         }
                     }
+                    limitVideo()
+                    startWatch()
                 }
                 PeerConnection.PeerConnectionState.DISCONNECTED -> {
                     val r = Runnable { endCall("اتصال قطع شد", true) }
@@ -390,11 +412,150 @@ object CallManager {
         override fun onRenegotiationNeeded() {}
     }
 
-    private suspend fun createOffer(p: PeerConnection): SessionDescription = suspendCancellableCoroutine { c ->
+    private suspend fun createOffer(p: PeerConnection, iceRestart: Boolean = false): SessionDescription = suspendCancellableCoroutine { c ->
+        val mc = MediaConstraints()
+        if (iceRestart) mc.mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
         p.createOffer(object : SdpAdapter() {
             override fun onCreateSuccess(d: SessionDescription?) { c.resume(d!!) }
             override fun onCreateFailure(e: String?) { c.resumeWithException(IllegalStateException("offer: $e")) }
-        }, MediaConstraints())
+        }, mc)
+    }
+
+    // ------------------------------------------------------------ 1.10.1: relay switch, video cap
+
+    /** Caps the video this phone sends (admin panel, 0 = no cap) and gives the audio priority on a weak network. */
+    private fun limitVideo() {
+        val p = pc ?: return
+        val kbps = turnInfo?.videoKbps ?: 0
+        for (sender in p.senders) {
+            val kind = try { sender.track()?.kind() } catch (e: Exception) { null } ?: continue
+            try {
+                val prm = sender.parameters
+                val enc = prm.encodings.firstOrNull() ?: continue
+                if (kind == "video" && kbps > 0) enc.maxBitrateBps = kbps * 1000
+                if (kind == "audio") enc.bitratePriority = 4.0 // "high" in WebRTC's priority scale
+                sender.setParameters(prm)
+            } catch (e: Exception) { }
+        }
+    }
+
+    private suspend fun stats(p: PeerConnection): RTCStatsReport? = suspendCancellableCoroutine { c ->
+        try { p.getStats { r -> if (c.isActive) c.resume(r) } } catch (e: Exception) { if (c.isActive) c.resume(null) }
+    }
+
+    private fun num(v: Any?): Double = (v as? Number)?.toDouble() ?: 0.0
+
+    /** Every 2 s in «خودکار» mode: ~6 s of ping or packet loss over the panel's limits on a direct path -> relay. */
+    private fun startWatch() {
+        val t = turnInfo ?: return
+        synchronized(lock) {
+            if (watchJob != null || t.policy != "auto" || relayed || !peerRelay) return
+            watchJob = Engine.scope.launch {
+                var bad = 0; var n = 0; var prevLost = -1.0; var prevRecv = -1.0
+                while (true) {
+                    delay(2000)
+                    val p = pc ?: break
+                    if (relayed) break
+                    if (switching || state.value.phase != CallPhase.ACTIVE) continue
+                    val all = stats(p)?.statsMap ?: continue
+                    var pair = all.values.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
+                        ?.let { all[it.members["selectedCandidatePairId"] as? String] }
+                    if (pair == null) pair = all.values.firstOrNull { it.type == "candidate-pair" && it.members["state"] == "succeeded" && it.members["nominated"] == true }
+                    if (pair == null) continue
+                    val lc = all[pair.members["localCandidateId"] as? String]?.members
+                    val rc = all[pair.members["remoteCandidateId"] as? String]?.members
+                    if (lc?.get("candidateType") == "relay" || rc?.get("candidateType") == "relay") { relayed = true; break }
+                    var lost = 0.0; var recv = 0.0
+                    for (s in all.values) if (s.type == "inbound-rtp" && (s.members["kind"] ?: s.members["mediaType"]) == "audio") {
+                        lost += num(s.members["packetsLost"]); recv += num(s.members["packetsReceived"])
+                    }
+                    val rtt = num(pair.members["currentRoundTripTime"]) * 1000
+                    var loss = 0.0
+                    if (prevRecv >= 0) { val dl = lost - prevLost; val dr = recv - prevRecv; if (dl + dr > 0) loss = 100 * maxOf(0.0, dl) / (dl + dr) }
+                    prevLost = lost; prevRecv = recv
+                    if (++n < 2) continue // the first seconds after connecting are often rough
+                    bad = if (rtt > t.switchRtt || loss > t.switchLoss) bad + 1 else 0
+                    if (bad >= 3) {
+                        val s = state.value
+                        synchronized(lock) { watchJob = null }
+                        if (s.incoming) { try { sendSignal(s.peer, "sig_relay", JSONObject().put("callId", s.callId)) } catch (e: Exception) { } }
+                        else switchToRelay()
+                        return@launch
+                    }
+                }
+                synchronized(lock) { watchJob = null }
+            }
+        }
+    }
+
+    private fun stopWatch() { synchronized(lock) { watchJob?.cancel(); watchJob = null } }
+
+    private fun releaseIce() {
+        val s = state.value
+        val list = synchronized(lock) { iceHold = false; heldIce.toList().also { heldIce.clear() } }
+        for (c in list) {
+            try { sendSignal(s.peer, "sig_ice", JSONObject().put("callId", s.callId).put("mid", c.sdpMid).put("idx", c.sdpMLineIndex).put("cand", c.sdp)) } catch (e: Exception) { }
+        }
+    }
+
+    private fun relayOnly(p: PeerConnection) {
+        val cfg = rtcConfig ?: return
+        cfg.iceTransportsType = PeerConnection.IceTransportsType.RELAY
+        p.setConfiguration(cfg)
+    }
+
+    /** The caller restarts ICE with relay candidates only; the call goes on over the old path meanwhile. */
+    private suspend fun switchToRelay() {
+        val s = state.value
+        val p = synchronized(lock) {
+            if (switching || relayed || s.incoming || s.phase == CallPhase.IDLE) return
+            switching = true
+            pc
+        } ?: return
+        if (watchJob != null) stopWatch()
+        try {
+            relayOnly(p)
+            synchronized(lock) { iceHold = true; heldIce.clear(); remoteSet = false }
+            val offer = createOffer(p, iceRestart = true)
+            setLocal(p, offer)
+            sendSignal(s.peer, "sig_reoffer", JSONObject().put("callId", s.callId).put("sdp", offer.description))
+            releaseIce()
+            relayed = true
+        } catch (e: Exception) {
+            synchronized(lock) { iceHold = false; remoteSet = true }
+        } finally { synchronized(lock) { switching = false } }
+    }
+
+    private suspend fun onReoffer(callId: String, sdp: String) {
+        val p = pc ?: return
+        if (sdp.isEmpty()) return
+        stopWatch()
+        synchronized(lock) { switching = true }
+        val s = state.value
+        try {
+            relayOnly(p)
+            synchronized(lock) { remoteSet = false }
+            setRemote(p, SessionDescription(SessionDescription.Type.OFFER, sdp))
+            synchronized(lock) { remoteSet = true; iceHold = true; heldIce.clear() }
+            flushIce(callId)
+            val ans = createAnswer(p)
+            setLocal(p, ans)
+            sendSignal(s.peer, "sig_reanswer", JSONObject().put("callId", callId).put("sdp", ans.description))
+            releaseIce()
+            relayed = true
+        } catch (e: Exception) {
+            synchronized(lock) { iceHold = false; remoteSet = true }
+        } finally { synchronized(lock) { switching = false } }
+    }
+
+    private fun onReanswer(callId: String, sdp: String) {
+        val p = pc ?: return
+        if (sdp.isEmpty()) return
+        Engine.scope.launch {
+            try { setRemote(p, SessionDescription(SessionDescription.Type.ANSWER, sdp)) } catch (e: Exception) { }
+            synchronized(lock) { remoteSet = true }
+            flushIce(callId)
+        }
     }
 
     private suspend fun createAnswer(p: PeerConnection): SessionDescription = suspendCancellableCoroutine { c ->
@@ -431,6 +592,8 @@ object CallManager {
             if (cur.phase == CallPhase.IDLE) return
             state.value = CallState()
             pendingIce.clear()
+            watchJob?.cancel(); watchJob = null
+            iceHold = false; heldIce.clear(); switching = false; relayed = false; peerRelay = false; rtcConfig = null
             remoteSet = false
             offerSdp = null
             val r = Res(pc, audioTrack, audioSource, localVideo, videoSource, capturer, helper)

@@ -18,6 +18,9 @@ function set(p) { Object.assign(C, p); changed(); }
 let pc = null, offerSdp = null, remoteSet = false, timer = null, discTimer = null, wakeLock = null;
 let pendingIce = [];      // remote candidates that arrived before the remote description: { callId, cand }
 let localIce = [], inviteSent = false;
+// 1.10.1: call path settings from /api/turn and the switch to the server relay when the direct path is bad
+let turnCfg = null, pcConfig = null, peerRelay = false, switching = false, relayed = false, watch = null;
+let iceHold = false, heldIce = [];
 let ring = null;
 /** The live RTCPeerConnection (the admins' call diagnostics read its stats), or null. */
 export const peerConnection = () => pc;
@@ -33,7 +36,7 @@ export async function startCall(peer, video) {
     createPeer(turn, stream);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    const delivered = await signal('sig_invite', { callId, video, sdp: offer.sdp });
+    const delivered = await signal('sig_invite', { callId, video, sdp: offer.sdp, relay: 1 });
     if (!delivered) return end('کاربر الان آنلاین نیست', false);
     inviteSent = true;
     for (const c of localIce.splice(0)) signal('sig_ice', c).catch(() => { });
@@ -60,7 +63,7 @@ export async function accept() {
     await flushIce(callId);
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
-    await signal('sig_accept', { callId, sdp: ans.sdp });
+    await signal('sig_accept', { callId, sdp: ans.sdp, relay: 1 });
   } catch (e) {
     end(e && e.name === 'NotAllowedError' ? 'اجازهٔ دسترسی به میکروفون/دوربین داده نشد' : 'خطا در اتصال تماس', true);
   }
@@ -99,8 +102,11 @@ E.setSignalHandler(async (from, kind, enc) => {
   const j = await E.decryptSignal(from, enc);
   if (!j) return;
   const callId = j.callId || '';
-  if (kind === 'sig_invite') onInvite(from, callId, !!j.video, j.sdp || '');
-  else if (kind === 'sig_accept') onAccepted(from, callId, j.sdp || '');
+  if (kind === 'sig_invite') onInvite(from, callId, !!j.video, j.sdp || '', !!j.relay);
+  else if (kind === 'sig_accept') onAccepted(from, callId, j.sdp || '', !!j.relay);
+  else if (kind === 'sig_relay') { if (matches(from, callId) && !C.incoming) switchToRelay(); }
+  else if (kind === 'sig_reoffer') { if (matches(from, callId)) onReoffer(callId, j.sdp || ''); }
+  else if (kind === 'sig_reanswer') { if (matches(from, callId)) onReanswer(callId, j.sdp || ''); }
   else if (kind === 'sig_ice') onIce(callId, { candidate: j.cand, sdpMid: j.mid, sdpMLineIndex: j.idx });
   else if (kind === 'sig_reject') { if (matches(from, callId)) end(j.reason === 'busy' ? 'طرف مقابل در تماس دیگری است' : 'تماس رد شد', false); }
   else if (kind === 'sig_hangup') { if (matches(from, callId)) end('تماس پایان یافت', false); }
@@ -108,21 +114,23 @@ E.setSignalHandler(async (from, kind, enc) => {
 
 const matches = (from, callId) => C.phase !== 'idle' && C.peer === from && C.callId === callId;
 
-function onInvite(from, callId, video, sdp) {
+function onInvite(from, callId, video, sdp, relay) {
   if (!callId || !sdp) return;
   if (C.phase !== 'idle') {
     if (!(C.peer === from && C.callId === callId)) sendTo(from, 'sig_reject', { callId, reason: 'busy' });
     return;
   }
   offerSdp = sdp;
+  peerRelay = relay;
   pendingIce = pendingIce.filter((p) => p.callId === callId);
   set({ phase: 'incoming', peer: from, video, callId, incoming: true, muted: false, camOff: false, front: true, note: 'تماس ورودی', remote: null });
   startRing();
   arm(45000, 'تماس بی‌پاسخ ماند');
 }
 
-async function onAccepted(from, callId, sdp) {
+async function onAccepted(from, callId, sdp, relay) {
   if (!matches(from, callId) || C.phase !== 'outgoing' || !pc) return;
+  peerRelay = relay;
   disarm();
   set({ phase: 'connecting', note: 'در حال اتصال…' });
   try {
@@ -156,14 +164,17 @@ async function media(video) {
 
 function createPeer(turn, stream) {
   remoteSet = false; localIce = []; inviteSent = false;
-  pc = new RTCPeerConnection({ iceServers: [{ urls: turn.urls, username: turn.username, credential: turn.credential }], bundlePolicy: 'max-bundle' });
+  turnCfg = turn; switching = false; relayed = turn.policy === 'relay'; iceHold = false; heldIce = [];
+  // 1.10.1: «همیشه از طریق سرور» in the admin panel: only relay candidates from the start
+  pcConfig = { iceServers: [{ urls: turn.urls, username: turn.username, credential: turn.credential }], bundlePolicy: 'max-bundle', iceTransportPolicy: relayed ? 'relay' : 'all' };
+  pc = new RTCPeerConnection(pcConfig);
   for (const t of stream.getTracks()) pc.addTrack(t, stream);
   set({ local: stream });
   const { callId, peer } = C;
   pc.onicecandidate = (ev) => {
     if (!ev.candidate || !ev.candidate.candidate) return;
     const c = { callId, mid: ev.candidate.sdpMid, idx: ev.candidate.sdpMLineIndex, cand: ev.candidate.candidate };
-    if (inviteSent) sendTo(peer, 'sig_ice', c); else localIce.push(c);
+    if (iceHold) heldIce.push(c); else if (inviteSent) sendTo(peer, 'sig_ice', c); else localIce.push(c);
   };
   pc.ontrack = (ev) => {
     const s = C.remote || new MediaStream();
@@ -174,12 +185,103 @@ function createPeer(turn, stream) {
     const st = pc && pc.connectionState;
     if (st === 'connected') {
       clearTimeout(discTimer);
-      if (C.phase !== 'active') { set({ phase: 'active', startedAt: Date.now(), note: '' }); keepAwake(); }
+      if (C.phase !== 'active') { set({ phase: 'active', startedAt: Date.now(), note: '' }); keepAwake(); limitVideo(); startWatch(); }
     } else if (st === 'disconnected') {
       clearTimeout(discTimer);
       discTimer = setTimeout(() => { if (pc && pc.connectionState !== 'connected') end('اتصال قطع شد', true); }, 12000);
     } else if (st === 'failed') end('اتصال برقرار نشد', true);
   };
+}
+
+// ---------------- 1.10.1: bad direct path -> server relay, video bitrate cap ----------------
+/** Caps the video a call sends (admin panel, 0 = no cap) and gives the audio priority on a weak network. */
+async function limitVideo() {
+  if (!pc) return;
+  const kbps = (turnCfg && turnCfg.video_kbps) || 0;
+  for (const sender of pc.getSenders()) {
+    const k = sender.track && sender.track.kind;
+    if (!k) continue;
+    try {
+      const p = sender.getParameters();
+      if (!p.encodings || !p.encodings.length) p.encodings = [{}];
+      if (k === 'video' && kbps > 0) p.encodings[0].maxBitrate = kbps * 1000;
+      if (k === 'audio') { p.encodings[0].priority = 'high'; p.encodings[0].networkPriority = 'high'; }
+      await sender.setParameters(p);
+    } catch { }
+  }
+}
+
+/** Every 2 s in «خودکار» mode: ~6 s of ping or packet loss over the panel's limits on a direct path -> relay. */
+function startWatch() {
+  stopWatch();
+  if (!turnCfg || turnCfg.policy !== 'auto' || relayed || !peerRelay) return;
+  const rttMax = turnCfg.switch_rtt || 400, lossMax = turnCfg.switch_loss || 8;
+  let bad = 0, prevLost = null, prevRecv = null, n = 0;
+  watch = setInterval(async () => {
+    if (!pc || relayed || switching) return stopWatch();
+    let rep; try { rep = await pc.getStats(); } catch { return; }
+    let pair = null, lost = 0, recv = 0;
+    const byId = new Map(); rep.forEach((s) => byId.set(s.id, s));
+    rep.forEach((s) => { if (s.type === 'transport' && s.selectedCandidatePairId) pair = byId.get(s.selectedCandidatePairId); });
+    if (!pair) rep.forEach((s) => { if (!pair && s.type === 'candidate-pair' && s.state === 'succeeded' && s.nominated) pair = s; });
+    rep.forEach((s) => { if (s.type === 'inbound-rtp' && (s.kind || s.mediaType) === 'audio') { lost += s.packetsLost || 0; recv += s.packetsReceived || 0; } });
+    if (!pair) return;
+    const lc = byId.get(pair.localCandidateId), rc = byId.get(pair.remoteCandidateId);
+    if ((lc && lc.candidateType === 'relay') || (rc && rc.candidateType === 'relay')) { relayed = true; return stopWatch(); }
+    const rtt = (pair.currentRoundTripTime || 0) * 1000;
+    let loss = 0;
+    if (prevRecv !== null) { const dl = lost - prevLost, dr = recv - prevRecv; if (dl + dr > 0) loss = 100 * Math.max(0, dl) / (dl + dr); }
+    prevLost = lost; prevRecv = recv;
+    if (++n < 2) return; // the first seconds after connecting are often rough
+    bad = rtt > rttMax || loss > lossMax ? bad + 1 : 0;
+    if (bad >= 3) {
+      stopWatch();
+      if (C.incoming) signal('sig_relay', { callId: C.callId }); else switchToRelay();
+    }
+  }, 2000);
+}
+function stopWatch() { clearInterval(watch); watch = null; }
+
+function holdIce() { iceHold = true; heldIce = []; }
+function releaseIce() { iceHold = false; for (const c of heldIce.splice(0)) signal('sig_ice', c); }
+
+/** The caller restarts ICE with relay candidates only; the call goes on over the old path meanwhile. */
+async function switchToRelay() {
+  if (!pc || switching || relayed || C.incoming) return;
+  switching = true; stopWatch();
+  const { callId } = C;
+  try {
+    pc.setConfiguration({ ...pcConfig, iceTransportPolicy: 'relay' });
+    holdIce(); remoteSet = false;
+    const offer = await pc.createOffer({ iceRestart: true });
+    await pc.setLocalDescription(offer);
+    await signal('sig_reoffer', { callId, sdp: offer.sdp });
+    releaseIce();
+    relayed = true;
+  } catch { iceHold = false; remoteSet = true; } finally { switching = false; }
+}
+async function onReoffer(callId, sdp) {
+  if (!pc || !sdp) return;
+  stopWatch(); switching = true;
+  try {
+    pc.setConfiguration({ ...pcConfig, iceTransportPolicy: 'relay' });
+    remoteSet = false;
+    await pc.setRemoteDescription({ type: 'offer', sdp });
+    remoteSet = true;
+    await flushIce(callId);
+    holdIce();
+    const ans = await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+    await signal('sig_reanswer', { callId, sdp: ans.sdp });
+    releaseIce();
+    relayed = true;
+  } catch { iceHold = false; remoteSet = true; } finally { switching = false; }
+}
+async function onReanswer(callId, sdp) {
+  if (!pc || !sdp) return;
+  try { await pc.setRemoteDescription({ type: 'answer', sdp }); } catch { }
+  remoteSet = true;
+  await flushIce(callId);
 }
 
 const signal = (kind, body) => sendTo(C.peer, kind, body);
@@ -191,7 +293,8 @@ function end(note, sendHangup) {
   if (C.phase === 'idle') return;
   const { peer, callId, phase, incoming, startedAt } = C;
   if (sendHangup) sendTo(peer, phase === 'incoming' ? 'sig_reject' : 'sig_hangup', { callId });
-  stopRing(); disarm(); clearTimeout(discTimer);
+  stopRing(); disarm(); clearTimeout(discTimer); stopWatch();
+  iceHold = false; heldIce = []; switching = false; relayed = false; peerRelay = false;
   if (pc) { try { pc.close(); } catch { } pc = null; }
   stopTracks(C.local);
   offerSdp = null; remoteSet = false; pendingIce = []; localIce = [];

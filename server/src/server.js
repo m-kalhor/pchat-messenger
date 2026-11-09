@@ -13,6 +13,7 @@ const backup = require('./backup');
 const push = require('./push');
 const auth = require('./auth');
 const diag = require('./diag');
+const callcfg = require('./callcfg');
 const { apkVersion } = require('./apkinfo');
 const stickers = require('./stickers');
 
@@ -974,10 +975,8 @@ async function route(req, res) {
     const ttl = 86400;
     const username = (Math.floor(now() / 1000) + ttl) + ':' + user;
     const credential = crypto.createHmac('sha1', TURN_SECRET).update(username).digest('base64');
-    return send(res, 200, {
-      urls: [`stun:${PUBLIC_HOST}:3478`, `turn:${PUBLIC_HOST}:3478?transport=udp`, `turn:${PUBLIC_HOST}:3478?transport=tcp`],
-      username, credential, ttl,
-    });
+    // 1.10.1: plus the call path settings from the admin panel (policy, switch limits, video cap, TURN/TLS)
+    return send(res, 200, { ...callcfg.turnInfo(PUBLIC_HOST), username, credential, ttl });
   }
 
   // ----- legacy single-shot upload (kept for old app versions) -----

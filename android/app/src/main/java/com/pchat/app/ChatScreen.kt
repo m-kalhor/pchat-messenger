@@ -737,8 +737,8 @@ fun Bubble(
     val dark = Look.dark()
     val bg = if (m.mine) (if (dark) Color(0xFF2B5278) else Color(0xFFEFFDDE)) else (if (dark) Color(0xFF182533) else Color.White)
     val fg = if (dark) Color(0xFFF5F5F5) else Color(0xFF111111)
-    // 1.9: like Telegram, the time and ticks on my bubbles are green in the light theme
-    val sub = if (m.mine && !dark) Color(0xFF5FA55A) else fg.copy(alpha = 0.55f)
+    // 1.10.1: time and the "sent" tick are grey; delivered ✓ and seen ✓✓ are blue
+    val sub = if (m.mine && !dark) Color(0xFF8A969F) else fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
     var playVideo by remember { mutableStateOf<String?>(null) }
     playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, m.mime) { playVideo = null } }
@@ -746,7 +746,7 @@ fun Bubble(
     val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
     val autoVoice = m.type == "voice" && m.localPath == null && m.fileId != null && autoAllowed
-    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF4FAE4E)
+    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF2A9BF0)
     val reactable = m.id > 0 && m.status == 0 && m.type != "call" && m.text != LOCKED_TEXT
     val bigEmoji = remember(m.text, m.type, m.replyId) { (m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0) || m.type == "sticker" }
     var showPack by remember { mutableStateOf<String?>(null) }
