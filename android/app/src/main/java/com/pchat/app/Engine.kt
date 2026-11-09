@@ -1521,9 +1521,30 @@ object Engine {
     }
 
     /** Copies the picked file into app storage, then queues it for chunked/resumable encrypted upload. */
-    suspend fun sendUri(convo: String, uri: Uri, asImage: Boolean, reply: Msg?): String? = withContext(Dispatchers.IO) {
+    suspend fun sendUri(convo: String, uri: Uri, asImage: Boolean, reply: Msg?, compress: Boolean = false): String? = withContext(Dispatchers.IO) {
         var staged: File? = null
         try {
+            if (asImage && compress && app.contentResolver.getType(uri) != "image/gif") {
+                val localId = -System.nanoTime()
+                val f = File(mediaDir(), "out_${-localId}")
+                staged = f
+                if (compressPhoto(app, uri, f)) {
+                    val dim = imageSizeOf(f.absolutePath)
+                    if (dim != null) {
+                        val base = U.fileName(app, uri).substringBeforeLast('.').ifBlank { "photo" }
+                        val fm = Msg(localId, convo, me, true, System.currentTimeMillis(), "image", "", null, "$base.jpg", "image/jpeg", f.length(),
+                                Crypto.newFileKey(), dim.first, dim.second,
+                                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) },
+                                f.absolutePath, true, status = 1)
+                        db.insert(fm)
+                        Lan.offer(fm)
+                        tick.value++
+                        scope.launch { flushFiles() }
+                        return@withContext null
+                    }
+                }
+                f.delete(); staged = null // could not compress: fall back to sending the original
+            }
             val declared = U.fileSize(app, uri)
             if (declared > Config.MAX_FILE_BYTES) return@withContext "حجم فایل بیشتر از ۲ گیگابایت است"
             if (declared > 0 && mediaDir().usableSpace < declared + 64L * 1024 * 1024) return@withContext "فضای کافی روی گوشی نیست"

@@ -124,6 +124,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import android.net.Uri
+import androidx.compose.material3.Switch
+import androidx.compose.foundation.layout.heightIn
 
 private fun openFile(ctx: Context, path: String, mime: String?) {
     try {
@@ -243,13 +246,49 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         else jumpTo = null
     }
 
+    // ---- photos: from the gallery or the camera, then a preview with a «compress» switch (remembered) ----
+    var pendingPhoto by remember { mutableStateOf<Uri?>(null) }
+    var pendingCam by remember { mutableStateOf<File?>(null) } // temp camera file, deleted once sent/cancelled
+    var camFile by remember { mutableStateOf<File?>(null) }
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch {
+        if (uri != null) { pendingCam = null; pendingPhoto = uri }
+    }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val f = camFile
+        camFile = null
+        if (ok && f != null && f.length() > 0) { pendingCam = f; pendingPhoto = FileProvider.getUriForFile(ctxForToast, ctxForToast.packageName + ".fileprovider", f) }
+        else f?.delete()
+    }
+    fun launchCamera() {
+        val f = File(File(ctxForToast.filesDir, "media").also { it.mkdirs() }, "cam_${System.currentTimeMillis()}.jpg")
+        camFile = f
+        try {
+            takePhoto.launch(FileProvider.getUriForFile(ctxForToast, ctxForToast.packageName + ".fileprovider", f))
+        } catch (e: Exception) { camFile = null; f.delete(); error = "برنامهٔ دوربین پیدا نشد" }
+    }
+    val camPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) launchCamera() else error = "برای گرفتن عکس اجازهٔ دوربین لازم است"
+    }
+    fun openCamera() {
+        if (ContextCompat.checkSelfPermission(ctxForToast, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            camPerm.launch(Manifest.permission.CAMERA)
+        else launchCamera()
+    }
+    fun sendPhoto(uri: Uri, compress: Boolean) {
+        val cam = pendingCam
+        pendingPhoto = null; pendingCam = null
+        scope.launch {
             sending = true
-            error = Engine.sendUri(convo, uri, true, replyTo)
+            error = Engine.sendUri(convo, uri, true, replyTo, compress)
             if (error == null) replyTo = null
             sending = false
+            cam?.delete()
         }
+    }
+    pendingPhoto?.let { uri ->
+        PhotoSendDialog(uri,
+            onSend = { compress -> sendPhoto(uri, compress) },
+            onCancel = { pendingPhoto = null; pendingCam?.delete(); pendingCam = null })
     }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch {
@@ -583,7 +622,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     if (reqState != "out") Box {
                         IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
                         DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
-                            DropdownMenuItem(text = { Text("🖼  عکس (بدون فشرده‌سازی)") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
+                            DropdownMenuItem(text = { Text("🖼  عکس از گالری") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
+                            DropdownMenuItem(text = { Text("📷  عکس با دوربین") }, onClick = { attachMenu = false; openCamera() })
                             DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
                             DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
                         }
@@ -1077,4 +1117,42 @@ fun MentionText(text: String, color: Color, size: TextUnit, onMention: (String) 
         }
     }
     Text(annotated, color = color, fontSize = size, style = TextStyle(textDirection = TextDirection.Content))
+}
+
+
+/** Preview of a photo about to be sent, with a «compress» switch whose last value is remembered. */
+@Composable
+private fun PhotoSendDialog(uri: Uri, onSend: (Boolean) -> Unit, onCancel: () -> Unit) {
+    val ctx = LocalContext.current
+    var compress by remember { mutableStateOf(Engine.prefs.getBoolean("photo_compress", true)) }
+    val img by produceState<ImageBitmap?>(null, uri) { value = withContext(Dispatchers.IO) { previewOf(ctx, uri, 900) } }
+    val size = remember(uri) { U.fileSize(ctx, uri) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("ارسال عکس") },
+        text = {
+            Column {
+                Box(Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp), contentAlignment = Alignment.Center) {
+                    val b = img
+                    if (b != null) Image(b, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).clip(RoundedCornerShape(8.dp)))
+                    else CircularProgressIndicator()
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().clickable { compress = !compress }, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("فشرده‌سازی", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (compress) "حجم کمتر، کیفیت مناسب چت" else "عکس اصلی" + (if (size > 0) " (" + U.size(size) + ")" else ""),
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Switch(checked = compress, onCheckedChange = { compress = it })
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { Engine.prefs.edit().putBoolean("photo_compress", compress).apply(); onSend(compress) }) { Text("ارسال") }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("انصراف") } }
+    )
 }
