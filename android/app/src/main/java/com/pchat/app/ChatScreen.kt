@@ -179,7 +179,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     var deleteAll by remember { mutableStateOf<Msg?>(null) }
     BackHandler(enabled = selected.isNotEmpty()) { selected.clear() }
     BackHandler(enabled = editing != null) { editing = null; text = "" }
-    var viewer by remember { mutableStateOf<String?>(null) }
+    var viewer by remember { mutableStateOf<Pair<String, Msg>?>(null) }
+    val mediaActions = rememberMediaActions()
     var showKeys by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var attachMenu by remember { mutableStateOf(false) }
@@ -500,7 +501,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     Text("چیزی پیدا نشد", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
             } else Box(Modifier.weight(1f).fillMaxWidth()) {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, LocalOpenMention provides openMention) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, LocalOpenMention provides openMention, LocalMediaActions provides mediaActions) {
                     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true) {
                         items(rowsList.size, key = { i -> val x = rowsList[i]; if (x is Msg) x.id else "d$x" }) { i ->
                             val it = rowsList[i]
@@ -513,7 +514,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                     pinned = pinnedId == it.id, tick = Engine.tickOf(it, receipts).also { hideSeen },
                                     onReact = { e -> react(it, e) }, onMoreReactions = { reactFor = it },
                                     onReactors = { reactorsOf = it }, onSeenBy = { seenBy = it },
-                                    onImage = { p -> viewer = p },
+                                    onImage = { p -> viewer = p to it },
                                     onReply = { replyTo = it },
                                     onPin = { scope.launch { error = Engine.pinMessage(convo, if (pinnedId == it.id) null else it.id) } },
                                     onRetry = { Engine.retry(it) },
@@ -710,7 +711,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         }
     }
 
-    viewer?.let { ImageViewer(it) { viewer = null } }
+    viewer?.let { (p, vm) -> ImageViewer(p, MediaSave.refOf(vm, p)) { viewer = null } }
     forwarding?.let { list ->
         ForwardDialog(list.size, onClose = { forwarding = null }) { targets, hide ->
             Engine.forward(list, targets, hide)
@@ -781,7 +782,7 @@ fun Bubble(
     val sub = if (m.mine && !dark) Color(0xFF8A969F) else fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
     var playVideo by remember { mutableStateOf<String?>(null) }
-    playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, m.mime) { playVideo = null } }
+    playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, MediaSave.refOf(m, p)) { playVideo = null } }
     val textSize by Prefs.textSize.collectAsState()
     val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
@@ -835,7 +836,7 @@ fun Bubble(
                     }
                     when (m.type) {
                         "image" -> {
-                            ImageContent(m, progress, autoImage, onImage)
+                            ImageContent(m, progress, autoImage, onImage, onLong = { if (selecting) onSelect() else menu = true })
                             if (m.status == 1 && progress != null) ProgressBar(progress, Modifier.width(240.dp).padding(top = 4.dp))
                         }
                         "file" -> {
@@ -932,6 +933,15 @@ fun Bubble(
                 if (Engine.canEdit(m)) DropdownMenuItem(text = { Text("ویرایش") }, onClick = { menu = false; onEdit() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("فوروارد") }, onClick = { menu = false; onForward() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
+                if (m.status == 0 && m.fileId != null && m.type in MEDIA_TYPES) {
+                    val media = LocalMediaActions.current
+                    val galleryOk = m.type == "image" || MediaSave.isGalleryType(m.mime)
+                    if (media != null) {
+                        if (galleryOk) DropdownMenuItem(text = { Text("ذخیره در گالری") }, onClick = { menu = false; media.withMsg(m) { media.gallery(it) } })
+                        DropdownMenuItem(text = { Text("ذخیره در…") }, onClick = { menu = false; media.withMsg(m) { media.saveAs(it) } })
+                        DropdownMenuItem(text = { Text("اشتراک‌گذاری") }, onClick = { menu = false; media.withMsg(m) { media.share(it) } })
+                    }
+                }
                 if (m.type == "text") DropdownMenuItem(text = { Text("کپی") }, onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) })
                 m.stk?.let { k ->
                     DropdownMenuItem(text = { Text(if (Stickers.isFav(k.id)) "برداشتن از علاقه‌مندی‌ها" else "⭐ افزودن به علاقه‌مندی‌ها") }, onClick = {
@@ -1038,8 +1048,9 @@ private fun LocationContent(l: Loc, fg: Color, sub: Color) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (String) -> Unit) {
+private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (String) -> Unit, onLong: () -> Unit) {
     val scope = rememberCoroutineScope()
     val bmp by produceState<ImageBitmap?>(null, m.localPath) {
         value = m.localPath?.let { p -> withContext(Dispatchers.IO) { decodeSampled(p, 900) } }
@@ -1048,8 +1059,10 @@ private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (Stri
     Box(
         Modifier.width(240.dp).aspectRatio(ratio).clip(RoundedCornerShape(8.dp))
             .background(Color.Gray.copy(alpha = 0.25f))
-            .clickable(enabled = m.localPath != null || (!auto && m.fileId != null && progress == null)) {
-                if (m.localPath != null) onImage(m.localPath) else scope.launch { Engine.downloadMedia(m) }
+            // 1.12: a long press opens the message menu (reply, forward, save…), like every other message
+            .combinedClickable(onLongClick = onLong) {
+                if (m.localPath != null) onImage(m.localPath)
+                else if (!auto && m.fileId != null && progress == null) scope.launch { Engine.downloadMedia(m) }
             },
         contentAlignment = Alignment.Center
     ) {
@@ -1063,8 +1076,12 @@ private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (Stri
     }
 }
 
+/** Save / share actions of the open chat (1.12); hoisted so the pickers' results survive bubbles scrolling away. */
+val LocalMediaActions = staticCompositionLocalOf<MediaActions?> { null }
+private val MEDIA_TYPES = setOf("image", "file", "voice")
+
 @Composable
-fun ImageViewer(path: String, onClose: () -> Unit) {
+fun ImageViewer(path: String, ref: MediaRef, onClose: () -> Unit) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var scale by remember { mutableStateOf(1f) }
         var off by remember { mutableStateOf(Offset.Zero) }
@@ -1088,6 +1105,8 @@ fun ImageViewer(path: String, onClose: () -> Unit) {
             IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
                 Icon(Icons.Default.Close, contentDescription = "بستن", tint = Color.White)
             }
+            // 1.12: ⋮ = save to gallery, save to…, share
+            MediaMoreMenu(ref, Modifier.align(Alignment.TopStart).padding(16.dp))
         }
     }
 }
