@@ -229,7 +229,24 @@ function deleteUser(user) {
   db.prepare('DELETE FROM user_packs WHERE username=?').run(user);
 }
 
+/**
+ * 1.10.1: the starter pack «شکلک‌های سپن» (stickers-default/) is added as an official pack the first time
+ * the server starts. Only once: if the admin deletes it, it stays deleted.
+ */
+function seedDefault(dir = path.join(__dirname, 'stickers-default')) {
+  if (getSetting('stk_seeded', '')) return null;
+  let man;
+  try { man = JSON.parse(fs.readFileSync(path.join(dir, 'pack.json'), 'utf8')); } catch { return null; }
+  const id = createPack(null, man.title);
+  for (const s of man.stickers || []) {
+    try { addSticker(null, id, fs.readFileSync(path.join(dir, path.basename(String(s.file)))), s.emoji); } catch (e) { console.error('[stickers] starter sticker', s.file, e.message); }
+  }
+  setSetting('stk_seeded', id);
+  return id;
+}
+try { seedDefault(); } catch (e) { console.error('[stickers] starter pack:', e.message); }
+
 module.exports = {
-  StickerError, config, saveConfig, listFor, packFor, createPack, renamePack, deletePack, addSticker, deleteSticker,
+  StickerError, seedDefault, config, saveConfig, listFor, packFor, createPack, renamePack, deletePack, addSticker, deleteSticker,
   addToCollection, removeFromCollection, reorder, image, adminList, deleteUser, sanitizePng, cleanImage, PACK_RE, ID_RE,
 };

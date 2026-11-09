@@ -138,3 +138,19 @@ test('reordering the collection', async () => {
   await S.api(ann, 'POST', '/api/stickers/order', { packs: [b, a] });
   assert.deepEqual(await own(), [b, a]);
 });
+
+test('the starter pack is there from the first start, once', async () => {
+  const st = require(path.join(S.app.appDir, 'stickers.js'));
+  const starter = (await S.api(ann, 'GET', '/api/stickers')).data.packs.find((x) => x.title === 'شکلک‌های سپن');
+  assert.ok(starter && starter.official, 'starter pack listed');
+  assert.equal(starter.stickers.length, 50);
+  assert.equal(starter.stickers[0].emoji, '👋');
+  const img = await S.api(ben, 'GET', '/api/sticker/' + starter.stickers[0].id);
+  assert.equal(img.status, 200);
+  assert.equal(img.headers.get('content-type'), 'image/webp');
+  assert.equal(st.seedDefault(), null, 'not added a second time');
+  // the admin deletes it: it does not come back
+  assert.equal((await adm('POST', '/stickers/pack/' + starter.id + '/delete')).status, 200);
+  assert.equal(st.seedDefault(), null);
+  assert.ok(!(await S.api(ann, 'GET', '/api/stickers')).data.packs.some((x) => x.title === 'شکلک‌های سپن'));
+});
