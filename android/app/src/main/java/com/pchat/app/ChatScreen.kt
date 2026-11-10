@@ -92,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -609,7 +610,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                   // the text field in the middle, emoji/sticker and + on the left
                   if (rec != null && recLocked) {
                     IconButton(onClick = { finishRec(true) }) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) // 1.13: points right
                     }
                   } else if (rec != null || (text.isBlank() && editing == null && reqState != "out")) {
                     Box(
@@ -653,7 +654,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 Engine.sendText(convo, t, r)
                             }
                         }
-                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) } // 1.13: points right, like the send key
                   if (rec != null) {
                     // recording: elapsed time and how to cancel / lock
                     val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
