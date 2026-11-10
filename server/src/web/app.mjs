@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.12.0';
+const VERSION = '1.13.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -906,7 +906,7 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, pinBar, reqBar, msgs, jump,
-    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn, micBtn), emojiPanel, fileIn, photoIn, camIn));
+    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);

@@ -28,6 +28,7 @@ export const peerConnection = () => pc;
 export async function startCall(peer, video) {
   if (C.phase !== 'idle') return;
   const callId = Math.random().toString(16).slice(2, 14);
+  stopTone(); unlockAudio();
   set({ phase: 'outgoing', peer, video, callId, incoming: false, muted: false, camOff: false, front: true, note: 'در حال برقراری تماس…', remote: null });
   try {
     const turn = await api.turn();
@@ -37,10 +38,11 @@ export async function startCall(peer, video) {
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     const delivered = await signal('sig_invite', { callId, video, sdp: offer.sdp, relay: 1 });
-    if (!delivered) return end('کاربر الان آنلاین نیست', false);
+    if (!delivered) return end('کاربر الان آنلاین نیست', false, 'unreachable');
     inviteSent = true;
     for (const c of localIce.splice(0)) signal('sig_ice', c).catch(() => { });
-    arm(45000, 'پاسخی داده نشد');
+    if (C.phase === 'outgoing' && C.callId === callId) playTone('ringback'); // 1.13: the caller hears it ring
+    arm(45000, 'پاسخی داده نشد', 'unreachable');
   } catch (e) {
     end(e && e.name === 'NotAllowedError' ? 'اجازهٔ دسترسی به میکروفون/دوربین داده نشد'
       : e && e.body && e.body.error === 'not_connected' ? 'تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد' : 'خطا در برقراری تماس', false);
@@ -108,7 +110,7 @@ E.setSignalHandler(async (from, kind, enc) => {
   else if (kind === 'sig_reoffer') { if (matches(from, callId)) onReoffer(callId, j.sdp || ''); }
   else if (kind === 'sig_reanswer') { if (matches(from, callId)) onReanswer(callId, j.sdp || ''); }
   else if (kind === 'sig_ice') onIce(callId, { candidate: j.cand, sdpMid: j.mid, sdpMLineIndex: j.idx });
-  else if (kind === 'sig_reject') { if (matches(from, callId)) end(j.reason === 'busy' ? 'طرف مقابل در تماس دیگری است' : 'تماس رد شد', false); }
+  else if (kind === 'sig_reject') { if (matches(from, callId)) end(j.reason === 'busy' ? 'طرف مقابل در تماس دیگری است' : 'تماس رد شد', false, 'busy'); }
   else if (kind === 'sig_hangup') { if (matches(from, callId)) end('تماس پایان یافت', false); }
 });
 
@@ -131,7 +133,7 @@ function onInvite(from, callId, video, sdp, relay) {
 async function onAccepted(from, callId, sdp, relay) {
   if (!matches(from, callId) || C.phase !== 'outgoing' || !pc) return;
   peerRelay = relay;
-  disarm();
+  disarm(); stopTone();
   set({ phase: 'connecting', note: 'در حال اتصال…' });
   try {
     await pc.setRemoteDescription({ type: 'answer', sdp });
@@ -289,11 +291,15 @@ async function sendTo(peer, kind, body) {
   try { return await api.signal(peer, kind, await E.encryptSignal(peer, body)); } catch { return false; }
 }
 
-function end(note, sendHangup) {
+/** tone (1.13): 'busy' / 'unreachable'…; left out, a connected call ends with the short end tone. */
+function end(note, sendHangup, tone) {
   if (C.phase === 'idle') return;
   const { peer, callId, phase, incoming, startedAt } = C;
   if (sendHangup) sendTo(peer, phase === 'incoming' ? 'sig_reject' : 'sig_hangup', { callId });
   stopRing(); disarm(); clearTimeout(discTimer); stopWatch();
+  stopTone();
+  const endTone = tone || (phase === 'active' ? 'end' : null);
+  if (endTone) playTone(endTone);
   iceHold = false; heldIce = []; switching = false; relayed = false; peerRelay = false;
   if (pc) { try { pc.close(); } catch { } pc = null; }
   stopTracks(C.local);
@@ -310,7 +316,7 @@ function end(note, sendHangup) {
 }
 
 function stopTracks(s) { if (s) for (const t of s.getTracks()) t.stop(); }
-function arm(ms, note) { disarm(); timer = setTimeout(() => end(note, true), ms); }
+function arm(ms, note, tone) { disarm(); timer = setTimeout(() => end(note, true, tone), ms); }
 function disarm() { clearTimeout(timer); timer = null; }
 async function keepAwake() { try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch { } }
 
@@ -329,6 +335,45 @@ function beep(f1, f2) {
     o.start(t + d); o.stop(t + d + 0.42);
   }
 }
-function startRing() { stopRing(); beep(660, 880); ring = setInterval(() => beep(660, 880), 2500); if (navigator.vibrate) navigator.vibrate([400, 200, 400]); }
-function stopRing() { if (ring) clearInterval(ring); ring = null; }
+// 1.13: call tones made with WebAudio (no sound files), Iranian phone style: 425 Hz ringback 1 s on / 4 s off,
+// busy 0.5 / 0.5, three rising notes when the user can't be reached, a short end tone, and a soft ring.
+const rep = (n, a) => Array.from({ length: n }, () => a).flat();
+const TONES = {
+  ringback: { loop: true, segs: [[1000, 425], [4000]] },
+  busy: { segs: rep(4, [[500, 425], [500]]) },
+  unreachable: { segs: rep(2, [[330, 950], [330, 1400], [330, 1800], [900]]) },
+  end: { segs: [[180, 425], [120], [180, 425], [120], [180, 425]] },
+  ring: { loop: true, segs: [[400, 784, 1568], [400, 659, 1318], [400, 784, 1568], [400, 659, 1318], [2000]] },
+};
+let toneTimer = null, toneNodes = new Set();
+function playTone(name) {
+  stopTone();
+  const p = TONES[name];
+  if (!p || !actx) return;
+  const len = p.segs.reduce((a, s) => a + s[0], 0);
+  const once = () => {
+    let t = actx.currentTime + 0.03;
+    for (const [ms, ...hz] of p.segs) {
+      const d = ms / 1000;
+      for (const f of hz) {
+        const o = actx.createOscillator(), g = actx.createGain(), v = 0.2 / hz.length;
+        o.frequency.value = f; o.connect(g); g.connect(actx.destination);
+        g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(v, t + 0.008);
+        g.gain.setValueAtTime(v, t + d - 0.008); g.gain.linearRampToValueAtTime(0, t + d);
+        o.onended = () => toneNodes.delete(o);
+        toneNodes.add(o); o.start(t); o.stop(t + d);
+      }
+      t += d;
+    }
+  };
+  once();
+  if (p.loop) toneTimer = setInterval(once, len);
+}
+function stopTone() {
+  clearInterval(toneTimer); toneTimer = null;
+  for (const o of toneNodes) { try { o.stop(); } catch { } }
+  toneNodes.clear();
+}
+function startRing() { stopRing(); playTone('ring'); ring = setInterval(() => { if (navigator.vibrate) navigator.vibrate([800, 1200]); }, 2000); if (navigator.vibrate) navigator.vibrate([800, 1200]); }
+function stopRing() { if (ring) { clearInterval(ring); ring = null; stopTone(); if (navigator.vibrate) navigator.vibrate(0); } }
 export function notifySound() { beep(880, 990); }

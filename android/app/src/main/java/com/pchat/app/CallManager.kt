@@ -4,10 +4,15 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.MediaPlayer
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
@@ -98,6 +103,9 @@ object CallManager {
     private val pendingIce = ArrayList<Pair<String, IceCandidate>>()
     private var remoteSet = false
     private var ringtone: Ringtone? = null
+    private var ringPlayer: MediaPlayer? = null
+    private var vibrator: Vibrator? = null
+    private var builtinRing = false
     private var timeoutTask: Runnable? = null
     private var disconnectTask: Runnable? = null
     // 1.10.1: switch a bad direct call to the server relay (admin panel «تنظیمات تماس», mode «خودکار»)
@@ -133,6 +141,7 @@ object CallManager {
             if (state.value.phase != CallPhase.IDLE) return
             state.value = CallState(CallPhase.OUTGOING, peer, video, id, incoming = false, speaker = video, note = "در حال برقراری تماس…")
         }
+        CallTones.stop()
         Engine.scope.launch {
             try {
                 turnInfo = fetchTurn()
@@ -142,13 +151,15 @@ object CallManager {
                 val offer = createOffer(p)
                 setLocal(p, offer)
                 val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description).put("relay", 1))
-                if (!delivered) { endCall("کاربر الان آنلاین نیست", false); return@launch }
+                if (!delivered) { endCall("کاربر الان آنلاین نیست", false, CallTones.Tone.UNREACHABLE); return@launch }
                 // 1.9.2: the foreground service starts only once the invite really reached the peer.
                 // Starting it earlier and stopping it a few ms later (peer offline) crashed the app with
                 // ForegroundServiceDidNotStartInTimeException.
                 if (state.value.phase == CallPhase.IDLE) return@launch
                 startCallService(video && hasCamera())
-                armTimeout(45_000L, "پاسخی داده نشد")
+                // 1.13: the caller hears the ringback tone until the other side answers
+                if (state.value.phase == CallPhase.OUTGOING && state.value.callId == id) CallTones.play(CallTones.Tone.RINGBACK)
+                armTimeout(45_000L, "پاسخی داده نشد", CallTones.Tone.UNREACHABLE)
             } catch (e: Api.HttpError) {
                 // 1.7: someone who has not accepted my message request: the call is only noted on the request
                 endCall(if (e.error == "not_connected") "تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد" else "خطا در برقراری تماس (${e.code})", false)
@@ -222,7 +233,7 @@ object CallManager {
             "sig_reanswer" -> if (matches(from, callId)) onReanswer(callId, j.optString("sdp"))
             "sig_ice" -> onRemoteIce(callId, IceCandidate(j.optString("mid"), j.optInt("idx"), j.optString("cand")))
             "sig_reject" -> if (matches(from, callId)) {
-                endCall(if (j.optString("reason") == "busy") "طرف مقابل در تماس دیگری است" else "تماس رد شد", false)
+                endCall(if (j.optString("reason") == "busy") "طرف مقابل در تماس دیگری است" else "تماس رد شد", false, CallTones.Tone.BUSY)
             }
             "sig_hangup" -> if (matches(from, callId)) endCall("تماس پایان یافت", false)
         }
@@ -262,6 +273,7 @@ object CallManager {
             pc
         } ?: return
         cancelTimeout()
+        CallTones.stop()
         state.value = state.value.copy(phase = CallPhase.CONNECTING, note = "در حال اتصال…")
         Engine.scope.launch {
             try {
@@ -586,7 +598,11 @@ object CallManager {
 
     // ------------------------------------------------------------ end of call / helpers
 
-    fun endCall(note: String, sendHangup: Boolean) {
+    /**
+     * [tone]: 1.13 tone to play as the call ends (busy, unreachable…). Left null, a call that was connected
+     * ends with the short end tone and one that never connected ends silently.
+     */
+    fun endCall(note: String, sendHangup: Boolean, tone: CallTones.Tone? = null) {
         val snap = synchronized(lock) {
             val cur = state.value
             if (cur.phase == CallPhase.IDLE) return
@@ -605,6 +621,7 @@ object CallManager {
         cancelTimeout()
         disconnectTask?.let { main.removeCallbacks(it) }
         stopRing()
+        CallTones.stop()
         Engine.cancelCallNotification()
         localTrack.value = null
         remoteTrack.value = null
@@ -624,7 +641,12 @@ object CallManager {
         } else if (cur.incoming) "📞 تماس $kindText بی‌پاسخ" else "📞 تماس $kindText لغو شد / بی‌پاسخ"
         Engine.addCallLog(cur.peer, text, !cur.incoming)
 
-        AudioRouter.stop()
+        val endTone = tone ?: if (cur.startedAt > 0L) CallTones.Tone.END else null
+        if (endTone != null) {
+            // keep the call audio route until the tone has played, unless a new call took it over meanwhile
+            CallTones.play(endTone)
+            main.postDelayed({ if (state.value.phase == CallPhase.IDLE) AudioRouter.stop() }, CallTones.durationMs(endTone) + 300L)
+        } else AudioRouter.stop()
         stopCallService()
         if (note.isNotEmpty()) main.post { Toast.makeText(app, note, Toast.LENGTH_SHORT).show() }
 
@@ -667,11 +689,11 @@ object CallManager {
         try { app.stopService(Intent(app, CallService::class.java)) } catch (e: Exception) { }
     }
 
-    private fun armTimeout(ms: Long, note: String) {
+    private fun armTimeout(ms: Long, note: String, tone: CallTones.Tone? = null) {
         cancelTimeout()
         val r = Runnable {
             val ph = state.value.phase
-            if (ph == CallPhase.OUTGOING || ph == CallPhase.INCOMING) endCall(note, true)
+            if (ph == CallPhase.OUTGOING || ph == CallPhase.INCOMING) endCall(note, true, tone)
         }
         timeoutTask = r
         main.postDelayed(r, ms)
@@ -679,17 +701,68 @@ object CallManager {
 
     private fun cancelTimeout() { timeoutTask?.let { main.removeCallbacks(it) }; timeoutTask = null }
 
+    /**
+     * 1.13: incoming call ring. Follows the phone's ringer mode (silent: nothing, vibrate: vibration only,
+     * normal: ringtone + vibration). Plays the phone's own ringtone on the ring volume; if the phone has
+     * none or it can't be opened, a built-in Sepan ring is played instead.
+     */
     private fun startRing() {
+        stopRing()
+        val am = try { app.getSystemService(AudioManager::class.java) } catch (e: Exception) { null }
+        val mode = try { am?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL } catch (e: Exception) { AudioManager.RINGER_MODE_NORMAL }
+        if (mode != AudioManager.RINGER_MODE_SILENT) startVibrate()
+        if (mode != AudioManager.RINGER_MODE_NORMAL) return
+        val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
+        val uri = try {
+            RingtoneManager.getActualDefaultRingtoneUri(app, RingtoneManager.TYPE_RINGTONE)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        } catch (e: Exception) { null }
+        if (uri != null) {
+            try {
+                val mp = MediaPlayer()
+                mp.setAudioAttributes(attrs)
+                mp.setDataSource(app, uri)
+                mp.isLooping = true
+                mp.prepare()
+                mp.start()
+                ringPlayer = mp
+                return
+            } catch (e: Exception) { try { ringPlayer?.release() } catch (x: Exception) { }; ringPlayer = null }
+            try {
+                val r = RingtoneManager.getRingtone(app, uri)
+                if (r != null) {
+                    r.audioAttributes = attrs
+                    if (Build.VERSION.SDK_INT >= 28) r.isLooping = true
+                    r.play()
+                    if (r.isPlaying || Build.VERSION.SDK_INT < 28) { ringtone = r; return }
+                    r.stop()
+                }
+            } catch (e: Exception) { }
+        }
+        builtinRing = true
+        CallTones.play(CallTones.Tone.RING, AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+    }
+
+    private fun startVibrate() {
         try {
-            val r = RingtoneManager.getRingtone(app, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
-            if (Build.VERSION.SDK_INT >= 28) r.isLooping = true
-            r.play()
-            ringtone = r
+            val v = if (Build.VERSION.SDK_INT >= 31) app.getSystemService(VibratorManager::class.java)?.defaultVibrator
+                else @Suppress("DEPRECATION") app.getSystemService(Vibrator::class.java)
+            if (v == null || !v.hasVibrator()) return
+            val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE).build()
+            @Suppress("DEPRECATION") v.vibrate(VibrationEffect.createWaveform(longArrayOf(0, 800, 1200), 0), attrs)
+            vibrator = v
         } catch (e: Exception) { }
     }
 
     private fun stopRing() {
+        try { ringPlayer?.stop() } catch (e: Exception) { }
+        try { ringPlayer?.release() } catch (e: Exception) { }
+        ringPlayer = null
         try { ringtone?.stop() } catch (e: Exception) { }
         ringtone = null
+        try { vibrator?.cancel() } catch (e: Exception) { }
+        vibrator = null
+        if (builtinRing) { builtinRing = false; CallTones.stop() }
     }
 }
