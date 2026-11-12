@@ -26,6 +26,7 @@ export const S = {
   progress: new Map(),        // message id -> 0..1 (upload / download)
   failures: new Map(),        // message id -> error text
   openConvo: null,            // convo on screen
+  stickers: { create: false, limits: {}, packs: [] }, // 1.10: the sticker panel (official packs + my collection)
 };
 
 const listeners = new Set();
@@ -50,6 +51,7 @@ export function preview(m) {
   if (m.type === 'image') return '🖼 عکس';
   if (m.type === 'voice') return '🎤 پیام صوتی';
   if (m.type === 'location') return '📍 موقعیت مکانی';
+  if (m.type === 'sticker') return ((m.stk && m.stk.e) || '🎭') + ' استیکر';
   if (m.type === 'file') return '📎 ' + (m.name || 'فایل');
   if (m.type === 'call') return '📞 ' + m.text;
   return m.text || '';
@@ -79,6 +81,13 @@ export function errText(e) {
     case 'sms_foreign': return 'پیامک فقط به شماره‌های ایران (‎+98) فرستاده می‌شود. کد را از دستگاه دیگرتان یا از مدیر بگیرید و «کد را دارم» را بزنید.';
     case 'bad_username': return 'نام کاربری درست نیست';
     case 'bad_password': return 'رمز فعلی (یا کد پیامکی) درست نیست';
+    case 'stickers_disabled': return 'مدیر ساختن استیکر را خاموش کرده است';
+    case 'pack_limit': return 'به حداکثر تعداد پک‌های شخصی رسیده‌اید';
+    case 'pack_full': return 'این پک پر است';
+    case 'sticker_too_large': return 'حجم استیکر بیش از حد مجاز است';
+    case 'bad_sticker': return 'این عکس به‌عنوان استیکر پذیرفته نشد';
+    case 'no_such_pack': return 'این پک دیگر وجود ندارد';
+    case 'bad_title': return 'نام پک را بنویسید';
     case 'weak_password': return 'رمز تازه باید دست‌کم ۸ نویسه باشد';
     default: break;
   }
@@ -106,9 +115,10 @@ export async function init() {
   S.rseq = typeof rs === 'number' ? rs : -1;
   S.receipts = (await store.kvGet('receipts')) || {};
   S.privacy = (await store.kvGet('privacy')) || S.privacy;
+  S.stickers = (await store.kvGet('stickers')) || S.stickers;
   for (const m of await store.allMsgs()) addLocal(m);
   for (const list of S.convos.values()) list.sort(byOrder);
-  for (const m of [...S.convos.values()].flat()) if (m.status === 1 && m.type !== 'text') { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
+  for (const m of [...S.convos.values()].flat()) if (m.status === 1 && !TEXTISH.has(m.type)) { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
   S.ready = true;
   let step = null;
   try { step = await checkKey(); } catch { }
@@ -330,6 +340,7 @@ function refreshAll() {
   refreshGroups().catch(handleAuth);
   refreshRequests().catch(handleAuth);
   refreshMe().catch(handleAuth);
+  refreshStickers().catch(() => { });
 }
 function handleAuth(e) { if (e instanceof api.HttpError && e.status === 401 && api.getToken()) endSession(); }
 
@@ -420,6 +431,7 @@ async function handleEvent(ev, data) {
     case 'refresh': try { await refreshUsers(); await refreshGroups(); } catch { } return;
     case 'contacts': try { await refreshRequests(); } catch { } return;
     case 'login_alert': return emit('login_alert', o);
+    case 'stickers': return refreshStickers().catch(() => { });
     case 'pin':
       if (o.messageId == null) delete S.pins[o.convo]; else S.pins[o.convo] = o.messageId;
       return emit('pins', o.convo);
@@ -460,6 +472,7 @@ async function handleMsg(o) {
       id: o.id, convo, sender: o.from, mine, ts: o.ts, type: voice ? 'voice' : plain.t || 'text', text: plain.x || '', edited: o.edited || 0,
       ...(voice ? { dur: Number(plain.d) || 0, wave: Array.isArray(plain.wf) ? plain.wf.slice(0, 100).map((x) => Math.max(0, Math.min(31, x | 0))) : [] } : {}),
       ...(locOf(plain) ? { type: 'location', loc: locOf(plain) } : {}),
+      ...(stkOf(plain) ? { type: 'sticker', stk: stkOf(plain) } : {}),
       fwFrom: plain.f ? plain.f.u || null : null, fwName: plain.f ? plain.f.n || null : null,
       fileId: o.fileId || null, name: plain.n || null, mime: plain.m || null, size: plain.s || 0, fk: plain.fk || null,
       w: plain.w || 0, h: plain.h || 0, replyId: r ? r.id || 0 : 0, replyUser: r ? r.u || null : null, replyText: r ? r.x || null : null, status: 0,
@@ -533,6 +546,74 @@ export async function sendLocation(convo, loc, reply) {
   emit('msg', m);
   flush();
 }
+
+// ---------------- stickers (1.10) ----------------
+/** Messages that travel as text (a location and a sticker are text with an extra field). */
+const TEXTISH = new Set(['text', 'location', 'sticker']);
+/**
+ * A sticker travels as a text message with an extra "stk" field { id, p (pack), e (emoji) }, so apps
+ * before 1.10 show its emoji and the word "استیکر". The image itself is fetched from the server by id.
+ */
+function stkOf(plain) {
+  const k = plain && plain.t === 'text' && plain.stk;
+  if (!k || !/^[a-f0-9]{32}$/.test(k.id) || !/^[a-f0-9]{16}$/.test(k.p)) return null;
+  return { id: k.id, p: k.p, e: typeof k.e === 'string' ? k.e.slice(0, 16) : '' };
+}
+const stkJson = (m) => (m.type === 'sticker' && m.stk ? { t: 'text', x: stickerText(m.stk), stk: { id: m.stk.id, p: m.stk.p, e: m.stk.e || '' } } : {});
+const stickerText = (k) => ((k.e || '🎭') + ' استیکر');
+
+export async function refreshStickers() {
+  const r = await api.stickers();
+  S.stickers = { create: !!r.create, limits: r.limits || {}, packs: r.packs || [] };
+  await store.kvSet('stickers', S.stickers);
+  emit('stickers');
+}
+export async function sendSticker(convo, stk, reply) {
+  const m = { id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'sticker', text: stickerText(stk), stk: { id: stk.id, p: stk.p, e: stk.e || '' }, status: 1, ...replyOf(reply) };
+  addLocal(m);
+  await store.putMsg(m);
+  markRead(convo);
+  emit('msg', m);
+  flush();
+}
+
+// images: memory -> this browser's IndexedDB (works offline) -> server. null = its pack was deleted.
+const stkUrls = new Map(); // id -> object URL | null (gone)
+const stkLoading = new Map();
+export const stickerCached = (id) => stkUrls.get(id);
+export function stickerUrl(id) {
+  if (stkUrls.has(id)) return Promise.resolve(stkUrls.get(id));
+  if (stkLoading.has(id)) return stkLoading.get(id);
+  const p = (async () => {
+    let blob = null;
+    try { blob = await store.getMedia('stk:' + id); } catch { }
+    if (!blob) {
+      try { blob = await api.stickerImage(id); } catch (e) {
+        if (e instanceof api.HttpError && e.status === 404) { stkUrls.set(id, null); return null; }
+        throw e;
+      }
+      store.putMedia('stk:' + id, blob).catch(() => { });
+    }
+    const url = URL.createObjectURL(blob);
+    stkUrls.set(id, url);
+    return url;
+  })().finally(() => stkLoading.delete(id));
+  stkLoading.set(id, p);
+  return p;
+}
+
+async function stickerCall(fn) {
+  try { const r = await fn(); refreshStickers().catch(() => { }); return { ok: true, r }; } catch (e) { return { error: errText(e) }; }
+}
+export const stickerPack = async (id) => { try { return await api.stickerPack(id); } catch (e) { return { error: errText(e) }; } };
+export const createStickerPack = (title) => stickerCall(() => api.createStickerPack(title));
+export const addStickerPack = (id) => stickerCall(() => api.addStickerPack(id));
+export const removeStickerPack = (id) => stickerCall(() => api.removeStickerPack(id));
+export const renameStickerPack = (id, title) => stickerCall(() => api.renameStickerPack(id, title));
+export const deleteStickerPack = (id) => stickerCall(() => api.deleteStickerPack(id));
+export const orderStickerPacks = (ids) => stickerCall(() => api.orderStickerPacks(ids));
+export const addSticker = (packId, blob, emoji) => stickerCall(() => api.addSticker(packId, blob, emoji));
+export const deleteSticker = (id) => stickerCall(() => api.deleteSticker(id));
 
 // ---------------- delivered / seen ticks ----------------
 /** Receipts are watermarks: everything up to id `delivered` reached a device of that user, up to `seen` was read. */
@@ -718,6 +799,7 @@ const fileJson = (m) => ({
 function plainOf(m, text = m.text) {
   const p = { t: m.type, x: text, ...replyJson(m), ...forwardJson(m) };
   if (m.type === 'location') return { ...p, ...locJson(m) };
+  if (m.type === 'sticker') return { ...p, ...stkJson(m) };
   if (m.type !== 'text') Object.assign(p, fileJson(m));
   return p;
 }
@@ -760,18 +842,19 @@ export async function forward(msgs, targets, hideSender) {
   let n = 0;
   for (const t of targets) {
     for (const src of [...msgs].sort((a, b) => a.ts - b.ts)) {
-      if (src.status !== 0 || src.type === 'call' || src.id <= 0 || (src.type !== 'text' && !src.fileId)) continue;
+      if (src.status !== 0 || src.type === 'call' || src.id <= 0 || (!TEXTISH.has(src.type) && !src.fileId)) continue;
       const fw = hideSender ? null : src.fwFrom || src.sender;
       const m = {
         id: localId(), convo: t, sender: S.me, mine: true, ts: Date.now() + n++, type: src.type, text: src.text || '',
         name: src.name || null, mime: src.mime || null, size: src.size || 0, fk: src.fk || null, w: src.w || 0, h: src.h || 0,
         ...(src.type === 'voice' ? { dur: src.dur || 0, wave: src.wave || [] } : {}),
         ...(src.type === 'location' ? { loc: src.loc } : {}),
+        ...(src.type === 'sticker' ? { stk: src.stk } : {}),
         status: 1, replyId: 0, replyUser: null, replyText: null,
         fwFrom: fw, fwName: fw ? src.fwName || nameOf(src.sender) : null,
       };
       addLocal(m);
-      if (m.type === 'text' || m.type === 'location') await store.putMsg(m);
+      if (TEXTISH.has(m.type)) await store.putMsg(m);
       else {
         Object.defineProperty(m, '_fileId', { value: src.fileId, enumerable: false, writable: true });
         const blob = blobs.get(src.fileId);
@@ -851,10 +934,10 @@ export async function flush() {
   if (flushing || !api.getToken()) return;
   flushing = true;
   try {
-    const pending = [...S.convos.values()].flat().filter((m) => m.status === 1 && (m.type === 'text' || m.type === 'location')).sort((a, b) => a.ts - b.ts);
+    const pending = [...S.convos.values()].flat().filter((m) => m.status === 1 && TEXTISH.has(m.type)).sort((a, b) => a.ts - b.ts);
     for (const m of pending) {
       try {
-        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m), ...locJson(m) });
+        const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m), ...locJson(m), ...stkJson(m) });
         const r = await api.send(m.convo, payload);
         await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0 });
       } catch (e) {
@@ -880,7 +963,7 @@ async function swapLocal(local, real) {
 
 export function retry(m) {
   S.failures.delete(m.id);
-  if (m.type === 'text' || m.type === 'location') { m.status = 1; store.putMsg(m); emit('msg', m); flush(); }
+  if (TEXTISH.has(m.type)) { m.status = 1; store.putMsg(m); emit('msg', m); flush(); }
   else if (m._file) { m.status = 1; emit('msg', m); uploadFile(m); }
 }
 

@@ -85,6 +85,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     var showBackup by remember { mutableStateOf(false) }
     var showDevCode by remember { mutableStateOf(false) }
     var showPassword by remember { mutableStateOf(false) }
+    var showStickers by remember { mutableStateOf(false) }
     var checking by remember { mutableStateOf(false) }
     var update by remember { mutableStateOf<AppUpdate?>(null) }
     val backedUp by Engine.keyBackedUp.collectAsState()
@@ -102,6 +103,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
         }
     }
 
+    SystemBars.HeaderShown()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -158,6 +160,10 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                     modifier = Modifier.align(Alignment.End)
                 ) { Text("ذخیره") }
             }
+
+            // ---- stickers (1.10) ----
+            SectionTitle("استیکر")
+            SettingRow("استیکرهای من", "ساختن پک از عکس‌ها، افزودن فایل یا zip، مرتب‌کردن") { showStickers = true }
 
             // ---- notifications ----
             SectionTitle("اعلان‌ها")
@@ -262,6 +268,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     if (showBackup) KeyPasswordDialog { showBackup = false }
     if (showDevCode) DeviceCodeDialog { showDevCode = false }
     if (showPassword) ChangePasswordDialog { showPassword = false }
+    if (showStickers) StickerManager { showStickers = false }
     update?.let { u -> UpdateDialog(u) { update = null } }
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },

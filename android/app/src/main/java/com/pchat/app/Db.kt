@@ -23,8 +23,15 @@ data class Msg(
     /** shared location (type "location") */
     val loc: Loc? = null,
     /** emoji reactions: username -> emoji */
-    val reactions: Map<String, String> = emptyMap()
+    val reactions: Map<String, String> = emptyMap(),
+    /** 1.10 sticker (type "sticker") */
+    val stk: Stk? = null
 )
+
+/** A sticker: its image id, its pack and the emoji it stands for. */
+data class Stk(val id: String, val p: String, val e: String = "")
+private fun stkStr(k: Stk?) = k?.let { "${it.id},${it.p},${it.e}" }
+private fun parseStk(s: String?): Stk? = s?.split(',', limit = 3)?.takeIf { it.size == 3 && it[0].length == 32 }?.let { Stk(it[0], it[1], it[2]) }
 
 data class Loc(val lat: Double, val lon: Double, val acc: Int)
 
@@ -43,7 +50,7 @@ fun parseReactions(s: String?): Map<String, String> = try {
 
 data class ConvoSummary(val convo: String, val last: Msg?, val unread: Int)
 
-private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name,dur,wave,loc,reactions"
+private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name,dur,wave,loc,reactions,stk"
 
 private fun Cursor.toMsg() = Msg(
     id = getLong(0), convo = getString(1), sender = getString(2), mine = getInt(3) == 1, ts = getLong(4),
@@ -53,10 +60,10 @@ private fun Cursor.toMsg() = Msg(
     localPath = getString(17), read = getInt(18) == 1,
     status = getInt(19), uploadId = getString(20),
     edited = getLong(21), fwFrom = getString(22), fwName = getString(23),
-    dur = getLong(24), wave = parseWave(getString(25)), loc = parseLoc(getString(26)), reactions = parseReactions(getString(27))
+    dur = getLong(24), wave = parseWave(getString(25)), loc = parseLoc(getString(26)), reactions = parseReactions(getString(27)), stk = parseStk(getString(28))
 )
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 4) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 5) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE messages(id INTEGER PRIMARY KEY, convo TEXT NOT NULL, sender TEXT NOT NULL, " +
@@ -64,7 +71,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 4) {
                 "file_name TEXT, mime TEXT, size INTEGER, fkey TEXT, w INTEGER, h INTEGER, reply_id INTEGER, " +
                 "reply_user TEXT, reply_text TEXT, local_path TEXT, read INTEGER NOT NULL DEFAULT 0, " +
                 "status INTEGER NOT NULL DEFAULT 0, upload_id TEXT, edited INTEGER NOT NULL DEFAULT 0, fw_from TEXT, fw_name TEXT, " +
-                "dur INTEGER NOT NULL DEFAULT 0, wave TEXT, loc TEXT, reactions TEXT)"
+                "dur INTEGER NOT NULL DEFAULT 0, wave TEXT, loc TEXT, reactions TEXT, stk TEXT)"
         )
         db.execSQL("CREATE INDEX idx_convo ON messages(convo, id)")
         db.execSQL("CREATE TABLE contacts(username TEXT PRIMARY KEY, pubkey TEXT, key_changed INTEGER NOT NULL DEFAULT 0)")
@@ -86,6 +93,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 4) {
             db.execSQL("ALTER TABLE messages ADD COLUMN loc TEXT")
             db.execSQL("ALTER TABLE messages ADD COLUMN reactions TEXT")
         }
+        if (oldVersion < 5) db.execSQL("ALTER TABLE messages ADD COLUMN stk TEXT")
     }
 
     /** Returns true if the message was new. */
@@ -98,7 +106,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 4) {
             put("reply_text", m.replyText); put("local_path", m.localPath); put("read", if (m.read) 1 else 0)
             put("status", m.status); put("upload_id", m.uploadId)
             put("edited", m.edited); put("fw_from", m.fwFrom); put("fw_name", m.fwName)
-            put("dur", m.dur); put("wave", waveStr(m.wave)); put("loc", locStr(m.loc)); put("reactions", reactionsStr(m.reactions))
+            put("dur", m.dur); put("wave", waveStr(m.wave)); put("loc", locStr(m.loc)); put("reactions", reactionsStr(m.reactions)); put("stk", stkStr(m.stk))
         }
         return writableDatabase.insertWithOnConflict("messages", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }
