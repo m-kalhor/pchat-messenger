@@ -92,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -605,50 +606,11 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
               Column {
                 Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                   val rec = recorder
-                  if (rec != null) {
-                    // recording: elapsed time and how to cancel / lock
-                    val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
-                    Row(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFE53935).copy(alpha = blink)))
-                        Spacer(Modifier.width(8.dp))
-                        Text(U.dur(recElapsed), fontSize = 16.sp)
-                        Spacer(Modifier.weight(1f))
-                        if (recLocked) TextButton(onClick = { finishRec(false) }) { Text("لغو", color = MaterialTheme.colorScheme.error) }
-                        else Text(
-                            "برای لغو به کنار بکشید · برای قفل بالا",
-                            fontSize = 12.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = (0.6f - kotlin.math.abs(recDrag) / 400f).coerceAtLeast(0.15f))
-                        )
-                    }
-                  } else {
-                    if (reqState != "out") Box {
-                        IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
-                        DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
-                            DropdownMenuItem(text = { Text("🖼  عکس از گالری") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
-                            DropdownMenuItem(text = { Text("📷  عکس با دوربین") }, onClick = { attachMenu = false; openCamera() })
-                            DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
-                            DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
-                        }
-                    }
-                    IconButton(onClick = {
-                        if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
-                        else { keyboard?.hide(); emojiOpen = true }
-                    }) { Text(if (emojiOpen) "⌨️" else "😊", fontSize = 22.sp) }
-                    OutlinedTextField(
-                        // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
-                        value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
-                        onValueChange = {
-                            if (it.text.length <= 4000) {
-                                if (it.text != text && it.text.isNotEmpty() && editing == null) Engine.sendTyping(convo)
-                                field = it; text = it.text
-                            }
-                        },
-                        placeholder = { Text("پیام…") }, interactionSource = inputTouch,
-                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
-                    )
-                  }
+                  // 1.13: send / voice button on the right (the start side in RTL), under a right thumb;
+                  // the text field in the middle, emoji/sticker and + on the left
                   if (rec != null && recLocked) {
                     IconButton(onClick = { finishRec(true) }) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) // 1.13: points right
                     }
                   } else if (rec != null || (text.isBlank() && editing == null && reqState != "out")) {
                     Box(
@@ -692,7 +654,48 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 Engine.sendText(convo, t, r)
                             }
                         }
-                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) } // 1.13: points right, like the send key
+                  if (rec != null) {
+                    // recording: elapsed time and how to cancel / lock
+                    val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
+                    Row(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFE53935).copy(alpha = blink)))
+                        Spacer(Modifier.width(8.dp))
+                        Text(U.dur(recElapsed), fontSize = 16.sp)
+                        Spacer(Modifier.weight(1f))
+                        if (recLocked) TextButton(onClick = { finishRec(false) }) { Text("لغو", color = MaterialTheme.colorScheme.error) }
+                        else Text(
+                            "برای لغو به کنار بکشید · برای قفل بالا",
+                            fontSize = 12.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = (0.6f - kotlin.math.abs(recDrag) / 400f).coerceAtLeast(0.15f))
+                        )
+                    }
+                  } else {
+                    OutlinedTextField(
+                        // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
+                        value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
+                        onValueChange = {
+                            if (it.text.length <= 4000) {
+                                if (it.text != text && it.text.isNotEmpty() && editing == null) Engine.sendTyping(convo)
+                                field = it; text = it.text
+                            }
+                        },
+                        placeholder = { Text("پیام…") }, interactionSource = inputTouch,
+                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
+                    )
+                    IconButton(onClick = {
+                        if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
+                        else { keyboard?.hide(); emojiOpen = true }
+                    }) { Text(if (emojiOpen) "⌨️" else "😊", fontSize = 22.sp) }
+                    if (reqState != "out") Box {
+                        IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
+                        DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                            DropdownMenuItem(text = { Text("🖼  عکس از گالری") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
+                            DropdownMenuItem(text = { Text("📷  عکس با دوربین") }, onClick = { attachMenu = false; openCamera() })
+                            DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
+                            DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
+                        }
+                    }
+                  }
                 }
                 if (emojiOpen && recorder == null) EmojiStickerPanel(onEmoji = { e ->
                     val cur = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
