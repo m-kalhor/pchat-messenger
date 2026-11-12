@@ -6,7 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioManager
-import android.media.MediaPlayer
 import android.media.Ringtone
 import android.media.RingtoneManager
 import android.os.Build
@@ -103,7 +102,6 @@ object CallManager {
     private val pendingIce = ArrayList<Pair<String, IceCandidate>>()
     private var remoteSet = false
     private var ringtone: Ringtone? = null
-    private var ringPlayer: MediaPlayer? = null
     private var vibrator: Vibrator? = null
     private var builtinRing = false
     private var timeoutTask: Runnable? = null
@@ -703,8 +701,8 @@ object CallManager {
 
     /**
      * 1.13: incoming call ring. Follows the phone's ringer mode (silent: nothing, vibrate: vibration only,
-     * normal: ringtone + vibration). Plays the phone's own ringtone on the ring volume; if the phone has
-     * none or it can't be opened, a built-in Sepan ring is played instead.
+     * normal: ringtone + vibration). Plays the phone's own chosen ringtone; only a phone without one gets
+     * the built-in Sepan ring.
      */
     private fun startRing() {
         stopRing()
@@ -712,34 +710,18 @@ object CallManager {
         val mode = try { am?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL } catch (e: Exception) { AudioManager.RINGER_MODE_NORMAL }
         if (mode != AudioManager.RINGER_MODE_SILENT) startVibrate()
         if (mode != AudioManager.RINGER_MODE_NORMAL) return
-        val attrs = AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
-            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()
-        val uri = try {
-            RingtoneManager.getActualDefaultRingtoneUri(app, RingtoneManager.TYPE_RINGTONE)
-                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
-        } catch (e: Exception) { null }
-        if (uri != null) {
-            try {
-                val mp = MediaPlayer()
-                mp.setAudioAttributes(attrs)
-                mp.setDataSource(app, uri)
-                mp.isLooping = true
-                mp.prepare()
-                mp.start()
-                ringPlayer = mp
+        // 1.13.2: play the phone's own chosen ringtone through Ringtone, exactly like before 1.13. The system
+        // player opens it (it may sit in the phone's media that this app can't read itself), so only if the
+        // phone gives us no ringtone at all do we fall back to the built-in ring.
+        try {
+            val r = RingtoneManager.getRingtone(app, RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE))
+            if (r != null) {
+                if (Build.VERSION.SDK_INT >= 28) r.isLooping = true
+                r.play()
+                ringtone = r
                 return
-            } catch (e: Exception) { try { ringPlayer?.release() } catch (x: Exception) { }; ringPlayer = null }
-            try {
-                val r = RingtoneManager.getRingtone(app, uri)
-                if (r != null) {
-                    r.audioAttributes = attrs
-                    if (Build.VERSION.SDK_INT >= 28) r.isLooping = true
-                    r.play()
-                    if (r.isPlaying || Build.VERSION.SDK_INT < 28) { ringtone = r; return }
-                    r.stop()
-                }
-            } catch (e: Exception) { }
-        }
+            }
+        } catch (e: Exception) { }
         builtinRing = true
         CallTones.play(CallTones.Tone.RING, AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
     }
@@ -756,9 +738,6 @@ object CallManager {
     }
 
     private fun stopRing() {
-        try { ringPlayer?.stop() } catch (e: Exception) { }
-        try { ringPlayer?.release() } catch (e: Exception) { }
-        ringPlayer = null
         try { ringtone?.stop() } catch (e: Exception) { }
         ringtone = null
         try { vibrator?.cancel() } catch (e: Exception) { }
