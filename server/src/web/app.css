@@ -203,6 +203,16 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .call .cb.on { background: #fff; color: #10202f; }
 .call .cb.red { background: #e53935; }
 .call .cb.green { background: #43a047; }
+.call .cb:disabled { opacity: .4; }
+/* 1.15: call path menu */
+.call .route-now { margin-top: 6px; font-size: 13px; opacity: .85; }
+.call .route-menu { position: absolute; bottom: calc(env(safe-area-inset-bottom) + 120px); z-index: 3; background: rgba(16, 32, 47, .92); border-radius: 14px; padding: 6px; min-width: 230px; display: flex; flex-direction: column; box-shadow: 0 4px 16px rgba(0, 0, 0, .4); }
+.call .route-menu .rt { font-size: 13px; opacity: .7; padding: 6px 10px; }
+.call .route-menu .ri { background: none; border: 0; color: #fff; text-align: right; padding: 11px 12px; font-size: 15px; border-radius: 10px; font-family: inherit; }
+.call .route-menu .ri:hover:not(:disabled) { background: rgba(255, 255, 255, .1); }
+.call .route-menu .ri.cur { color: #64b5f6; }
+.call .route-menu .ri.back { opacity: .8; font-size: 13px; }
+.call .route-menu .ri:disabled { opacity: .4; }
 .setting select { width: auto; max-width: 55%; flex: none; }
 /* forward / edit / selection (1.3) */
 .bubble .fw { font-size: 13px; color: var(--accent); margin-bottom: 2px; }

@@ -63,7 +63,15 @@ data class CallState(
     val bt: Boolean = false,
     val front: Boolean = true,
     val startedAt: Long = 0L,
-    val note: String = ""
+    val note: String = "",
+    // 1.15: call path chosen by the user (only users the admin ticked in the panel, column «مسیر تماس»)
+    val canRoute: Boolean = false,     // this user may choose (from /api/turn)
+    val peerRoute: Boolean = false,    // the other app understands it (1.15 or newer)
+    val netMode: String = "auto",      // auto | direct | udp | tcp | tls
+    val netModes: List<String> = emptyList(), // the modes this server offers
+    val routing: Boolean = false,      // a path change is under way
+    val path: String = "",             // the path in use now, e.g. «مستقیم · UDP»
+    val routeNote: String = ""
 )
 
 open class SdpAdapter : SdpObserver {
@@ -114,6 +122,12 @@ object CallManager {
     private var iceHold = false
     private val heldIce = ArrayList<IceCandidate>()
     private var watchJob: Job? = null
+    // 1.15: user-chosen call path
+    private var guardJob: Job? = null
+    @Volatile private var guardUntil = 0L
+    private var pathJob: Job? = null
+    private var peerPref = "auto"
+    val ROUTE_NAMES = linkedMapOf("auto" to "خودکار", "direct" to "مستقیم (UDP)", "udp" to "سرور · UDP", "tcp" to "سرور · TCP", "tls" to "سرور · TLS")
 
     private class Res(
         val pc: PeerConnection?, val at: AudioTrack?, val asrc: AudioSource?, val lv: VideoTrack?,
@@ -148,7 +162,7 @@ object CallManager {
                 val p = createPeer(f, video)
                 val offer = createOffer(p)
                 setLocal(p, offer)
-                val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description).put("relay", 1))
+                val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description).put("relay", 1).put("route", 1))
                 if (!delivered) { endCall("کاربر الان آنلاین نیست", false, CallTones.Tone.UNREACHABLE); return@launch }
                 // 1.9.2: the foreground service starts only once the invite really reached the peer.
                 // Starting it earlier and stopping it a few ms later (peer offline) crashed the app with
@@ -185,7 +199,8 @@ object CallManager {
                 flushIce(s.callId)
                 val ans = createAnswer(p)
                 setLocal(p, ans)
-                sendSignal(s.peer, "sig_accept", JSONObject().put("callId", s.callId).put("sdp", ans.description).put("relay", 1))
+                val pref = if (state.value.canRoute) Prefs.callRoute.value else "auto"
+                sendSignal(s.peer, "sig_accept", JSONObject().put("callId", s.callId).put("sdp", ans.description).put("relay", 1).put("route", 1).put("route_pref", pref))
             } catch (e: Exception) {
                 endCall("خطا در اتصال تماس", true)
             }
@@ -224,10 +239,14 @@ object CallManager {
         val j = try { JSONObject(plain) } catch (e: Exception) { return }
         val callId = j.optString("callId")
         when (kind) {
-            "sig_invite" -> onInvite(from, callId, j.optBoolean("video"), j.optString("sdp"), j.optInt("relay") == 1)
-            "sig_accept" -> onAccepted(from, callId, j.optString("sdp"), j.optInt("relay") == 1)
+            "sig_invite" -> onInvite(from, callId, j.optBoolean("video"), j.optString("sdp"), j.optInt("relay") == 1, j.optInt("route") == 1)
+            "sig_accept" -> onAccepted(from, callId, j.optString("sdp"), j.optInt("relay") == 1, j.optInt("route") == 1, j.optString("route_pref", "auto"))
+            "sig_route" -> { val m = j.optString("mode"); if (matches(from, callId) && !state.value.incoming && ROUTE_NAMES.containsKey(m)) Engine.scope.launch { restartTo(m, null) } }
             "sig_relay" -> if (matches(from, callId) && !state.value.incoming) Engine.scope.launch { switchToRelay() }
-            "sig_reoffer" -> if (matches(from, callId)) Engine.scope.launch { onReoffer(callId, j.optString("sdp")) }
+            "sig_reoffer" -> if (matches(from, callId)) Engine.scope.launch {
+                val m = j.optString("mode").takeIf { ROUTE_NAMES.containsKey(it) }
+                onReoffer(callId, j.optString("sdp"), m, j.optString("failed").takeIf { ROUTE_NAMES.containsKey(it) })
+            }
             "sig_reanswer" -> if (matches(from, callId)) onReanswer(callId, j.optString("sdp"))
             "sig_ice" -> onRemoteIce(callId, IceCandidate(j.optString("mid"), j.optInt("idx"), j.optString("cand")))
             "sig_reject" -> if (matches(from, callId)) {
@@ -242,14 +261,14 @@ object CallManager {
         return s.phase != CallPhase.IDLE && s.peer == from && s.callId == callId
     }
 
-    private fun onInvite(from: String, callId: String, video: Boolean, sdp: String, relay: Boolean) {
+    private fun onInvite(from: String, callId: String, video: Boolean, sdp: String, relay: Boolean, route: Boolean) {
         if (callId.isEmpty() || sdp.isEmpty()) return
         val busy = synchronized(lock) {
             if (state.value.phase != CallPhase.IDLE) true
             else {
                 offerSdp = sdp
                 peerRelay = relay
-                state.value = CallState(CallPhase.INCOMING, from, video, callId, incoming = true, speaker = video, note = "تماس ورودی")
+                state.value = CallState(CallPhase.INCOMING, from, video, callId, incoming = true, speaker = video, note = "تماس ورودی", peerRoute = route)
                 false
             }
         }
@@ -264,10 +283,12 @@ object CallManager {
         armTimeout(45_000L, "تماس بی‌پاسخ ماند")
     }
 
-    private fun onAccepted(from: String, callId: String, sdp: String, relay: Boolean) {
+    private fun onAccepted(from: String, callId: String, sdp: String, relay: Boolean, route: Boolean, pref: String) {
         val p = synchronized(lock) {
             if (!matches(from, callId) || state.value.phase != CallPhase.OUTGOING) return
             peerRelay = relay
+            peerPref = if (ROUTE_NAMES.containsKey(pref)) pref else "auto"
+            state.value = state.value.copy(peerRoute = route)
             pc
         } ?: return
         cancelTimeout()
@@ -343,6 +364,8 @@ object CallManager {
             rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
         }
         rtcConfig = cfg
+        val modes = ROUTE_NAMES.keys.filter { urlsFor(it).isNotEmpty() }
+        synchronized(lock) { state.value = state.value.copy(canRoute = t.userRoute, netModes = modes, netMode = "auto", routing = false, path = "") }
         val p = f.createPeerConnection(cfg, observer) ?: throw IllegalStateException("PeerConnection ساخته نشد")
         val asrc = f.createAudioSource(MediaConstraints())
         val at = f.createAudioTrack("a0", asrc)
@@ -395,13 +418,22 @@ object CallManager {
                     }
                     limitVideo()
                     startWatch()
+                    startPath()
+                    applyPref()
                 }
                 PeerConnection.PeerConnectionState.DISCONNECTED -> {
-                    val r = Runnable { endCall("اتصال قطع شد", true) }
+                    disconnectTask?.let { main.removeCallbacks(it) }
+                    val r = object : Runnable {
+                        override fun run() {
+                            // 1.15: a path change is being tried; it falls back by itself (see armGuard)
+                            if (System.currentTimeMillis() < guardUntil) { main.postDelayed(this, 3000L); return }
+                            if (pc?.connectionState() != PeerConnection.PeerConnectionState.CONNECTED) endCall("اتصال قطع شد", true)
+                        }
+                    }
                     disconnectTask = r
                     main.postDelayed(r, 10_000L)
                 }
-                PeerConnection.PeerConnectionState.FAILED -> endCall("اتصال برقرار نشد", true)
+                PeerConnection.PeerConnectionState.FAILED -> if (System.currentTimeMillis() >= guardUntil) endCall("اتصال برقرار نشد", true)
                 else -> {}
             }
         }
@@ -459,7 +491,7 @@ object CallManager {
     private fun startWatch() {
         val t = turnInfo ?: return
         synchronized(lock) {
-            if (watchJob != null || t.policy != "auto" || relayed || !peerRelay) return
+            if (watchJob != null || t.policy != "auto" || relayed || !peerRelay || state.value.netMode != "auto") return
             watchJob = Engine.scope.launch {
                 var bad = 0; var n = 0; var prevLost = -1.0; var prevRecv = -1.0
                 while (true) {
@@ -536,14 +568,15 @@ object CallManager {
         } finally { synchronized(lock) { switching = false } }
     }
 
-    private suspend fun onReoffer(callId: String, sdp: String) {
+    private suspend fun onReoffer(callId: String, sdp: String, mode: String?, failed: String?) {
         val p = pc ?: return
         if (sdp.isEmpty()) return
         stopWatch()
         synchronized(lock) { switching = true }
         val s = state.value
         try {
-            relayOnly(p)
+            // 1.15: the path the caller chose; an older app (no mode) only ever switches to the relay
+            if (mode != null) applyConfig(p, mode) else relayOnly(p)
             synchronized(lock) { remoteSet = false }
             setRemote(p, SessionDescription(SessionDescription.Type.OFFER, sdp))
             synchronized(lock) { remoteSet = true; iceHold = true; heldIce.clear() }
@@ -552,10 +585,181 @@ object CallManager {
             setLocal(p, ans)
             sendSignal(s.peer, "sig_reanswer", JSONObject().put("callId", callId).put("sdp", ans.description))
             releaseIce()
-            relayed = true
+            if (mode != null) {
+                applyMode(mode); armGuard(mode, null)
+                if (failed != null) showRouteNote("«${ROUTE_NAMES[failed]}» برقرار نشد؛ تماس روی مسیر قبلی ماند")
+            } else relayed = true
         } catch (e: Exception) {
             synchronized(lock) { iceHold = false; remoteSet = true }
         } finally { synchronized(lock) { switching = false } }
+    }
+
+    // ------------------------------------------------------------ 1.15: the user picks the call path
+
+    /** The ICE server URLs for a path: direct = STUN only; udp/tcp/tls = that one TURN URL; auto = all. */
+    private fun urlsFor(mode: String): List<String> {
+        val u = turnInfo?.urls ?: return emptyList()
+        return when (mode) {
+            "direct" -> u.filter { it.startsWith("stun:") }
+            "udp" -> u.filter { it.startsWith("turn:") && it.contains("transport=udp") }
+            "tcp" -> u.filter { it.startsWith("turn:") && it.contains("transport=tcp") }
+            "tls" -> u.filter { it.startsWith("turns:") }
+            else -> u
+        }
+    }
+
+    private fun applyConfig(p: PeerConnection, mode: String) {
+        val cfg = rtcConfig ?: return
+        val t = turnInfo ?: return
+        val urls = urlsFor(mode)
+        cfg.iceServers = if (urls.isEmpty()) emptyList() else listOf(PeerConnection.IceServer.builder(urls).setUsername(t.user).setPassword(t.cred).createIceServer())
+        val relay = when (mode) { "auto" -> t.policy == "relay"; "direct" -> false; else -> true }
+        cfg.iceTransportsType = if (relay) PeerConnection.IceTransportsType.RELAY else PeerConnection.IceTransportsType.ALL
+        p.setConfiguration(cfg)
+    }
+
+    private fun applyMode(mode: String) {
+        relayed = when (mode) { "auto" -> turnInfo?.policy == "relay"; "direct" -> false; else -> true }
+        guardUntil = System.currentTimeMillis() + 20_000L
+        synchronized(lock) { val s = state.value; if (s.phase != CallPhase.IDLE) state.value = s.copy(netMode = mode, routing = true) }
+    }
+
+    /** Called by the call screen. The caller restarts ICE itself; the callee asks the caller to. */
+    fun setRoute(mode: String) {
+        val s = state.value
+        if (pc == null || s.phase != CallPhase.ACTIVE || !s.canRoute || !s.peerRoute || s.routing || switching) return
+        if (!ROUTE_NAMES.containsKey(mode) || mode !in s.netModes || mode == s.netMode) return
+        if (s.incoming) {
+            synchronized(lock) { state.value = state.value.copy(routing = true) }
+            guardUntil = System.currentTimeMillis() + 20_000L
+            armGuard(mode, null)
+            Engine.scope.launch { try { sendSignal(s.peer, "sig_route", JSONObject().put("callId", s.callId).put("mode", mode)) } catch (e: Exception) { } }
+        } else Engine.scope.launch { restartTo(mode, null) }
+    }
+
+    /** After connecting: the caller switches to the caller's default path, or else to the callee's. */
+    private fun applyPref() {
+        val s = state.value
+        if (s.incoming || !s.peerRoute) return
+        val mine = if (s.canRoute) Prefs.callRoute.value else "auto"
+        val want = if (mine != "auto") mine else peerPref
+        if (want == "auto" || want !in s.netModes) return
+        Engine.scope.launch {
+            delay(1500)
+            val c = state.value
+            if (c.phase == CallPhase.ACTIVE && c.callId == s.callId && c.netMode == "auto") restartTo(want, null)
+        }
+    }
+
+    /** ICE restart onto another path; the call goes on over the old path meanwhile. failed: the path given up on. */
+    private suspend fun restartTo(mode: String, failed: String?) {
+        val s = state.value
+        val p = synchronized(lock) {
+            if (switching || s.incoming || s.phase == CallPhase.IDLE) return
+            switching = true
+            pc
+        } ?: run { synchronized(lock) { switching = false }; return }
+        stopWatch()
+        val before = s.netMode
+        try {
+            applyConfig(p, mode)
+            synchronized(lock) { iceHold = true; heldIce.clear(); remoteSet = false }
+            val offer = createOffer(p, iceRestart = true)
+            setLocal(p, offer)
+            val body = JSONObject().put("callId", s.callId).put("sdp", offer.description).put("mode", mode)
+            if (failed != null) body.put("failed", failed)
+            sendSignal(s.peer, "sig_reoffer", body)
+            releaseIce()
+            applyMode(mode)
+            armGuard(mode, if (failed != null) null else before)
+        } catch (e: Exception) {
+            synchronized(lock) { iceHold = false; remoteSet = true; val c = state.value; if (c.phase != CallPhase.IDLE) state.value = c.copy(routing = false) }
+        } finally { synchronized(lock) { switching = false } }
+    }
+
+    private class Sel(val lc: Map<String, Any>?, val rc: Map<String, Any>?)
+
+    private suspend fun selected(p: PeerConnection): Sel? {
+        val all = stats(p)?.statsMap ?: return null
+        var pair = all.values.firstOrNull { it.type == "transport" && it.members["selectedCandidatePairId"] != null }
+            ?.let { all[it.members["selectedCandidatePairId"] as? String] }
+        if (pair == null) pair = all.values.firstOrNull { it.type == "candidate-pair" && it.members["state"] == "succeeded" && it.members["nominated"] == true }
+        if (pair == null) return null
+        return Sel(all[pair.members["localCandidateId"] as? String]?.members, all[pair.members["remoteCandidateId"] as? String]?.members)
+    }
+
+    /** Whether the selected candidate pair is on the wanted path. */
+    private fun onPath(mode: String, sel: Sel): Boolean {
+        val lRelay = sel.lc?.get("candidateType") == "relay"
+        val relay = lRelay || sel.rc?.get("candidateType") == "relay"
+        return when (mode) {
+            "auto" -> true
+            "direct" -> !relay
+            else -> relay && (!lRelay || sel.lc?.get("relayProtocol").let { it == null || it == mode })
+        }
+    }
+
+    /**
+     * Waits up to 12 s for the new path. back: the path to return to if it doesn't come up (only the side that
+     * restarted ICE has it); without it a path that never comes up ends the call like before.
+     */
+    private fun armGuard(mode: String, back: String?) {
+        guardJob?.cancel()
+        guardJob = Engine.scope.launch {
+            val t0 = System.currentTimeMillis()
+            while (true) {
+                delay(1500)
+                val p = pc ?: return@launch
+                val st = state.value
+                if (st.phase == CallPhase.IDLE) return@launch
+                val sel = if (p.connectionState() == PeerConnection.PeerConnectionState.CONNECTED) selected(p) else null
+                if (sel != null && onPath(st.netMode, sel)) {
+                    guardUntil = 0L
+                    synchronized(lock) { val c = state.value; if (c.phase != CallPhase.IDLE) state.value = c.copy(routing = false) }
+                    updatePath(); startWatch()
+                    return@launch
+                }
+                if (System.currentTimeMillis() - t0 < 12_000L) continue
+                if (back != null && !st.incoming) {
+                    showRouteNote("«${ROUTE_NAMES[mode]}» برقرار نشد؛ تماس روی مسیر قبلی ماند")
+                    Engine.scope.launch { restartTo(back, mode) }
+                } else {
+                    guardUntil = 0L
+                    synchronized(lock) { val c = state.value; if (c.phase != CallPhase.IDLE) state.value = c.copy(routing = false) }
+                    if (p.connectionState() == PeerConnection.PeerConnectionState.FAILED) endCall("اتصال برقرار نشد", true)
+                }
+                return@launch
+            }
+        }
+    }
+
+    private fun showRouteNote(n: String) {
+        synchronized(lock) { val c = state.value; if (c.phase != CallPhase.IDLE) state.value = c.copy(routeNote = n) }
+        Engine.scope.launch {
+            delay(5000)
+            synchronized(lock) { val c = state.value; if (c.routeNote == n) state.value = c.copy(routeNote = "") }
+        }
+    }
+
+    /** The path in use, for the call screen (users allowed to choose only). */
+    private suspend fun updatePath() {
+        val st = state.value
+        if (!st.canRoute) return
+        val p = pc ?: return
+        val sel = selected(p) ?: return
+        val lc = sel.lc ?: return
+        val path = when {
+            lc["candidateType"] == "relay" -> "سرور · " + (lc["relayProtocol"] as? String ?: "udp").uppercase()
+            sel.rc?.get("candidateType") == "relay" -> "سرور" + (if (st.netMode in listOf("udp", "tcp", "tls")) " · " + st.netMode.uppercase() else "")
+            else -> "مستقیم · " + (lc["protocol"] as? String ?: "udp").uppercase()
+        }
+        synchronized(lock) { val c = state.value; if (c.phase != CallPhase.IDLE && c.path != path) state.value = c.copy(path = path) }
+    }
+
+    private fun startPath() {
+        pathJob?.cancel()
+        if (!state.value.canRoute) return
+        pathJob = Engine.scope.launch { while (true) { updatePath(); delay(3000) } }
     }
 
     private fun onReanswer(callId: String, sdp: String) {
@@ -608,6 +812,7 @@ object CallManager {
             pendingIce.clear()
             watchJob?.cancel(); watchJob = null
             iceHold = false; heldIce.clear(); switching = false; relayed = false; peerRelay = false; rtcConfig = null
+            guardJob?.cancel(); guardJob = null; guardUntil = 0L; pathJob?.cancel(); pathJob = null; peerPref = "auto"
             remoteSet = false
             offerSdp = null
             val r = Res(pc, audioTrack, audioSource, localVideo, videoSource, capturer, helper)

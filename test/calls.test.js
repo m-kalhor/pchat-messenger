@@ -72,3 +72,27 @@ test('the admin changes the settings, bad values are refused, and both reset but
   assert.equal(r.data.calls.route, 'auto');
   assert.equal(r.data.calls.tls, true);
 });
+
+test('1.15: choosing the call path is off for everyone until the admin ticks the user', async () => {
+  let t = (await S.api(tok, 'GET', '/api/turn')).data;
+  assert.equal(t.user_route, false);
+  assert.equal((await S.api(tok, 'GET', '/api/me')).data.call_route, false);
+  let st = (await adm('GET', '/state')).data;
+  assert.equal(st.users.find((u) => u.username === 'carl').route, false);
+
+  let r = await adm('POST', '/auth', { route_users: 'carl' });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.route_users, 'carl');
+  t = (await S.api(tok, 'GET', '/api/turn')).data;
+  assert.equal(t.user_route, true);
+  assert.equal((await S.api(tok, 'GET', '/api/me')).data.call_route, true);
+  st = (await adm('GET', '/state')).data;
+  assert.equal(st.users.find((u) => u.username === 'carl').route, true);
+
+  r = await adm('POST', '/auth', { route_users: 'bad name!' });
+  assert.equal(r.status, 400);
+
+  r = await adm('POST', '/auth', { route_users: '' });
+  assert.equal(r.data.route_users, '');
+  assert.equal((await S.api(tok, 'GET', '/api/turn')).data.user_route, false);
+});

@@ -198,13 +198,20 @@ function users(box){
       var j=await api('POST','/users',{username:un.value.trim(),display_name:dn.value,categories:ids});
       prompt('رمز کاربر '+un.value.trim()+' (فقط همین یک‌بار نمایش داده می‌شود):',j.password);
       await reload();})},'ایجاد'))));
-  var head=h('tr',null,h('th',null,'کاربر'),h('th',null,'نام نمایشی'),h('th',null,'موبایل'),S.categories.map(function(c){return h('th',null,c.name);}),h('th',{title:'نمایش پینگ و مسیر در تماس (آزمایشی)'},'📶 پینگ'),h('th',null,''));
+  var head=h('tr',null,h('th',null,'کاربر'),h('th',null,'نام نمایشی'),h('th',null,'موبایل'),S.categories.map(function(c){return h('th',null,c.name);}),h('th',{title:'نمایش پینگ و مسیر در تماس (آزمایشی)'},'📶 پینگ'),h('th',{title:'کاربر بتواند در تماس مسیر اتصال را خودش انتخاب کند (مستقیم یا از طریق سرور با UDP/TCP/TLS)'},'🔀 مسیر تماس'),h('th',null,''));
   // 1.8: call diagnostics per user; the same list as the «عیب‌یابی تماس» card, saved at once
   function diagBox(u){
     var x=h('input',{type:'checkbox',checked:!!u.diag});
     x.addEventListener('change',guard(async function(){
       var list=S.users.filter(function(v){return v.username===u.username?x.checked:v.diag;}).map(function(v){return v.username;});
       try{await api('POST','/auth',{diag_users:list.join(',')});u.diag=x.checked;}catch(e){x.checked=!x.checked;alert(msg(e));}}));
+    return x;}
+  // 1.15: who may choose the call path in a call; nobody unless ticked here, saved at once
+  function routeBox(u){
+    var x=h('input',{type:'checkbox',checked:!!u.route});
+    x.addEventListener('change',guard(async function(){
+      var list=S.users.filter(function(v){return v.username===u.username?x.checked:v.route;}).map(function(v){return v.username;});
+      try{await api('POST','/auth',{route_users:list.join(',')});u.route=x.checked;}catch(e){x.checked=!x.checked;alert(msg(e));}}));
     return x;}
   var rows=S.users.map(function(u){
     var name=h('input',{value:curUser(u.username,'display_name'),placeholder:'—'});
@@ -224,6 +231,7 @@ function users(box){
       h('td',{title:u.bio||''},h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null,u.bio?h('div',{class:'mut',style:'font-size:12px;white-space:normal;max-width:220px'},u.bio):null),
       h('td',null,name),h('td',null,ph),cells,
       h('td',{title:'عیب‌یابی تماس: پینگ و مسیر در تماس‌های این کاربر (همان لحظه ذخیره می‌شود)'},diagBox(u)),
+      h('td',{title:'انتخاب مسیر اتصال در تماس برای این کاربر (همان لحظه ذخیره می‌شود؛ در تماس بعدی اثر می‌کند)'},routeBox(u)),
       h('td',null,
         h('button',{class:'pri',title:'کد یک‌بارمصرف ۱۰ دقیقه‌ای برای ورود، وقتی پیامک نمی‌رسد و دستگاه دیگری وارد نیست',onclick:guard(async function(){var j=await api('POST','/users/'+u.username+'/logincode');
           alert('کد ورود '+u.username+': '+j.code+'\n\nتا ۱۰ دقیقه و فقط یک بار معتبر است. کاربر در صفحهٔ ورود '+(j.phone?'شمارهٔ موبایلش ('+j.phone+')':'نام کاربری‌اش ('+u.username+')')+' را می‌زند و بعد «کد را دارم» و همین کد را وارد می‌کند. کد را فقط حضوری یا تلفنی به خود او بدهید.');})},'کد ورود'),' ',

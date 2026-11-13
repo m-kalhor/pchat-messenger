@@ -180,6 +180,12 @@ fun CallScreen() {
         ) {
             Text(Engine.nameOf(s.peer), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Text(status, color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
+            // 1.15: the path in use, and a note while it changes or when a path could not be reached
+            if (s.canRoute && s.phase == CallPhase.ACTIVE) {
+                val line = if (s.routing) "در حال تغییر مسیر…" else if (s.path.isNotEmpty()) "مسیر: " + s.path else ""
+                if (line.isNotEmpty()) Text(line, color = Color.White.copy(alpha = 0.7f), fontSize = 13.sp)
+                if (s.routeNote.isNotEmpty()) Text(s.routeNote, color = Color(0xFFFFCC80), fontSize = 13.sp)
+            }
         }
         if (showLocal) {
             val small = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp).size(width = 110.dp, height = 150.dp).clip(RoundedCornerShape(12.dp))
@@ -209,6 +215,8 @@ fun CallScreen() {
                 RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
             }
         }
+        // 1.15: path menu (users the admin allowed): خودکار / مستقیم / از طریق سرور › UDP, TCP, TLS
+        if (s.canRoute && s.phase == CallPhase.ACTIVE) RouteMenu(s, Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 12.dp, top = 76.dp))
         // 1.7 test feature: ping and route for the admins listed in the panel (see Diag.kt)
         val diagOn by Engine.diag.collectAsState()
         if (diagOn && s.phase != CallPhase.INCOMING && s.phase != CallPhase.IDLE) {
@@ -222,4 +230,51 @@ fun CallScreen() {
             ) { Text(if (showText) "👁" else "🙈", fontSize = 18.sp) }
         }
     }
+}
+
+/** 1.15: the 🔀 button and its two-level menu for choosing the call path. */
+@Composable
+private fun RouteMenu(s: CallState, modifier: Modifier) {
+    val ctx = LocalContext.current
+    var open by remember(s.callId) { mutableStateOf<String?>(null) } // null | "top" | "server"
+    Column(modifier) {
+        Box(
+            Modifier.size(44.dp).clip(CircleShape)
+                .background(if (open != null) Color(0x663390EC) else Color(0x33FFFFFF))
+                .clickable {
+                    if (!s.peerRoute) Toast.makeText(ctx, "طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست", Toast.LENGTH_SHORT).show()
+                    else open = if (open == null) "top" else null
+                },
+            contentAlignment = Alignment.Center
+        ) { Text("🔀", fontSize = 20.sp, color = if (s.peerRoute) Color.White else Color.White.copy(alpha = 0.4f)) }
+        if (open != null && s.peerRoute) {
+            Spacer(Modifier.height(6.dp))
+            Column(Modifier.clip(RoundedCornerShape(14.dp)).background(Color(0xEB10202F)).padding(6.dp)) {
+                fun pick(m: String) { open = null; CallManager.setRoute(m) }
+                val ok = !s.routing
+                if (open == "server") {
+                    RouteItem("→ از طریق سرور", false, true) { open = "top" }
+                    RouteItem("UDP (سریع‌تر)", s.netMode == "udp", ok && "udp" in s.netModes) { pick("udp") }
+                    RouteItem("TCP", s.netMode == "tcp", ok && "tcp" in s.netModes) { pick("tcp") }
+                    RouteItem("TLS (پورت ۵۳۴۹، شبیه https)", s.netMode == "tls", ok && "tls" in s.netModes) { pick("tls") }
+                } else {
+                    Text("مسیر اتصال", color = Color.White.copy(alpha = 0.6f), fontSize = 13.sp, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp))
+                    RouteItem("خودکار", s.netMode == "auto", ok) { pick("auto") }
+                    RouteItem("مستقیم (UDP)", s.netMode == "direct", ok && "direct" in s.netModes) { pick("direct") }
+                    RouteItem("از طریق سرور ‹", s.netMode in listOf("udp", "tcp", "tls"), ok) { open = "server" }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteItem(label: String, cur: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Text(
+        (if (cur) "✓ " else "") + label,
+        color = if (!enabled) Color.White.copy(alpha = 0.35f) else if (cur) Color(0xFF64B5F6) else Color.White,
+        fontSize = 15.sp,
+        modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 11.dp)
+    )
 }

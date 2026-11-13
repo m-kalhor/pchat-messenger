@@ -331,7 +331,7 @@ export async function refreshRequests() {
 export async function refreshMe() {
   const r = await api.me();
   S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false, allow_requests: r.allow_requests !== false };
-  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false };
+  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false, call_route: !!r.call_route };
   await store.kvSet('privacy', S.privacy);
   emit('privacy');
 }

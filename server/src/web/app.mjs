@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.14.0';
+const VERSION = '1.15.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -1491,6 +1491,13 @@ function SettingsScreen() {
       h('div', { class: 'section' }, 'اعلان‌ها'),
       setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
       pushBox,
+      // 1.15: only for users the admin allowed to choose the call path
+      S.meInfo.call_route ? h('div', { class: 'section' }, 'تماس') : null,
+      S.meInfo.call_route ? setting('مسیر پیش‌فرض تماس', 'تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.', (() => {
+        const sel = h('select', { onchange: () => Call.setDefaultRoute(sel.value) },
+          Object.entries(Call.ROUTE_NAMES).map(([k, v]) => h('option', { value: k, selected: Call.defaultRoute() === k }, v)));
+        return sel;
+      })()) : null,
       h('div', { class: 'section' }, 'حریم خصوصی'),
       privacy('hide_seen', 'نمایش «دیده شد» (دو تیک آبی)', 'اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.'),
       setting('پیدا شدن با شمارهٔ موبایل', 'کسانی که شمارهٔ شما را دارند، می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به کسی نشان داده نمی‌شود.', (() => {
@@ -1887,11 +1894,11 @@ function StickerPackScreen(id) {
 }
 
 // ---------------- call screen (overlay above everything) ----------------
-let callEl = null, callTick = null, callSwap = false;
+let callEl = null, callTick = null, callSwap = false, routeMenu = null; // routeMenu (1.15): null | 'top' | 'server'
 function renderCall(c) {
   if (c.phase === 'idle') {
     if (callEl) { callEl.remove(); callEl = null; clearInterval(callTick); Diag.detach(); }
-    callSwap = false;
+    callSwap = false; routeMenu = null;
     if (c.note) toast(c.note);
     return;
   }
@@ -1925,7 +1932,10 @@ function renderCall(c) {
   let status = c.note;
   if (c.phase === 'active') { const s = Math.floor((Date.now() - c.startedAt) / 1000); status = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   else if (c.phase === 'incoming') status = c.video ? 'تماس تصویری ورودی' : 'تماس صوتی ورودی';
-  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status));
+  // 1.15: the path in use, and a note while it changes or when a path could not be reached
+  const routeLine = c.canRoute && c.phase === 'active'
+    ? h('div', { class: 'route-now' }, c.routing ? 'در حال تغییر مسیر…' : (c.path ? 'مسیر: ' + c.path : ''), c.note ? h('div', null, c.note) : null) : null;
+  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status), routeLine);
   const btn = (label, cls, fn, title) => h('button', { class: 'cb ' + cls, title, onclick: fn }, label);
   const ctrls = c.phase === 'incoming'
     ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.decline, 'رد'), btn(c.video ? '🎥' : '📞', 'green', Call.accept, 'پاسخ'))
@@ -1933,9 +1943,29 @@ function renderCall(c) {
       btn(c.muted ? '🔇' : '🎙', c.muted ? 'on' : '', Call.toggleMute, 'قطع صدا'),
       localVideo ? btn(c.camOff ? '🚫' : '📷', c.camOff ? 'on' : '', Call.toggleCamera, 'دوربین') : null,
       localVideo ? btn('🔄', '', Call.switchCamera, 'چرخش دوربین') : null,
+      c.canRoute && c.phase === 'active'
+        ? btn('🔀', routeMenu ? 'on' : '', () => { routeMenu = routeMenu ? null : 'top'; renderCall(Call.C); },
+          c.peerRoute ? 'مسیر اتصال' : 'طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست') : null,
       btn('✕', 'red', Call.hangup, 'پایان تماس'));
-  callEl.querySelectorAll('.info, .ctrls').forEach((x) => x.remove());
+  if (ctrls.querySelector('button[title^="طرف مقابل"]')) ctrls.querySelector('button[title^="طرف مقابل"]').disabled = true;
+  // 1.15: path menu as a small tree: خودکار / مستقیم / از طریق سرور › UDP, TCP, TLS
+  let menu = null;
+  if (routeMenu && c.canRoute && c.peerRoute && c.phase === 'active') {
+    const pick = (m) => () => { routeMenu = null; Call.setRoute(m); renderCall(Call.C); };
+    const item = (m, label) => h('button', { class: 'ri' + (c.route === m ? ' cur' : ''), disabled: c.routing || !c.routes.includes(m), onclick: pick(m) }, (c.route === m ? '✓ ' : '') + label);
+    const server = ['udp', 'tcp', 'tls'].includes(c.route);
+    menu = routeMenu === 'server'
+      ? h('div', { class: 'route-menu' },
+        h('button', { class: 'ri back', onclick: () => { routeMenu = 'top'; renderCall(Call.C); } }, '→ از طریق سرور'),
+        item('udp', 'UDP (سریع‌تر)'), item('tcp', 'TCP'), item('tls', 'TLS (پورت ۵۳۴۹، شبیه https)'))
+      : h('div', { class: 'route-menu' },
+        h('div', { class: 'rt' }, 'مسیر اتصال'),
+        item('auto', 'خودکار'), item('direct', 'مستقیم (UDP)'),
+        h('button', { class: 'ri' + (server ? ' cur' : ''), disabled: c.routing, onclick: () => { routeMenu = 'server'; renderCall(Call.C); } }, (server ? '✓ ' : '') + 'از طریق سرور ‹'));
+  }
+  callEl.querySelectorAll('.info, .ctrls, .route-menu').forEach((x) => x.remove());
   callEl.append(info, ctrls);
+  if (menu) callEl.append(menu);
   // admins' call diagnostics (test feature, switched on per user in the panel)
   if (S.meInfo.diag && c.phase !== 'incoming') Diag.attach(callEl, c.peer, Call.peerConnection);
 }

@@ -57,7 +57,7 @@ function stateDump(ctx) {
   const cats = db.prepare('SELECT c.id, c.name, c.gkey, (SELECT COUNT(*) FROM user_categories WHERE category_id=c.id) AS count FROM categories c ORDER BY c.id').all();
   return {
     users: users.map((u) => ({
-      username: u.username, display_name: u.display_name || '', bio: u.bio || '', phone: u.phone || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0, diag: diag.enabledFor(u.username),
+      username: u.username, display_name: u.display_name || '', bio: u.bio || '', phone: u.phone || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0, diag: diag.enabledFor(u.username), route: callcfg.routeAllowed(u.username),
       online: ctx.isOnline(u.username), categories: uc.filter((x) => x.username === u.username).map((x) => x.category_id),
     })),
     categories: cats,
@@ -74,7 +74,7 @@ function authInfo(ctx) {
     api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
     enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
     open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
-    msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '),
+    msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '), route_users: callcfg.routeUsers().join(', '),
     calls: callcfg.get(),
   };
 }
@@ -287,6 +287,7 @@ async function route(ctx, req, res, secure) {
     if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
     if (typeof b.msg_requests === 'boolean') setSetting('msg_requests', b.msg_requests ? '1' : '0');
     if (typeof b.diag_users === 'string') { try { diag.setUsers(b.diag_users); } catch (e) { return json(res, 400, { error: e.message }); } }
+    if (typeof b.route_users === 'string') { try { callcfg.setRouteUsers(b.route_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.calls && typeof b.calls === 'object') { try { callcfg.set(b.calls); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.signup_category !== undefined) {
       const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);

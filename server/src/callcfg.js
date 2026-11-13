@@ -60,12 +60,25 @@ function set(b) {
   return get();
 }
 
-/** The ICE server URLs and the call settings for /api/turn. */
-function turnInfo(host) {
+/**
+ * 1.15: users the admin allowed to pick the call path themselves during a call (users tab, column «مسیر تماس»).
+ * Nobody by default. Empty the list (untick everyone) to turn the feature off.
+ */
+const routeUsers = () => getSetting('route_users', '').split(/[\s,،]+/).map((s) => s.trim().toLowerCase()).filter(Boolean);
+const routeAllowed = (u) => !!u && routeUsers().includes(String(u).toLowerCase());
+function setRouteUsers(s) {
+  const list = [...new Set(String(s || '').split(/[\s,،]+/).map((x) => x.trim().replace(/^@/, '').toLowerCase()).filter(Boolean))];
+  if (list.some((x) => !/^[a-z0-9_]{2,20}$/.test(x))) throw new Error('bad_username');
+  setSetting('route_users', list.join(','));
+  return list;
+}
+
+/** The ICE server URLs and the call settings for /api/turn (user: who asks, for the 1.15 path choice). */
+function turnInfo(host, user) {
   const c = get();
   const urls = [`stun:${host}:3478`, `turn:${host}:3478?transport=udp`, `turn:${host}:3478?transport=tcp`];
   if (c.tls && c.tls_available) urls.push(`turns:${TLS_HOST}:${TLS_PORT}?transport=tcp`);
-  return { urls, policy: c.route, switch_rtt: c.rtt, switch_loss: c.loss, video_kbps: c.video_kbps };
+  return { urls, policy: c.route, switch_rtt: c.rtt, switch_loss: c.loss, video_kbps: c.video_kbps, user_route: routeAllowed(user) };
 }
 
-module.exports = { get, set, turnInfo, DEFAULTS, OLD };
+module.exports = { get, set, turnInfo, routeUsers, routeAllowed, setRouteUsers, DEFAULTS, OLD };

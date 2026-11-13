@@ -556,6 +556,7 @@ async function route(req, res) {
       username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
       hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
       allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(), ...diag.meInfo(user),
+      call_route: callcfg.routeAllowed(user), // 1.15: may pick the call path in a call (admin panel, users tab)
     });
   }
 
@@ -980,7 +981,7 @@ async function route(req, res) {
     const username = (Math.floor(now() / 1000) + ttl) + ':' + user;
     const credential = crypto.createHmac('sha1', TURN_SECRET).update(username).digest('base64');
     // 1.10.1: plus the call path settings from the admin panel (policy, switch limits, video cap, TURN/TLS)
-    return send(res, 200, { ...callcfg.turnInfo(PUBLIC_HOST), username, credential, ttl });
+    return send(res, 200, { ...callcfg.turnInfo(PUBLIC_HOST, user), username, credential, ttl });
   }
 
   // ----- legacy single-shot upload (kept for old app versions) -----

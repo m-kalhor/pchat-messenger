@@ -79,6 +79,8 @@ object Engine {
     val requestsOn = MutableStateFlow(true)
     /** Call diagnostics (ping, route) for the admins listed in the panel — a test feature, see Diag.kt. */
     val diag = MutableStateFlow(false)
+    /** 1.15: the admin lets this user pick the call path (Settings «مسیر پیش‌فرض تماس», 🔀 in calls). */
+    val callRoute = MutableStateFlow(false)
     /** conversation key -> pinned message id */
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -205,6 +207,7 @@ object Engine {
         declinedRequests.value = emptyList()
         blockedRequests.value = emptyList()
         diag.value = false
+        callRoute.value = false
         pins.value = emptyMap()
         progress.value = emptyMap()
         waitingDownloads.value = emptyMap()
@@ -1197,6 +1200,7 @@ object Engine {
         if (o.has("allow_requests")) allowRequests.value = o.optBoolean("allow_requests", true)
         if (o.has("requests_on")) requestsOn.value = o.optBoolean("requests_on", true)
         if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
+        if (o.has("username")) callRoute.value = o.optBoolean("call_route", false)
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 

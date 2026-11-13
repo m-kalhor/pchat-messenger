@@ -43,7 +43,8 @@ data class GroupInfo(val key: String, val name: String, val members: List<String
  */
 class TurnInfo(
     val urls: List<String>, val user: String, val cred: String, val expiresAt: Long,
-    val policy: String = "direct", val switchRtt: Int = 400, val switchLoss: Int = 8, val videoKbps: Int = 0
+    val policy: String = "direct", val switchRtt: Int = 400, val switchLoss: Int = 8, val videoKbps: Int = 0,
+    val userRoute: Boolean = false // 1.15: the admin lets this user pick the call path
 )
 class PatchResult(val offset: Long, val done: Boolean, val fileId: String?)
 
@@ -363,7 +364,8 @@ object Api {
             (0 until arr.length()).map { arr.getString(it) },
             o.getString("username"), o.getString("credential"),
             System.currentTimeMillis() + o.getLong("ttl") * 1000,
-            o.optString("policy", "direct"), o.optInt("switch_rtt", 400), o.optInt("switch_loss", 8), o.optInt("video_kbps", 0)
+            o.optString("policy", "direct"), o.optInt("switch_rtt", 400), o.optInt("switch_loss", 8), o.optInt("video_kbps", 0),
+            o.optBoolean("user_route", false)
         )
     }
 

@@ -174,6 +174,16 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ 🔔 بالای همان گفتگو را بزنید.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
 
+            // ---- calls (1.15, only users the admin allowed to choose the call path) ----
+            val canRoute by Engine.callRoute.collectAsState()
+            if (canRoute) {
+                SectionTitle("تماس")
+                Text("مسیر پیش‌فرض تماس: تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
+                val cr by Prefs.callRoute.collectAsState()
+                for ((k, label) in CallManager.ROUTE_NAMES) RadioRow(label, cr == k) { Prefs.setCallRoute(k) }
+            }
+
             // ---- appearance ----
             SectionTitle("ظاهر")
             val theme by Prefs.theme.collectAsState()
