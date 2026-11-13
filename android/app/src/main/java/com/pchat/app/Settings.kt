@@ -85,6 +85,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     var showBackup by remember { mutableStateOf(false) }
     var showDevCode by remember { mutableStateOf(false) }
     var showPassword by remember { mutableStateOf(false) }
+    var showStickers by remember { mutableStateOf(false) }
     var checking by remember { mutableStateOf(false) }
     var update by remember { mutableStateOf<AppUpdate?>(null) }
     val backedUp by Engine.keyBackedUp.collectAsState()
@@ -102,6 +103,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
         }
     }
 
+    SystemBars.HeaderShown()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -159,6 +161,10 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 ) { Text("ذخیره") }
             }
 
+            // ---- stickers (1.10) ----
+            SectionTitle("استیکر")
+            SettingRow("استیکرهای من", "ساختن پک از عکس‌ها، افزودن فایل یا zip، مرتب‌کردن") { showStickers = true }
+
             // ---- notifications ----
             SectionTitle("اعلان‌ها")
             SwitchRow("پیام‌های خصوصی", "نمایش اعلان برای گفتگوهای خصوصی", Prefs.notifyPrivate.also { notifTick }) { Prefs.notifyPrivate = it }
@@ -167,6 +173,16 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             SwitchRow("لرزش", null, Prefs.vibrate.also { notifTick }) { Prefs.vibrate = it }
             Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ 🔔 بالای همان گفتگو را بزنید.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
+
+            // ---- calls (1.15, only users the admin allowed to choose the call path) ----
+            val canRoute by Engine.callRoute.collectAsState()
+            if (canRoute) {
+                SectionTitle("تماس")
+                Text("مسیر پیش‌فرض تماس: تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.",
+                    fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
+                val cr by Prefs.callRoute.collectAsState()
+                for ((k, label) in CallManager.ROUTE_NAMES) RadioRow(label, cr == k) { Prefs.setCallRoute(k) }
+            }
 
             // ---- appearance ----
             SectionTitle("ظاهر")
@@ -262,6 +278,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     if (showBackup) KeyPasswordDialog { showBackup = false }
     if (showDevCode) DeviceCodeDialog { showDevCode = false }
     if (showPassword) ChangePasswordDialog { showPassword = false }
+    if (showStickers) StickerManager { showStickers = false }
     update?.let { u -> UpdateDialog(u) { update = null } }
     if (confirmClear) AlertDialog(
         onDismissRequest = { confirmClear = false },

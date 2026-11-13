@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.9.1';
+const VERSION = '1.15.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -158,6 +158,51 @@ function confirmBox(title, text, okLabel, danger = false) {
   });
 }
 
+/** Longest side and JPEG quality of a «compressed» photo (about 200-400 KB, fine for chat). */
+const PHOTO_MAX_SIDE = 1600, PHOTO_QUALITY = 0.8;
+/** Shrinks a photo to PHOTO_MAX_SIDE as JPEG (drops EXIF/GPS). GIFs, unreadable or already-small files stay as they are. */
+async function compressPhoto(file) {
+  if (file.type === 'image/gif') return file;
+  try {
+    let src;
+    try { src = await createImageBitmap(file, { imageOrientation: 'from-image' }); } catch {
+      src = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = URL.createObjectURL(file); });
+    }
+    const w0 = src.width || src.naturalWidth, h0 = src.height || src.naturalHeight;
+    const k = Math.min(1, PHOTO_MAX_SIDE / Math.max(w0, h0));
+    const c = document.createElement('canvas');
+    c.width = Math.max(1, Math.round(w0 * k)); c.height = Math.max(1, Math.round(h0 * k));
+    const g = c.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); // transparent PNGs get a white background, not black
+    g.drawImage(src, 0, 0, c.width, c.height);
+    if (src.close) src.close(); else URL.revokeObjectURL(src.src);
+    const blob = await new Promise((res) => c.toBlob(res, 'image/jpeg', PHOTO_QUALITY));
+    if (!blob || blob.size >= file.size) return file;
+    return new File([blob], (file.name || 'photo').replace(/\.[^.]*$/, '') + '.jpg', { type: 'image/jpeg' });
+  } catch { return file; }
+}
+/** Preview of the picked photo(s) with a «compress» switch whose last value is remembered; resolves true/false, or null if cancelled. */
+function photoSendBox(files) {
+  return new Promise((resolve) => {
+    const urls = files.slice(0, 6).map((f) => URL.createObjectURL(f));
+    const total = files.reduce((a, f) => a + f.size, 0);
+    const box = h('input', { type: 'checkbox', checked: pref('photoCompress', true) });
+    const note = h('div', { style: { fontSize: '12px', color: 'var(--fg2)' } });
+    const upd = () => { note.textContent = box.checked ? 'حجم کمتر، کیفیت مناسب چت' : 'عکس اصلی (' + fmtSize(total) + ')'; };
+    box.addEventListener('change', upd); upd();
+    const close = (r) => { v.remove(); urls.forEach((u) => URL.revokeObjectURL(u)); if (r != null) setPref('photoCompress', box.checked); resolve(r); };
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(null); } },
+      h('div', { class: 'dialog' }, h('h3', null, files.length > 1 ? 'ارسال ' + faNum(files.length) + ' عکس' : 'ارسال عکس'),
+        h('div', { style: { display: 'flex', flexWrap: 'wrap', gap: '6px', justifyContent: 'center', margin: '0 0 12px' } },
+          urls.map((u) => h('img', { src: u, alt: '', style: { maxWidth: urls.length > 1 ? '120px' : '100%', maxHeight: urls.length > 1 ? '120px' : '50vh', objectFit: 'cover', borderRadius: '8px' } }))),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '10px', margin: '0 0 14px', cursor: 'pointer' } }, box,
+          h('div', null, h('div', { style: { fontWeight: '600' } }, 'فشرده‌سازی'), note)),
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(null) }, 'انصراف'),
+          h('button', { class: 'btn', onclick: () => close(box.checked) }, 'ارسال'))));
+    document.body.append(v);
+  });
+}
+
 const fmtFull = (ts) => new Date(ts).toLocaleString('fa-IR-u-ca-persian', { dateStyle: 'long', timeStyle: 'short' });
 
 /** Pick one or more chats to forward to, like Telegram; «پنهان کردن فرستنده» sends a plain copy. */
@@ -260,24 +305,77 @@ function infoSheet(m) {
 function viewer(url, m) {
   const v = h('div', { class: 'viewer' },
     h('div', { class: 'vbar' }, h('button', { class: 'icon', title: 'بستن', onclick: () => v.remove() }, '✕'),
-      m ? h('button', { class: 'icon', title: 'ذخیره', onclick: () => saveMedia(m) }, '⤓') : null),
+      // 1.12: ⋮ = save to…, save to gallery / share
+      m ? h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(null, mediaItems(m)) }, '⋮') : null),
     h('img', { src: url, alt: '' }));
   document.body.append(v);
 }
 
-/** Save / share a downloaded file: the iOS share sheet offers "Save Image" and "Save to Files". */
-async function saveMedia(m) {
-  const blob = E.mediaBlob(m), url = E.mediaUrl(m);
-  if (!url) return;
-  const name = m.name || (m.type === 'image' ? 'photo.jpg' : 'file');
-  if (blob && navigator.canShare) {
-    const f = new File([blob], name, { type: blob.type || m.mime || 'application/octet-stream' });
-    if (navigator.canShare({ files: [f] })) {
-      try { await navigator.share({ files: [f] }); return; } catch (e) { if (e.name === 'AbortError') return; }
-    }
+/** Name with an extension for a message's media. */
+function mediaName(m, blob) {
+  if (m.name) return m.name;
+  const mime = (blob && blob.type) || m.mime || (m.type === 'image' ? 'image/jpeg' : '');
+  const ext = { 'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp', 'video/mp4': 'mp4', 'audio/ogg': 'ogg', 'audio/webm': 'webm', 'audio/mp4': 'm4a' }[mime] || 'bin';
+  const pre = mime.startsWith('image/') ? 'IMG' : mime.startsWith('video/') ? 'VID' : m.type === 'voice' ? 'VOICE' : 'FILE';
+  const d = new Date(m.ts || Date.now()), z = (n) => String(n).padStart(2, '0');
+  return `${pre}_Sepan_${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.${ext}`;
+}
+
+/** The decrypted file of a message, downloading it first when needed. */
+async function mediaFile(m) {
+  if (!E.mediaBlob(m)) {
+    if (!m.fileId) return null;
+    toast('در حال دریافت…');
+    try { await E.download(m); } catch { toast('دریافت فایل ناموفق بود'); return null; }
   }
-  const a = h('a', { href: url, download: name });
+  const blob = E.mediaBlob(m);
+  if (!blob) return null;
+  return new File([blob], mediaName(m, blob), { type: blob.type || m.mime || 'application/octet-stream' });
+}
+
+const canShareFiles = () => !!(navigator.canShare && navigator.share);
+
+/** 1.12 save / share items for photos, videos, files and voice messages (message menu and viewer ⋮). */
+function mediaItems(m) {
+  const visual = m.type === 'image' || /^(image|video)\//.test(m.mime || '');
+  return [
+    canShareFiles() && { label: visual ? 'ذخیره در گالری / اشتراک‌گذاری' : 'اشتراک‌گذاری', run: () => shareMedia(m) },
+    { label: 'ذخیره در…', run: () => saveMediaAs(m) },
+  ];
+}
+
+/** Share sheet; on iPhone it offers «Save Image» / «Save Video» (gallery) and «Save to Files». */
+async function shareMedia(m) {
+  const f = await mediaFile(m);
+  if (!f) return;
+  if (navigator.canShare && navigator.canShare({ files: [f] })) {
+    try { await navigator.share({ files: [f] }); return; } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  saveMediaAs(m);
+}
+
+/** «ذخیره در…»: the folder picker where the browser has one (Chrome / Edge on a computer), otherwise a normal download. */
+async function saveMediaAs(m) {
+  const f = await mediaFile(m);
+  if (!f) return;
+  if (window.showSaveFilePicker) {
+    try {
+      const ext = f.name.includes('.') ? '.' + f.name.split('.').pop() : '';
+      const hnd = await window.showSaveFilePicker({ suggestedName: f.name, types: ext && f.type ? [{ accept: { [f.type]: [ext] } }] : undefined });
+      const w = await hnd.createWritable(); await w.write(f); await w.close();
+      toast('ذخیره شد'); return;
+    } catch (e) { if (e.name === 'AbortError') return; }
+  }
+  const url = URL.createObjectURL(f);
+  const a = h('a', { href: url, download: f.name });
   document.body.append(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+/** Tap on a downloaded file: share sheet on phones, otherwise save. */
+async function saveMedia(m) {
+  if (canShareFiles()) return shareMedia(m);
+  return saveMediaAs(m);
 }
 
 // ---------------- theme / text size / viewport ----------------
@@ -331,6 +429,8 @@ function route() {
   else if (hash === '/requests') view = RequestsScreen();
   else if (/^@[A-Za-z0-9_]{2,20}$/.test(hash)) { const n = hash.slice(1); view = ListScreen(); setTimeout(() => { history.replaceState(null, '', '#/'); openUser(n); }, 0); }
   else if (hash === '/settings') view = SettingsScreen();
+  else if (hash === '/stickers') view = StickersScreen();
+  else if (/^\/stickers\/[a-f0-9]{16}$/.test(hash)) view = StickerPackScreen(hash.slice(10));
   else view = ListScreen();
   fill(app, view.el);
   if (view.mounted) view.mounted();
@@ -766,6 +866,8 @@ function ChatScreen(convo) {
 
   const ta = h('textarea', { rows: 1, placeholder: 'پیام', dir: 'auto' });
   const fileIn = h('input', { type: 'file', multiple: true, class: 'hidden' });
+  const photoIn = h('input', { type: 'file', multiple: true, accept: 'image/*', class: 'hidden' });
+  const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden' });
   const replyBar = h('div', { class: 'replybar hidden' });
   const selCount = h('div', { class: 'grow' });
   const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, '✕'), selCount,
@@ -779,7 +881,9 @@ function ChatScreen(convo) {
   const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, '🎤');
   const recBar = h('div', { class: 'recbar hidden' });
   const attachBtn = h('button', { class: 'icon', title: 'پیوست', onclick: () => sheet(null, [
-    { label: '🖼 عکس یا فایل', run: () => fileIn.click() },
+    { label: '🖼 عکس از گالری', run: () => photoIn.click() },
+    { label: '📷 عکس با دوربین', run: () => camIn.click() },
+    { label: '📎 فایل', run: () => fileIn.click() },
     { label: '📍 موقعیت مکانی', run: shareLocation },
   ]) }, '📎');
   async function shareLocation() {
@@ -802,7 +906,7 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, pinBar, reqBar, msgs, jump,
-    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, emojiBtn, ta, attachBtn, sendBtn, micBtn), emojiPanel, fileIn));
+    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);
@@ -914,14 +1018,23 @@ function ChatScreen(convo) {
     if (m.type === 'image') {
       const w = Math.min(260, m.w || 260), hgt = m.w && m.h ? Math.round(w * m.h / m.w) : 180;
       const box = { width: w + 'px', height: Math.min(hgt, 360) + 'px' };
-      if (url) return h('img', { class: 'img', src: url, alt: '', style: box, onclick: (e) => { e.stopPropagation(); viewer(url, m); } });
+      if (url) {
+        // 1.12: a long press (or right click) opens the message menu, a tap opens the viewer
+        const img = h('img', { class: 'img', src: url, alt: '', style: box, onclick: (e) => { e.stopPropagation(); if (!wasLong()) viewer(url, m); } });
+        const wasLong = onLongPress(img, () => { if (!selected) menu(m); });
+        return img;
+      }
       if (m.fileId && !fail && prog == null && m.size <= 25 * 1024 * 1024 && pref('autoImages', true)) E.download(m).catch(() => { });
       return h('div', { class: 'img-ph', style: box, onclick: (e) => { e.stopPropagation(); S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
         prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '🖼 ' + fmtSize(m.size));
     }
     if ((m.mime || '').startsWith('video/')) {
       // videos play right here in the chat (1.7), with the browser's own controls (full screen, speed)
-      if (url) return h('video', { class: 'vid', src: url, controls: true, playsInline: true, preload: 'metadata', onclick: (e) => e.stopPropagation() });
+      if (url) {
+        const vid = h('video', { class: 'vid', src: url, controls: true, playsInline: true, preload: 'metadata', onclick: (e) => e.stopPropagation() });
+        onLongPress(vid, () => { if (!selected) menu(m); });
+        return vid;
+      }
       return h('div', { class: 'img-ph vid-ph', onclick: (e) => { e.stopPropagation(); if (!m.fileId) return; S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
         prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '▶ ویدیو · ' + fmtSize(m.size));
     }
@@ -993,9 +1106,9 @@ function ChatScreen(convo) {
 
   function bubble(m) {
     if (m.type === 'call') return h('div', { class: 'call-line' }, '📞 ' + m.text + ' · ' + fmtTime(m.ts));
-    const big = m.type === 'text' && !m.replyId && !m.replyText && Emoji.onlyEmojiCount(m.text) > 0;
+    const big = (m.type === 'text' && !m.replyId && !m.replyText && Emoji.onlyEmojiCount(m.text) > 0) || m.type === 'sticker';
     const prog = S.progress.get(m.id);
-    const b = h('div', { class: 'bubble' + (big ? ' emoji' : '') },
+    const b = h('div', { class: 'bubble' + (big ? ' emoji' : '') + (m.type === 'sticker' ? ' sticker' : '') },
       group && !m.mine ? h('div', { class: 'who', style: { color: colorFor(m.sender) } }, E.nameOf(m.sender)) : null,
       m.fwFrom ? h('div', { class: 'fw' }, 'فوروارد از ' + (m.fwFrom === S.me ? 'شما' : m.fwName || E.nameOf(m.fwFrom))) : null,
       m.replyText || m.replyId ? h('div', { class: 'reply', onclick: (e) => { e.stopPropagation(); if (m.replyId) scrollToMsg(m.replyId); } },
@@ -1003,6 +1116,7 @@ function ChatScreen(convo) {
       m.type === 'image' || m.type === 'file' ? mediaPart(m) : null,
       m.type === 'voice' ? voicePart(m) : null,
       m.type === 'location' && m.loc ? locationPart(m.loc) : null,
+      m.type === 'sticker' && m.stk ? stickerImg(m.stk.id, 'stk big') : null,
       m.type === 'text' ? h('div', { class: 'txt', dir: 'auto' }, richText(m.text)) : null,
       m.mine && prog != null && m.status === 1 ? h('div', { class: 'bar-prog' }, h('i', { style: { width: Math.round(prog * 100) + '%' } })) : null,
       m.status === 2 ? h('div', { class: 'fail' }, '⚠️ ' + (S.failures.get(m.id) || 'ارسال نشد'), h('button', { onclick: (e) => { e.stopPropagation(); E.retry(m); } }, 'تلاش دوباره')) : null,
@@ -1032,8 +1146,10 @@ function ChatScreen(convo) {
       m.id > 0 && m.status === 0 && { label: 'انتخاب', run: () => setSelecting(new Set([m.id])) },
       m.id > 0 && { label: 'اطلاعات پیام', run: () => infoSheet(m) },
       m.mine && group && m.id > 0 && m.status === 0 && { label: 'دیده شده توسط…', run: () => readersSheet(m) },
+      m.type === 'sticker' && m.stk && { label: isFav(m.stk.id) ? 'برداشتن از علاقه‌مندی‌ها' : '⭐ افزودن به علاقه‌مندی‌ها', run: () => toggleFav(m.stk) },
+      m.type === 'sticker' && m.stk && E.stickerCached(m.stk.id) !== null && { label: '🎭 نمایش پک', run: () => packSheet(m.stk.p) },
       m.type === 'text' && { label: 'کپی', run: () => navigator.clipboard.writeText(m.text).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
-      (m.type === 'image' || m.type === 'file') && E.mediaUrl(m) && { label: m.type === 'image' ? 'ذخیرهٔ عکس / اشتراک' : 'ذخیره در Files / اشتراک', run: () => saveMedia(m) },
+      ...(m.status === 0 && m.fileId && ['image', 'file', 'voice'].includes(m.type) ? mediaItems(m) : []),
       m.id > 0 && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
       m.status === 2 && { label: 'تلاش دوباره', run: () => E.retry(m) },
       m.mine && m.id > 0 && m.status === 0 && { label: 'حذف برای همه', danger: true, run: async () => {
@@ -1175,14 +1291,42 @@ function ChatScreen(convo) {
     for (const f of files) { const err = await E.sendFile(convo, f, reply); if (err) toast(err); }
     setReply(null);
   });
+  for (const inp of [photoIn, camIn]) inp.addEventListener('change', async () => {
+    const files = [...inp.files].filter((f) => /^image\//.test(f.type));
+    inp.value = '';
+    if (!files.length) return;
+    const compress = await photoSendBox(files);
+    if (compress == null) return;
+    forceBottom = true;
+    for (const f of files) {
+      const out = compress ? await compressPhoto(f) : f;
+      const err = await E.sendFile(convo, out, reply);
+      if (err) toast(err);
+    }
+    setReply(null);
+  });
+  let panelMode = pref('panelMode', 'emoji');
+  let renderStk = null;
   function renderEmojis() {
+    const modeBar = h('div', { class: 'panel-tabs' },
+      h('button', { class: panelMode === 'emoji' ? 'on' : '', onclick: () => { panelMode = 'emoji'; setPref('panelMode', panelMode); renderEmojis(); } }, 'شکلک'),
+      h('button', { class: panelMode === 'sticker' ? 'on' : '', onclick: () => { panelMode = 'sticker'; setPref('panelMode', panelMode); renderEmojis(); } }, 'استیکر'));
+    if (panelMode === 'sticker') {
+      const box = h('div', { class: 'stk-panel' });
+      renderStk = stickerPanel(box, async (k) => { forceBottom = true; await E.sendSticker(convo, k, reply); setReply(null); });
+      fill(emojiPanel, modeBar, box);
+      emojiPanel.classList.add('stickers');
+      return;
+    }
+    renderStk = null;
+    emojiPanel.classList.remove('stickers');
     const rec = Emoji.recent();
     const btn = (e) => h('button', { onclick: () => {
       const s = ta.selectionStart ?? ta.value.length, en = ta.selectionEnd ?? ta.value.length;
       ta.value = ta.value.slice(0, s) + e + ta.value.slice(en);
       Emoji.addRecent(e); autosize();
     } }, e);
-    fill(emojiPanel, rec.length ? [h('div', { class: 'cap' }, 'اخیر'), rec.map(btn)] : [],
+    fill(emojiPanel, modeBar, rec.length ? [h('div', { class: 'cap' }, 'اخیر'), rec.map(btn)] : [],
       Emoji.GROUPS.map(([name, list]) => [h('div', { class: 'cap' }, name), list.split(' ').map(btn)]));
   }
   emojiBtn.addEventListener('click', () => {
@@ -1213,6 +1357,7 @@ function ChatScreen(convo) {
       } else if (kind === 'progress' || kind === 'media' || kind === 'receipts' || kind === 'privacy' || (kind === 'react' && data && data.convo === convo)) renderListB();
       else if (kind === 'pins') { renderPin(); renderListB(); }
       else if (kind === 'requests') renderReq();
+      else if (kind === 'stickers') { if (renderStk) renderStk(); renderListB(); }
       else if (kind === 'users' || kind === 'typing' || kind === 'conn' || kind === 'groups' || kind === 'avatar') renderAll();
     },
   };
@@ -1341,9 +1486,18 @@ function SettingsScreen() {
       setting('پوسته', null, select('theme', 'system', [['system', 'مثل گوشی'], ['light', 'روشن'], ['dark', 'تیره']], applyLook)),
       setting('پس‌زمینهٔ طرح‌دار گفتگو', 'اگر خاموش کنید، پس‌زمینه ساده می‌شود', (() => { const c = toggle('wallpaper', true); c.addEventListener('change', applyLook); return c; })()),
       setting('اندازهٔ متن', null, select('fontSize', 16, [[14, 'کوچک'], [16, 'معمولی'], [18, 'بزرگ'], [20, 'خیلی بزرگ']], applyLook)),
+      h('div', { class: 'section' }, 'استیکر'),
+      setting('استیکرهای من', 'ساختن پک، افزودن عکس یا فایل zip، مرتب‌کردن', h('button', { class: 'btn sm flat', onclick: () => go('#/stickers') }, 'باز کردن')),
       h('div', { class: 'section' }, 'اعلان‌ها'),
       setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
       pushBox,
+      // 1.15: only for users the admin allowed to choose the call path
+      S.meInfo.call_route ? h('div', { class: 'section' }, 'تماس') : null,
+      S.meInfo.call_route ? setting('مسیر پیش‌فرض تماس', 'تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.', (() => {
+        const sel = h('select', { onchange: () => Call.setDefaultRoute(sel.value) },
+          Object.entries(Call.ROUTE_NAMES).map(([k, v]) => h('option', { value: k, selected: Call.defaultRoute() === k }, v)));
+        return sel;
+      })()) : null,
       h('div', { class: 'section' }, 'حریم خصوصی'),
       privacy('hide_seen', 'نمایش «دیده شد» (دو تیک آبی)', 'اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.'),
       setting('پیدا شدن با شمارهٔ موبایل', 'کسانی که شمارهٔ شما را دارند، می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به کسی نشان داده نمی‌شود.', (() => {
@@ -1451,12 +1605,303 @@ async function toAvatar(file) {
   } finally { URL.revokeObjectURL(url); }
 }
 
+// ---------------- stickers (1.10) ----------------
+const STK_MAX = 512;
+const stkFavs = () => pref('stkFavs', []);
+const stkRecent = () => pref('stkRecent', []);
+const isFav = (id) => stkFavs().some((x) => x.id === id);
+function toggleFav(k) {
+  const list = stkFavs();
+  setPref('stkFavs', isFav(k.id) ? list.filter((x) => x.id !== k.id) : [{ id: k.id, p: k.p, e: k.e || '' }, ...list].slice(0, 60));
+  toast(isFav(k.id) ? 'به علاقه‌مندی‌ها اضافه شد ⭐' : 'از علاقه‌مندی‌ها برداشته شد');
+}
+function addStkRecent(k) { setPref('stkRecent', [{ id: k.id, p: k.p, e: k.e || '' }, ...stkRecent().filter((x) => x.id !== k.id)].slice(0, 30)); }
+
+/** An <img> of a sticker that fills in when the image is loaded (from this browser or the server). */
+function stickerImg(id, cls = 'stk') {
+  const cached = E.stickerCached(id);
+  if (cached === null) return h('div', { class: cls + ' gone' }, 'استیکر حذف شده');
+  const img = h('img', { class: cls, alt: '', draggable: 'false' });
+  if (cached) { img.src = cached; return img; }
+  img.classList.add('loading');
+  E.stickerUrl(id).then((u) => {
+    if (u) { img.src = u; img.classList.remove('loading'); }
+    else img.replaceWith(h('div', { class: cls + ' gone' }, 'استیکر حذف شده'));
+  }).catch(() => { });
+  return img;
+}
+
+/** The sticker half of the emoji panel: favourites, recent, then one tab per pack. */
+function stickerPanel(box, onPick) {
+  let tab = pref('stkTab', '');
+  function render() {
+    const packs = S.stickers.packs || [];
+    const tabs = [];
+    if (stkFavs().length) tabs.push({ key: 'fav', icon: h('span', null, '⭐'), list: stkFavs(), title: 'علاقه‌مندی‌ها' });
+    if (stkRecent().length) tabs.push({ key: 'rec', icon: h('span', null, '🕓'), list: stkRecent(), title: 'اخیر' });
+    for (const p of packs) if (p.stickers.length) tabs.push({ key: p.id, icon: stickerImg(p.stickers[0].id, 'stk-tab'), list: p.stickers.map((s) => ({ id: s.id, p: p.id, e: s.emoji || '' })), title: p.title });
+    let cur = tabs.find((t) => t.key === tab) || tabs[0];
+    fill(box,
+      h('div', { class: 'stk-tabs' },
+        tabs.map((t) => h('button', { class: t === cur ? 'on' : '', title: t.title, onclick: () => { tab = t.key; setPref('stkTab', tab); render(); } }, t.icon)),
+        h('button', { title: 'استیکرهای من', onclick: () => go('#/stickers') }, '⚙')),
+      cur ? h('div', { class: 'stk-grid' }, cur.list.map((k) => {
+        const b = h('button', { onclick: () => { if (wasLong()) return; addStkRecent(k); onPick(k); } }, stickerImg(k.id));
+        const wasLong = onLongPress(b, () => toggleFav(k));
+        return b;
+      }))
+        : h('div', { class: 'stk-empty' }, 'هنوز استیکری ندارید.', h('br'), h('button', { class: 'btn sm', onclick: () => go('#/stickers') }, 'ساختن یا افزودن استیکر')));
+  }
+  render();
+  return render;
+}
+
+/** A pack seen from a sticker in a chat: its stickers and «add to my stickers». */
+async function packSheet(packId) {
+  const r = await E.stickerPack(packId);
+  if (r.error) { toast(r.error); return; }
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } });
+  const action = r.mine ? h('div', { class: 'hint' }, 'این پک شماست')
+    : r.official ? h('div', { class: 'hint' }, 'پک عمومی؛ برای همه هست')
+      : h('button', { class: 'btn' + (r.added ? ' flat danger' : ''), onclick: async () => {
+        const x = r.added ? await E.removeStickerPack(packId) : await E.addStickerPack(packId);
+        v.remove(); toast(x.error || (r.added ? 'پک برداشته شد' : 'به استیکرهای شما اضافه شد ✓'));
+      } }, r.added ? 'برداشتن از استیکرهای من' : 'افزودن به استیکرهای من (' + faNum(r.stickers.length) + ')');
+  v.append(h('div', { class: 'sheet' }, h('div', { class: 'st' }, r.title),
+    h('div', { class: 'stk-grid' }, r.stickers.map((s) => h('div', null, stickerImg(s.id)))),
+    h('div', { class: 'center', style: { padding: '10px' } }, action),
+    h('button', { class: 'it', onclick: () => v.remove() }, 'بستن')));
+  document.body.append(v);
+}
+
+/** Draws img into a canvas so it fits inside STK_MAX x STK_MAX (keeps the shape and the transparency). */
+function fitCanvas(img) {
+  const k = Math.min(1, STK_MAX / Math.max(img.naturalWidth || img.width, img.naturalHeight || img.height));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round((img.naturalWidth || img.width) * k));
+  c.height = Math.max(1, Math.round((img.naturalHeight || img.height) * k));
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+const toBlob = (c, type, q) => new Promise((resolve) => c.toBlob(resolve, type, q));
+/** WebP where the browser can make it (not Safari: there PNG, made smaller until it fits the limit). */
+async function stickerBlob(canvas) {
+  const max = ((S.stickers.limits && S.stickers.limits.kb) || 300) * 1024;
+  for (const q of [0.9, 0.75, 0.6]) {
+    const b = await toBlob(canvas, 'image/webp', q);
+    if (!b || b.type !== 'image/webp') break;
+    if (b.size <= max) return b;
+  }
+  let c = canvas;
+  for (let i = 0; i < 6; i++) {
+    const b = await toBlob(c, 'image/png');
+    if (b && b.size <= max) return b;
+    const s = document.createElement('canvas');
+    s.width = Math.max(1, Math.round(c.width * 0.8)); s.height = Math.max(1, Math.round(c.height * 0.8));
+    s.getContext('2d').drawImage(c, 0, 0, s.width, s.height);
+    c = s;
+  }
+  throw new Error('too big');
+}
+const loadImage = (blob) => new Promise((resolve, reject) => {
+  const url = URL.createObjectURL(blob);
+  const i = new Image();
+  i.onload = () => { URL.revokeObjectURL(url); resolve(i); };
+  i.onerror = () => { URL.revokeObjectURL(url); reject(new Error('bad image')); };
+  i.src = url;
+});
+
+/** The image files inside a .zip (stored or deflated entries), read in the browser. */
+async function unzipImages(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65557); i--) if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+  if (eocd < 0) throw new Error('not a zip');
+  const count = dv.getUint16(eocd + 10, true);
+  let p = dv.getUint32(eocd + 16, true);
+  const out = [];
+  const dec = new TextDecoder();
+  for (let n = 0; n < count && p + 46 <= buf.length; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true), csize = dv.getUint32(p + 20, true);
+    const nlen = dv.getUint16(p + 28, true), xlen = dv.getUint16(p + 30, true), clen = dv.getUint16(p + 32, true);
+    const local = dv.getUint32(p + 42, true);
+    const name = dec.decode(buf.subarray(p + 46, p + 46 + nlen));
+    p += 46 + nlen + xlen + clen;
+    if (!/\.(png|webp|jpe?g|gif)$/i.test(name) || /(^|\/)(__MACOSX|\.)/.test(name)) continue;
+    const start = local + 30 + dv.getUint16(local + 26, true) + dv.getUint16(local + 28, true);
+    const data = buf.subarray(start, start + csize);
+    let bytes;
+    if (method === 0) bytes = data;
+    else if (method === 8 && typeof DecompressionStream === 'function') bytes = new Uint8Array(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+    else continue;
+    out.push({ name, blob: new Blob([bytes]) });
+  }
+  out.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+  return out;
+}
+
+/** Adds image files (and the images inside .zip files) to a pack, each fitted to 512x512. */
+async function importStickers(packId, files, done) {
+  let list = [];
+  for (const f of files) {
+    if (/\.zip$/i.test(f.name) || f.type === 'application/zip') {
+      try { list = list.concat(await unzipImages(f)); } catch { toast('فایل zip خوانده نشد'); }
+    } else list.push({ name: f.name, blob: f });
+  }
+  if (!list.length) { toast('عکسی پیدا نشد'); return; }
+  let ok = 0, err = null;
+  for (let i = 0; i < list.length; i++) {
+    toast('در حال افزودن ' + faNum(i + 1) + ' از ' + faNum(list.length) + '…');
+    try {
+      const blob = await stickerBlob(fitCanvas(await loadImage(list[i].blob)));
+      const r = await E.addSticker(packId, blob, '');
+      if (r.error) { err = r.error; if (/پر است|خاموش/.test(r.error)) break; } else ok++;
+    } catch { err = 'عکس «' + list[i].name + '» باز نشد'; }
+  }
+  toast(faNum(ok) + ' استیکر اضافه شد' + (err ? ' · ' + err : ''));
+  if (done) done();
+}
+
+/** Makes one sticker from a photo: square or round crop, zoom and move, an optional caption. */
+function stickerMaker(packId, file, done) {
+  loadImage(file).then((img) => {
+    const V = 280; // preview size
+    let round = false, zoom = 1, ox = 0, oy = 0, text = '';
+    const cv = h('canvas', { class: 'stk-maker' });
+    cv.width = cv.height = V;
+    const draw = (g, size) => {
+      const base = Math.max(size / img.naturalWidth, size / img.naturalHeight) * zoom;
+      const w = img.naturalWidth * base, hh = img.naturalHeight * base;
+      g.clearRect(0, 0, size, size);
+      g.save();
+      if (round) { g.beginPath(); g.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); g.clip(); }
+      g.drawImage(img, (size - w) / 2 + ox * size / V, (size - hh) / 2 + oy * size / V, w, hh);
+      g.restore();
+      if (text) {
+        const fs = Math.round(size * 0.11);
+        g.font = 'bold ' + fs + 'px Vazirmatn, Tahoma, sans-serif';
+        g.textAlign = 'center'; g.textBaseline = 'bottom'; g.direction = 'rtl';
+        g.lineJoin = 'round'; g.lineWidth = fs * 0.18; g.strokeStyle = '#000'; g.fillStyle = '#fff';
+        g.strokeText(text, size / 2, size - size * 0.04, size * 0.94);
+        g.fillText(text, size / 2, size - size * 0.04, size * 0.94);
+      }
+    };
+    const redraw = () => draw(cv.getContext('2d'), V);
+    let drag = null;
+    cv.addEventListener('pointerdown', (e) => { drag = { x: e.clientX - ox, y: e.clientY - oy }; cv.setPointerCapture(e.pointerId); });
+    cv.addEventListener('pointermove', (e) => { if (!drag) return; ox = e.clientX - drag.x; oy = e.clientY - drag.y; redraw(); });
+    cv.addEventListener('pointerup', () => { drag = null; });
+    const zoomIn = h('input', { type: 'range', min: '1', max: '4', step: '0.05', value: '1', oninput: () => { zoom = +zoomIn.value; redraw(); } });
+    const shape = h('select', { onchange: () => { round = shape.value === 'r'; redraw(); } }, h('option', { value: 's' }, 'مربع'), h('option', { value: 'r' }, 'دایره'));
+    const cap = h('input', { type: 'text', placeholder: 'متن روی استیکر (اختیاری)', maxLength: 30, dir: 'auto', oninput: () => { text = cap.value.trim(); redraw(); } });
+    const emo = h('input', { type: 'text', placeholder: 'ایموجی (اختیاری) مثلاً 😂', maxLength: 8, style: { width: '100%' } });
+    const v = h('div', { class: 'veil' });
+    const save = h('button', { class: 'btn', onclick: async () => {
+      save.disabled = true;
+      try {
+        const out = document.createElement('canvas');
+        out.width = out.height = STK_MAX;
+        draw(out.getContext('2d'), STK_MAX);
+        const r = await E.addSticker(packId, await stickerBlob(out), emo.value.trim());
+        if (r.error) { toast(r.error); save.disabled = false; return; }
+        v.remove(); toast('استیکر ساخته شد ✓'); if (done) done();
+      } catch { toast('ساختن استیکر نشد'); save.disabled = false; }
+    } }, 'ذخیره');
+    v.append(h('div', { class: 'dialog' }, h('h3', null, 'ساخت استیکر'),
+      h('div', { class: 'center' }, cv), h('div', { class: 'hint' }, 'عکس را بکشید تا جابه‌جا شود.'),
+      h('div', { class: 'field' }, h('label', null, 'بزرگ‌نمایی'), zoomIn),
+      h('div', { class: 'field' }, h('label', null, 'شکل'), shape),
+      h('div', { class: 'field' }, cap), h('div', { class: 'field' }, emo),
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'انصراف'), save)));
+    document.body.append(v);
+    redraw();
+  }).catch(() => toast('این عکس باز نشد'));
+}
+
+/** Settings › استیکرهای من: the packs in my panel; own packs open in StickerPackScreen. */
+function StickersScreen() {
+  const body = h('div', { class: 'scroll' });
+  async function newPack() {
+    const title = prompt('نام پک تازه:');
+    if (!title || !title.trim()) return;
+    const r = await E.createStickerPack(title.trim());
+    if (r.error) toast(r.error); else go('#/stickers/' + r.r.id);
+  }
+  async function move(id, d) {
+    const ids = S.stickers.packs.filter((p) => !p.official).map((p) => p.id);
+    const i = ids.indexOf(id), j = i + d;
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    const r = await E.orderStickerPacks(ids); if (r.error) toast(r.error);
+  }
+  function render() {
+    const st = S.stickers;
+    const own = st.packs.filter((p) => !p.official);
+    const row = (p) => h('div', { class: 'row', onclick: () => (p.mine ? go('#/stickers/' + p.id) : packSheet(p.id)) },
+      p.stickers.length ? stickerImg(p.stickers[0].id, 'stk-tab') : h('div', { class: 'stk-tab' }, '🎭'),
+      h('div', { class: 'mid' }, h('div', { class: 'top' }, h('span', { class: 'name' }, p.title)),
+        h('div', { class: 'sub' }, h('span', { class: 'prev' }, faNum(p.stickers.length) + ' استیکر · ' + (p.official ? 'عمومی' : p.mine ? 'ساختهٔ شما' : 'افزوده‌شده')))),
+      p.official ? null : [
+        h('button', { class: 'icon', title: 'بالا', onclick: (e) => { e.stopPropagation(); move(p.id, -1); } }, '▲'),
+        h('button', { class: 'icon', title: 'پایین', onclick: (e) => { e.stopPropagation(); move(p.id, 1); } }, '▼')]);
+    fill(body,
+      st.create ? h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: newPack }, '➕ ساختن پک تازه')) : h('div', { class: 'hint' }, 'مدیر سرور ساختن استیکر را خاموش کرده است؛ پک‌های عمومی و پک‌هایی که دیگران فرستاده‌اند در دسترس‌اند.'),
+      own.length ? [h('div', { class: 'section' }, 'پک‌های من'), own.map(row)] : null,
+      st.packs.some((p) => p.official) ? [h('div', { class: 'section' }, 'پک‌های عمومی'), st.packs.filter((p) => p.official).map(row)] : null,
+      h('div', { class: 'hint' }, 'برای افزودن پک کسی دیگر، روی استیکری که فرستاده بزنید و «نمایش پک» را انتخاب کنید. با نگه داشتن یک استیکر در پنل، به علاقه‌مندی‌ها اضافه یا از آن برداشته می‌شود.'));
+  }
+  const el = h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.back() }, '→'), h('h1', null, 'استیکرهای من')), body);
+  render();
+  E.refreshStickers().catch(() => { });
+  return { el, update: (k) => { if (k === 'stickers') render(); } };
+}
+
+/** One of my packs: add (make from a photo / import files or a zip), delete stickers, rename, delete. */
+function StickerPackScreen(id) {
+  const body = h('div', { class: 'scroll' });
+  const title = h('h1');
+  const photoIn = h('input', { type: 'file', accept: 'image/*', class: 'hidden', onchange: () => { const f = photoIn.files[0]; photoIn.value = ''; if (f) stickerMaker(id, f); } });
+  const filesIn = h('input', { type: 'file', multiple: true, accept: 'image/png,image/webp,image/jpeg,.zip,application/zip', class: 'hidden', onchange: () => { const f = [...filesIn.files]; filesIn.value = ''; if (f.length) importStickers(id, f); } });
+  const pack = () => S.stickers.packs.find((p) => p.id === id);
+  function render() {
+    const p = pack();
+    if (!p) { fill(body, h('div', { class: 'empty' }, 'این پک پیدا نشد')); return; }
+    title.textContent = p.title;
+    const lim = S.stickers.limits || {};
+    fill(body,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => photoIn.click() }, '✂ ساخت از عکس'),
+        h('button', { class: 'btn flat', onclick: () => filesIn.click() }, '⤒ افزودن فایل‌ها یا zip')),
+      h('div', { class: 'hint' }, faNum(p.stickers.length) + ' از ' + faNum(lim.per_pack || 120) + ' استیکر · هر استیکر حداکثر ' + faNum(lim.kb || 300) + ' کیلوبایت. عکس‌های PNG و WebP شفاف، شفاف می‌مانند. برای حذف، روی استیکر بزنید.'),
+      h('div', { class: 'stk-grid' }, p.stickers.map((s) => h('button', { onclick: () => sheet(s.emoji || null, [
+        { label: 'حذف این استیکر', danger: true, run: async () => { const r = await E.deleteSticker(s.id); if (r.error) toast(r.error); } },
+      ]) }, stickerImg(s.id)))),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn flat', onclick: async () => { const t = prompt('نام تازهٔ پک:', p.title); if (t && t.trim()) { const r = await E.renameStickerPack(id, t.trim()); if (r.error) toast(r.error); } } }, 'تغییر نام'),
+        h('button', { class: 'btn flat danger', onclick: async () => {
+          if (!(await confirmBox('حذف پک', 'پک «' + p.title + '» برای همه حذف می‌شود و استیکرهایی که قبلاً فرستاده شده‌اند «استیکر حذف شده» نشان داده می‌شوند.', 'حذف', true))) return;
+          const r = await E.deleteStickerPack(id); if (r.error) toast(r.error); else go('#/stickers');
+        } }, 'حذف پک')),
+      photoIn, filesIn);
+  }
+  const el = h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/stickers') }, '→'), title), body);
+  render();
+  return { el, update: (k) => { if (k === 'stickers') render(); } };
+}
+
 // ---------------- call screen (overlay above everything) ----------------
-let callEl = null, callTick = null, callSwap = false;
+let callEl = null, callTick = null, callSwap = false, routeLevel = 'top'; // routeLevel (1.15): 'top' | 'server'
+// 1.15: the 🔀 path panel is shown; the button toggles it like the ping eye and the choice is remembered
+const routePanelOn = () => { try { return localStorage.getItem('sepan_route_panel') !== '0'; } catch { return true; } };
+const setRoutePanel = (v) => { try { localStorage.setItem('sepan_route_panel', v ? '1' : '0'); } catch { } };
 function renderCall(c) {
   if (c.phase === 'idle') {
     if (callEl) { callEl.remove(); callEl = null; clearInterval(callTick); Diag.detach(); }
-    callSwap = false;
+    callSwap = false; routeLevel = 'top';
     if (c.note) toast(c.note);
     return;
   }
@@ -1490,7 +1935,9 @@ function renderCall(c) {
   let status = c.note;
   if (c.phase === 'active') { const s = Math.floor((Date.now() - c.startedAt) / 1000); status = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   else if (c.phase === 'incoming') status = c.video ? 'تماس تصویری ورودی' : 'تماس صوتی ورودی';
-  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status));
+  // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
+  const routeLine = c.canRoute && c.phase === 'active' && c.note ? h('div', { class: 'route-now' }, c.note) : null;
+  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status), routeLine);
   const btn = (label, cls, fn, title) => h('button', { class: 'cb ' + cls, title, onclick: fn }, label);
   const ctrls = c.phase === 'incoming'
     ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.decline, 'رد'), btn(c.video ? '🎥' : '📞', 'green', Call.accept, 'پاسخ'))
@@ -1499,8 +1946,30 @@ function renderCall(c) {
       localVideo ? btn(c.camOff ? '🚫' : '📷', c.camOff ? 'on' : '', Call.toggleCamera, 'دوربین') : null,
       localVideo ? btn('🔄', '', Call.switchCamera, 'چرخش دوربین') : null,
       btn('✕', 'red', Call.hangup, 'پایان تماس'));
-  callEl.querySelectorAll('.info, .ctrls').forEach((x) => x.remove());
+  // 1.15: 🔀 button + small see-through panel (at most a third of the screen wide):
+  // خودکار / مستقیم / سرور › UDP, TCP, TLS. The button shows / hides the panel, remembered.
+  let menu = null;
+  if (c.canRoute && c.phase === 'active') {
+    const shown = routePanelOn() && c.peerRoute;
+    const tog = h('button', { class: 'rtog' + (shown ? ' on' : ''), title: c.peerRoute ? 'نمایش / پنهان کردن مسیر اتصال' : 'طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست', disabled: !c.peerRoute,
+      onclick: () => { setRoutePanel(!routePanelOn()); renderCall(Call.C); } }, '🔀');
+    let panel = null;
+    if (shown) {
+      const pick = (m) => () => { routeLevel = 'top'; Call.setRoute(m); renderCall(Call.C); };
+      const item = (m, label) => h('button', { class: 'ri' + (c.route === m ? ' cur' : ''), disabled: c.routing || !c.routes.includes(m), onclick: pick(m) }, (c.route === m ? '✓ ' : '') + label);
+      const server = ['udp', 'tcp', 'tls'].includes(c.route);
+      const head = h('div', { class: 'rt' }, c.routing ? 'در حال تغییر…' : (c.path || 'مسیر اتصال'));
+      panel = routeLevel === 'server'
+        ? h('div', { class: 'rp' }, head, h('button', { class: 'ri back', onclick: () => { routeLevel = 'top'; renderCall(Call.C); } }, '→ سرور'),
+          item('udp', 'UDP'), item('tcp', 'TCP'), item('tls', 'TLS'))
+        : h('div', { class: 'rp' }, head, item('auto', 'خودکار'), item('direct', 'مستقیم'),
+          h('button', { class: 'ri' + (server ? ' cur' : ''), disabled: c.routing, onclick: () => { routeLevel = 'server'; renderCall(Call.C); } }, (server ? '✓ ' : '') + 'سرور ‹'));
+    }
+    menu = h('div', { class: 'route-menu' }, tog, panel);
+  }
+  callEl.querySelectorAll('.info, .ctrls, .route-menu').forEach((x) => x.remove());
   callEl.append(info, ctrls);
+  if (menu) callEl.append(menu);
   // admins' call diagnostics (test feature, switched on per user in the panel)
   if (S.meInfo.diag && c.phase !== 'incoming') Diag.attach(callEl, c.peer, Call.peerConnection);
 }

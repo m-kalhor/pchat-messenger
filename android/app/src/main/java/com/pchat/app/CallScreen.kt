@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
@@ -35,6 +37,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -147,6 +150,7 @@ fun CallScreen() {
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
     val accept = rememberAcceptHandler(s.video)
+    SystemBars.DarkWhileShown()
 
     val status = when (s.phase) {
         CallPhase.INCOMING -> if (s.video) "تماس تصویری ورودی" else "تماس صوتی ورودی"
@@ -179,6 +183,8 @@ fun CallScreen() {
         ) {
             Text(Engine.nameOf(s.peer), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Text(status, color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
+            // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
+            if (s.canRoute && s.phase == CallPhase.ACTIVE && s.routeNote.isNotEmpty()) Text(s.routeNote, color = Color(0xFFFFCC80), fontSize = 13.sp)
         }
         if (showLocal) {
             val small = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(16.dp).size(width = 110.dp, height = 150.dp).clip(RoundedCornerShape(12.dp))
@@ -208,6 +214,8 @@ fun CallScreen() {
                 RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
             }
         }
+        // 1.15: path menu (users the admin allowed): خودکار / مستقیم / از طریق سرور › UDP, TCP, TLS
+        if (s.canRoute && s.phase == CallPhase.ACTIVE) RouteMenu(s, Modifier.align(Alignment.CenterEnd).padding(end = 12.dp))
         // 1.7 test feature: ping and route for the admins listed in the panel (see Diag.kt)
         val diagOn by Engine.diag.collectAsState()
         if (diagOn && s.phase != CallPhase.INCOMING && s.phase != CallPhase.IDLE) {
@@ -221,4 +229,58 @@ fun CallScreen() {
             ) { Text(if (showText) "👁" else "🙈", fontSize = 18.sp) }
         }
     }
+}
+
+/**
+ * 1.15: the 🔀 button and its two-level path panel. Like the ping eye, the button shows / hides the panel and
+ * the choice is remembered. The panel is at most a third of the screen wide and see-through, so it covers
+ * little of a video call.
+ */
+@Composable
+private fun RouteMenu(s: CallState, modifier: Modifier) {
+    val ctx = LocalContext.current
+    val shown by Prefs.routePanel.collectAsState()
+    var level by remember(s.callId) { mutableStateOf("top") } // "top" | "server"
+    val maxW = (LocalConfiguration.current.screenWidthDp / 3).dp
+    Column(modifier, horizontalAlignment = Alignment.End) {
+        Box(
+            Modifier.size(40.dp).clip(CircleShape)
+                .background(if (shown && s.peerRoute) Color(0x663390EC) else Color(0x33FFFFFF))
+                .clickable {
+                    if (!s.peerRoute) Toast.makeText(ctx, "طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست", Toast.LENGTH_SHORT).show()
+                    else Prefs.setRoutePanel(!shown)
+                },
+            contentAlignment = Alignment.Center
+        ) { Text("🔀", fontSize = 18.sp, color = if (s.peerRoute) Color.White else Color.White.copy(alpha = 0.4f)) }
+        if (shown && s.peerRoute) {
+            Spacer(Modifier.height(6.dp))
+            Column(Modifier.widthIn(max = maxW).clip(RoundedCornerShape(10.dp)).background(Color(0x8010202F)).padding(4.dp)) {
+                val head = if (s.routing) "در حال تغییر…" else s.path.ifEmpty { "مسیر اتصال" }
+                Text(head, color = Color.White.copy(alpha = 0.7f), fontSize = 11.sp, modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp))
+                fun pick(m: String) { level = "top"; CallManager.setRoute(m) }
+                val ok = !s.routing
+                if (level == "server") {
+                    RouteItem("→ سرور", false, true) { level = "top" }
+                    RouteItem("UDP", s.netMode == "udp", ok && "udp" in s.netModes) { pick("udp") }
+                    RouteItem("TCP", s.netMode == "tcp", ok && "tcp" in s.netModes) { pick("tcp") }
+                    RouteItem("TLS", s.netMode == "tls", ok && "tls" in s.netModes) { pick("tls") }
+                } else {
+                    RouteItem("خودکار", s.netMode == "auto", ok) { pick("auto") }
+                    RouteItem("مستقیم", s.netMode == "direct", ok && "direct" in s.netModes) { pick("direct") }
+                    RouteItem("سرور ‹", s.netMode in listOf("udp", "tcp", "tls"), ok) { level = "server" }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RouteItem(label: String, cur: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    Text(
+        (if (cur) "✓ " else "") + label,
+        color = if (!enabled) Color.White.copy(alpha = 0.35f) else if (cur) Color(0xFF64B5F6) else Color.White,
+        fontSize = 13.sp, maxLines = 1,
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 8.dp, vertical = 7.dp)
+    )
 }

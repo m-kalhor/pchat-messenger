@@ -97,7 +97,7 @@ object U {
     }
 }
 
-private fun exifRotation(ins: InputStream): Int = try {
+internal fun exifRotation(ins: InputStream): Int = try {
     when (ExifInterface(ins).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
         ExifInterface.ORIENTATION_ROTATE_90 -> 90
         ExifInterface.ORIENTATION_ROTATE_180 -> 180
@@ -164,3 +164,44 @@ fun decodeSampled(path: String, maxDim: Int): ImageBitmap? {
 }
 
 fun decodeBytes(b: ByteArray): ImageBitmap? = BitmapFactory.decodeByteArray(b, 0, b.size)?.asImageBitmap()
+
+/** Longest side and JPEG quality of a «compressed» photo (about 200-400 KB, fine for chat). */
+const val PHOTO_MAX_SIDE = 1600
+const val PHOTO_QUALITY = 80
+
+/**
+ * Compressed-photo pipeline: decode (sampled) -> fix rotation -> scale so the longest side is at most
+ * [PHOTO_MAX_SIDE] -> JPEG at [PHOTO_QUALITY]. Re-encoding drops EXIF/GPS data. False if it can't be read.
+ */
+fun compressPhoto(ctx: Context, uri: Uri, out: java.io.File): Boolean {
+    val cr = ctx.contentResolver
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) }
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+    var sample = 1
+    while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= PHOTO_MAX_SIDE) sample *= 2
+    var bmp: Bitmap = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = sample }) } ?: return false
+    val rot = cr.openInputStream(uri)?.use { exifRotation(it) } ?: 0
+    if (rot != 0) bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rot.toFloat()) }, true)
+    val big = maxOf(bmp.width, bmp.height)
+    if (big > PHOTO_MAX_SIDE) {
+        val k = PHOTO_MAX_SIDE.toFloat() / big
+        bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * k).toInt().coerceAtLeast(1), (bmp.height * k).toInt().coerceAtLeast(1), true)
+    }
+    return java.io.FileOutputStream(out).use { bmp.compress(Bitmap.CompressFormat.JPEG, PHOTO_QUALITY, it) }
+}
+
+/** Small rotation-corrected preview of a picked/captured photo, or null. */
+fun previewOf(ctx: Context, uri: Uri, maxDim: Int): ImageBitmap? = try {
+    val cr = ctx.contentResolver
+    val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, o) }
+    if (o.outWidth <= 0) null else {
+        var s = 1
+        while (maxOf(o.outWidth, o.outHeight) / s > maxDim * 2) s *= 2
+        var bmp = cr.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, BitmapFactory.Options().apply { inSampleSize = s }) }
+        val rot = cr.openInputStream(uri)?.use { exifRotation(it) } ?: 0
+        if (bmp != null && rot != 0) bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rot.toFloat()) }, true)
+        bmp?.asImageBitmap()
+    }
+} catch (e: Exception) { null }

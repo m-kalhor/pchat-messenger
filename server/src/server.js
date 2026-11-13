@@ -13,7 +13,10 @@ const backup = require('./backup');
 const push = require('./push');
 const auth = require('./auth');
 const diag = require('./diag');
+const callcfg = require('./callcfg');
 const { apkVersion } = require('./apkinfo');
+const stickers = require('./stickers');
+const usage = require('./usage');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -524,6 +527,7 @@ async function route(req, res) {
   const a = authInfo(req);
   if (!a) return send(res, 401, { error: 'unauthorized' });
   const user = a.user;
+  usage.track(user, req, res); // 1.14: per-user traffic for the admin panel (request/response bodies)
 
   if (p === '/api/logout' && req.method === 'POST') { q.delSess.run(a.th); return send(res, 200, { ok: true }); }
 
@@ -552,6 +556,7 @@ async function route(req, res) {
       username: user, display_name: u.display_name || null, avatar_ver: u.avatar_ver, bio: u.bio || null,
       hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
       allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(), ...diag.meInfo(user),
+      call_route: callcfg.routeAllowed(user), // 1.15: may pick the call path in a call (admin panel, users tab)
     });
   }
 
@@ -734,6 +739,12 @@ async function route(req, res) {
     return res.end(buf);
   }
 
+  // ---- 1.10 sticker packs (see stickers.js) ----
+  if (p.startsWith('/api/sticker')) {
+    const r = await stickerRoute(req, res, p, url, user);
+    if (r !== false) return;
+  }
+
   if (p === '/api/events' && req.method === 'GET') {
     const since = Number(url.searchParams.get('since') || req.headers['last-event-id'] || 0) || 0;
     req.socket.setTimeout(0);
@@ -805,7 +816,9 @@ async function route(req, res) {
     if (tr.error) return send(res, tr.code, { error: tr.error });
     if (kind.startsWith('sig_')) { // live-only signalling (typing, calls) — private chats only, never stored
       if (tr.type !== 'dm') return send(res, 400, { error: 'sig_needs_target' });
-      return send(res, 200, { delivered: emit(target, 'sig', { from: user, kind, payload: b.payload }) });
+      const delivered = emit(target, 'sig', { from: user, kind, payload: b.payload });
+      usage.signal(user, target, kind, delivered); // 1.14: call counts and lengths
+      return send(res, 200, { delivered });
     }
     let fileId = null;
     if (b.fileId != null) {
@@ -967,10 +980,8 @@ async function route(req, res) {
     const ttl = 86400;
     const username = (Math.floor(now() / 1000) + ttl) + ':' + user;
     const credential = crypto.createHmac('sha1', TURN_SECRET).update(username).digest('base64');
-    return send(res, 200, {
-      urls: [`stun:${PUBLIC_HOST}:3478`, `turn:${PUBLIC_HOST}:3478?transport=udp`, `turn:${PUBLIC_HOST}:3478?transport=tcp`],
-      username, credential, ttl,
-    });
+    // 1.10.1: plus the call path settings from the admin panel (policy, switch limits, video cap, TURN/TLS)
+    return send(res, 200, { ...callcfg.turnInfo(PUBLIC_HOST, user), username, credential, ttl });
   }
 
   // ----- legacy single-shot upload (kept for old app versions) -----
@@ -1078,6 +1089,66 @@ async function route(req, res) {
 
   return send(res, 404, { error: 'not_found' });
 }
+/** The /api/stickers… and /api/sticker/<id> routes; false when the path is not one of them. */
+async function stickerRoute(req, res, p, url, user) {
+  const im = /^\/api\/sticker\/([a-f0-9]{32})$/.exec(p);
+  if (im && req.method === 'GET') {
+    const img = stickers.image(im[1]);
+    if (!img) return send(res, 404, { error: 'no_such_sticker' });
+    res.writeHead(200, { 'Content-Type': img.mime, 'Content-Length': img.data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    return res.end(img.data);
+  }
+  // the user's other devices reload their sticker panel
+  const changed = (users) => { for (const u of users || [user]) emit(u, 'stickers', {}); };
+  try {
+    if (p === '/api/stickers' && req.method === 'GET') return send(res, 200, stickers.listFor(user));
+    if (p === '/api/stickers/packs' && req.method === 'POST') {
+      const b = await readJson(req, 2048);
+      const id = stickers.createPack(user, b.title);
+      changed();
+      return send(res, 200, stickers.packFor(user, id));
+    }
+    if (p === '/api/stickers/order' && req.method === 'POST') {
+      const b = await readJson(req, 65536);
+      stickers.reorder(user, b.packs);
+      changed();
+      return send(res, 200, { ok: true });
+    }
+    const pm = /^\/api\/stickers\/pack\/([a-f0-9]{16})(?:\/(add|remove|rename|sticker))?$/.exec(p);
+    if (pm) {
+      const [, id, act] = pm;
+      if (!act && req.method === 'GET') {
+        const pk = stickers.packFor(user, id);
+        return pk ? send(res, 200, pk) : send(res, 404, { error: 'no_such_pack' });
+      }
+      if (!act && req.method === 'DELETE') { changed(stickers.deletePack(user, id)); return send(res, 200, { ok: true }); }
+      if (act === 'add' && req.method === 'POST') { stickers.addToCollection(user, id); changed(); return send(res, 200, stickers.packFor(user, id)); }
+      if (act === 'remove' && req.method === 'POST') { stickers.removeFromCollection(user, id); changed(); return send(res, 200, { ok: true }); }
+      if (act === 'rename' && req.method === 'POST') {
+        const b = await readJson(req, 2048);
+        stickers.renamePack(user, id, b.title);
+        changed();
+        return send(res, 200, stickers.packFor(user, id));
+      }
+      if (act === 'sticker' && req.method === 'POST') {
+        const max = stickers.config().max_kb * 1024;
+        const len = Number(req.headers['content-length']);
+        if (!len || len > max) { res.setHeader('Connection', 'close'); return send(res, 413, { error: 'sticker_too_large', maxBytes: max }); }
+        if (limited('stk:' + user, 300)) return send(res, 429, { error: 'rate_limited' });
+        addFail('stk:' + user);
+        const s = stickers.addSticker(user, id, await readBody(req, max), url.searchParams.get('emoji'));
+        changed();
+        return send(res, 200, s);
+      }
+    }
+    const sm = /^\/api\/stickers\/sticker\/([a-f0-9]{32})$/.exec(p);
+    if (sm && req.method === 'DELETE') { stickers.deleteSticker(user, sm[1]); changed(); return send(res, 200, { ok: true }); }
+  } catch (e) {
+    if (e instanceof stickers.StickerError) return send(res, e.status, { error: e.message });
+    throw e;
+  }
+  return false;
+}
 const inflight = new Set();
 
 const handler = (req, res) => {
@@ -1109,6 +1180,7 @@ function cleanup() {
     db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     push.cleanup();
+    usage.cleanup();
     auth.cleanup();
     db.prepare('DELETE FROM msg_changes WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM sessions WHERE created<?').run(now() - SESSION_DAYS * DAY);
@@ -1127,10 +1199,11 @@ setInterval(cleanup, 3600e3);
 cleanup();
 
 stats.start();
+usage.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
-const ctx = { kick, refreshAll, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
+const ctx = { kick, refreshAll, stickersChanged: (users) => { for (const u of users || connectedUsers()) emit(u, 'stickers', {}); }, appUpdated: () => { for (const u of connectedUsers()) emit(u, 'app_update', {}); }, profileChanged, onlineUsers: connectedUsers, isOnline: isConnected, apkPath: APK, apkInfo };
 require('./adminpanel').start(ctx, tlsOptions);
 
 // ---------- web version / PWA for iPhone (own port and certificate, same API) ----------

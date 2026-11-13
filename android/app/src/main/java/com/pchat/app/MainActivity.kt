@@ -10,6 +10,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -46,6 +47,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         Engine.init(this)
         deepLink.value = intent.getStringExtra("convo")
+        if (intent.getBooleanExtra("update", false)) Updater.showAgain()
         setContent { PChatTheme { App(deepLink) } }
     }
 
@@ -53,10 +55,35 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         deepLink.value = intent.getStringExtra("convo")
+        if (intent.getBooleanExtra("update", false)) Updater.showAgain()
     }
 
     override fun onStart() { super.onStart(); Engine.appVisible = true; Engine.setActive(true); AppLock.onAppStart(); Engine.refreshDirectory() }
     override fun onStop() { super.onStop(); Engine.appVisible = false; Engine.setActive(false); VoicePlayer.stop(); AppLock.onAppStop() }
+}
+
+/**
+ * Which colour the system bar icons need. They follow the app's own theme (not the
+ * phone's dark mode); screens with the blue header want white status-bar icons, and
+ * full-screen dark screens in the main window (the call screen) want white icons on both bars.
+ */
+object SystemBars {
+    val headerScreens = androidx.compose.runtime.mutableIntStateOf(0)
+    val darkScreens = androidx.compose.runtime.mutableIntStateOf(0)
+
+    @Composable
+    fun HeaderShown() = Counted(headerScreens)
+
+    @Composable
+    fun DarkWhileShown() = Counted(darkScreens)
+
+    @Composable
+    private fun Counted(n: androidx.compose.runtime.MutableIntState) {
+        DisposableEffect(Unit) {
+            n.intValue++
+            onDispose { n.intValue-- }
+        }
+    }
 }
 
 @Composable
@@ -67,6 +94,19 @@ fun PChatTheme(content: @Composable () -> Unit) {
         darkColorScheme(primary = Color(0xFF5EB5F7), background = Color(0xFF0E1621), surface = Color(0xFF17212B), surfaceVariant = Color(0xFF0E1621))
     } else {
         lightColorScheme(primary = Color(0xFF3390EC), background = Color.White, surface = Color.White, surfaceVariant = Color(0xFFDDE6EE))
+    }
+    // light bars = dark icons (on a white background); dark bars = white icons
+    val activity = LocalContext.current as? ComponentActivity
+    val headerScreens by SystemBars.headerScreens
+    val darkScreens by SystemBars.darkScreens
+    val darkNav = dark || darkScreens > 0
+    val darkStatus = darkNav || headerScreens > 0
+    LaunchedEffect(darkStatus, darkNav, activity) {
+        val clear = android.graphics.Color.TRANSPARENT
+        activity?.enableEdgeToEdge(
+            statusBarStyle = if (darkStatus) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear),
+            navigationBarStyle = if (darkNav) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
+        )
     }
     MaterialTheme(colorScheme = scheme) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) { content() }
@@ -82,7 +122,7 @@ fun App(deepLink: MutableState<String?>) {
     var settings by remember { mutableStateOf(false) }
     var askBattery by remember { mutableStateOf(false) }
 
-    var updateOffer by remember { mutableStateOf<AppUpdate?>(null) }
+    val updateOffer by Updater.offer.collectAsState()
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val call by CallManager.state.collectAsState()
     val locked by AppLock.locked.collectAsState()
@@ -122,7 +162,7 @@ fun App(deepLink: MutableState<String?>) {
             if (!pm.isIgnoringBatteryOptimizations(ctx.packageName) && !Engine.prefs.getBoolean("battery_asked", false)) askBattery = true
             // 1.9: a newer APK on the server is offered each time the app is opened (never forced)
             Updater.cleanup(ctx)
-            updateOffer = Updater.check(ctx)
+            Updater.check(ctx)?.let { Updater.offer.value = it }
         } else {
             convo = null
             settings = false
@@ -149,8 +189,8 @@ fun App(deepLink: MutableState<String?>) {
     }
 
     val offer = updateOffer
-    if (offer != null && logged && !askBattery && call.phase == CallPhase.IDLE && !locked && ks == null) {
-        UpdateDialog(offer) { updateOffer = null }
+    if (offer != null && offer.code != Updater.dismissed && logged && !askBattery && call.phase == CallPhase.IDLE && !locked && ks == null) {
+        UpdateDialog(offer) { Updater.dismissed = offer.code; Updater.offer.value = null }
     }
 
     if (askBattery) {

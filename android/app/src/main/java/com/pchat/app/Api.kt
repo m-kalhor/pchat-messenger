@@ -37,7 +37,15 @@ data class ContactRequest(
 /** incoming (new), declined (can still be accepted), blocked, outgoing (mine, always shown as waiting) */
 data class RequestLists(val incoming: List<ContactRequest>, val declined: List<ContactRequest>, val blocked: List<ContactRequest>, val outgoing: List<ContactRequest>)
 data class GroupInfo(val key: String, val name: String, val members: List<String>)
-class TurnInfo(val urls: List<String>, val user: String, val cred: String, val expiresAt: Long)
+/**
+ * TURN credentials plus (1.10.1) the call path settings from the admin panel: [policy] auto / relay / direct,
+ * the limits for switching a bad direct call to the relay, and the video bitrate cap (0 = none).
+ */
+class TurnInfo(
+    val urls: List<String>, val user: String, val cred: String, val expiresAt: Long,
+    val policy: String = "direct", val switchRtt: Int = 400, val switchLoss: Int = 8, val videoKbps: Int = 0,
+    val userRoute: Boolean = false // 1.15: the admin lets this user pick the call path
+)
 class PatchResult(val offset: Long, val done: Boolean, val fileId: String?)
 
 fun parseUsers(raw: String): List<UserInfo> {
@@ -250,6 +258,33 @@ object Api {
         }
     }
 
+    // ---- 1.10 sticker packs ----
+    fun stickers(): JSONObject = JSONObject(exec(req("/api/stickers").get().build()))
+    fun stickerPack(id: String): JSONObject = JSONObject(exec(req("/api/stickers/pack/$id").get().build()))
+    fun createStickerPack(title: String): JSONObject =
+        JSONObject(exec(req("/api/stickers/packs").post(JSONObject().put("title", title).toString().toRequestBody(JSON)).build()))
+    fun stickerPackAction(id: String, action: String) { exec(req("/api/stickers/pack/$id/$action").post("{}".toRequestBody(JSON)).build()) }
+    fun renameStickerPack(id: String, title: String) {
+        exec(req("/api/stickers/pack/$id/rename").post(JSONObject().put("title", title).toString().toRequestBody(JSON)).build())
+    }
+    fun deleteStickerPack(id: String) { exec(req("/api/stickers/pack/$id").delete().build()) }
+    fun orderStickerPacks(ids: List<String>) {
+        exec(req("/api/stickers/order").post(JSONObject().put("packs", JSONArray(ids)).toString().toRequestBody(JSON)).build())
+    }
+    /** data: a static WebP or PNG of at most 512x512. */
+    fun addSticker(packId: String, data: ByteArray, mime: String, emoji: String?): JSONObject {
+        val q = if (emoji.isNullOrBlank()) "" else "?emoji=" + java.net.URLEncoder.encode(emoji, "UTF-8")
+        return JSONObject(exec(req("/api/stickers/pack/$packId/sticker$q").post(data.toRequestBody(mime.toMediaType())).build()))
+    }
+    fun deleteSticker(id: String) { exec(req("/api/stickers/sticker/$id").delete().build()) }
+    /** The sticker image; HttpError 404 when its pack was deleted. */
+    fun stickerImage(id: String): ByteArray {
+        client.newCall(req("/api/sticker/$id").get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) throw HttpError(resp.code, "sticker")
+            return resp.body!!.bytes()
+        }
+    }
+
     fun pin(target: String, messageId: Long?) {
         val b = JSONObject().put("target", target).put("messageId", if (messageId == null) JSONObject.NULL else messageId)
         exec(req("/api/pin").post(b.toString().toRequestBody(JSON)).build())
@@ -328,7 +363,9 @@ object Api {
         return TurnInfo(
             (0 until arr.length()).map { arr.getString(it) },
             o.getString("username"), o.getString("credential"),
-            System.currentTimeMillis() + o.getLong("ttl") * 1000
+            System.currentTimeMillis() + o.getLong("ttl") * 1000,
+            o.optString("policy", "direct"), o.optInt("switch_rtt", 400), o.optInt("switch_loss", 8), o.optInt("video_kbps", 0),
+            o.optBoolean("user_route", false)
         )
     }
 

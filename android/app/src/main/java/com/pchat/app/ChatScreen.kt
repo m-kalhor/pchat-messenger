@@ -92,6 +92,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -124,6 +125,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import android.net.Uri
+import androidx.compose.material3.Switch
+import androidx.compose.foundation.layout.heightIn
 
 private fun openFile(ctx: Context, path: String, mime: String?) {
     try {
@@ -176,7 +180,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     var deleteAll by remember { mutableStateOf<Msg?>(null) }
     BackHandler(enabled = selected.isNotEmpty()) { selected.clear() }
     BackHandler(enabled = editing != null) { editing = null; text = "" }
-    var viewer by remember { mutableStateOf<String?>(null) }
+    var viewer by remember { mutableStateOf<Pair<String, Msg>?>(null) }
+    val mediaActions = rememberMediaActions()
     var showKeys by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var attachMenu by remember { mutableStateOf(false) }
@@ -243,13 +248,49 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         else jumpTo = null
     }
 
+    // ---- photos: from the gallery or the camera, then a preview with a «compress» switch (remembered) ----
+    var pendingPhoto by remember { mutableStateOf<Uri?>(null) }
+    var pendingCam by remember { mutableStateOf<File?>(null) } // temp camera file, deleted once sent/cancelled
+    var camFile by remember { mutableStateOf<File?>(null) }
     val pickImage = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        if (uri != null) scope.launch {
+        if (uri != null) { pendingCam = null; pendingPhoto = uri }
+    }
+    val takePhoto = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val f = camFile
+        camFile = null
+        if (ok && f != null && f.length() > 0) { pendingCam = f; pendingPhoto = FileProvider.getUriForFile(ctxForToast, ctxForToast.packageName + ".fileprovider", f) }
+        else f?.delete()
+    }
+    fun launchCamera() {
+        val f = File(File(ctxForToast.filesDir, "media").also { it.mkdirs() }, "cam_${System.currentTimeMillis()}.jpg")
+        camFile = f
+        try {
+            takePhoto.launch(FileProvider.getUriForFile(ctxForToast, ctxForToast.packageName + ".fileprovider", f))
+        } catch (e: Exception) { camFile = null; f.delete(); error = "برنامهٔ دوربین پیدا نشد" }
+    }
+    val camPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) launchCamera() else error = "برای گرفتن عکس اجازهٔ دوربین لازم است"
+    }
+    fun openCamera() {
+        if (ContextCompat.checkSelfPermission(ctxForToast, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED)
+            camPerm.launch(Manifest.permission.CAMERA)
+        else launchCamera()
+    }
+    fun sendPhoto(uri: Uri, compress: Boolean) {
+        val cam = pendingCam
+        pendingPhoto = null; pendingCam = null
+        scope.launch {
             sending = true
-            error = Engine.sendUri(convo, uri, true, replyTo)
+            error = Engine.sendUri(convo, uri, true, replyTo, compress)
             if (error == null) replyTo = null
             sending = false
+            cam?.delete()
         }
+    }
+    pendingPhoto?.let { uri ->
+        PhotoSendDialog(uri,
+            onSend = { compress -> sendPhoto(uri, compress) },
+            onCancel = { pendingPhoto = null; pendingCam?.delete(); pendingCam = null })
     }
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) scope.launch {
@@ -341,6 +382,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val pinnedId = pins[convo]
     val pinnedMsg = remember(pinnedId, tick) { pinnedId?.let { Engine.db.get(it) } }
 
+    SystemBars.HeaderShown()
     Scaffold(
         topBar = {
             TopAppBar(
@@ -460,7 +502,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     Text("چیزی پیدا نشد", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                 }
             } else Box(Modifier.weight(1f).fillMaxWidth()) {
-                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, LocalOpenMention provides openMention) {
+                CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, LocalOpenMention provides openMention, LocalMediaActions provides mediaActions) {
                     LazyColumn(Modifier.fillMaxSize(), state = listState, reverseLayout = true) {
                         items(rowsList.size, key = { i -> val x = rowsList[i]; if (x is Msg) x.id else "d$x" }) { i ->
                             val it = rowsList[i]
@@ -473,7 +515,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                     pinned = pinnedId == it.id, tick = Engine.tickOf(it, receipts).also { hideSeen },
                                     onReact = { e -> react(it, e) }, onMoreReactions = { reactFor = it },
                                     onReactors = { reactorsOf = it }, onSeenBy = { seenBy = it },
-                                    onImage = { p -> viewer = p },
+                                    onImage = { p -> viewer = p to it },
                                     onReply = { replyTo = it },
                                     onPin = { scope.launch { error = Engine.pinMessage(convo, if (pinnedId == it.id) null else it.id) } },
                                     onRetry = { Engine.retry(it) },
@@ -564,49 +606,11 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
               Column {
                 Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                   val rec = recorder
-                  if (rec != null) {
-                    // recording: elapsed time and how to cancel / lock
-                    val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
-                    Row(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFE53935).copy(alpha = blink)))
-                        Spacer(Modifier.width(8.dp))
-                        Text(U.dur(recElapsed), fontSize = 16.sp)
-                        Spacer(Modifier.weight(1f))
-                        if (recLocked) TextButton(onClick = { finishRec(false) }) { Text("لغو", color = MaterialTheme.colorScheme.error) }
-                        else Text(
-                            "برای لغو به کنار بکشید · برای قفل بالا",
-                            fontSize = 12.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = (0.6f - kotlin.math.abs(recDrag) / 400f).coerceAtLeast(0.15f))
-                        )
-                    }
-                  } else {
-                    if (reqState != "out") Box {
-                        IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
-                        DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
-                            DropdownMenuItem(text = { Text("🖼  عکس (بدون فشرده‌سازی)") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
-                            DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
-                            DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
-                        }
-                    }
-                    IconButton(onClick = {
-                        if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
-                        else { keyboard?.hide(); emojiOpen = true }
-                    }) { Text(if (emojiOpen) "⌨️" else "😊", fontSize = 22.sp) }
-                    OutlinedTextField(
-                        // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
-                        value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
-                        onValueChange = {
-                            if (it.text.length <= 4000) {
-                                if (it.text != text && it.text.isNotEmpty() && editing == null) Engine.sendTyping(convo)
-                                field = it; text = it.text
-                            }
-                        },
-                        placeholder = { Text("پیام…") }, interactionSource = inputTouch,
-                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
-                    )
-                  }
+                  // 1.13: send / voice button on the right (the start side in RTL), under a right thumb;
+                  // the text field in the middle, emoji/sticker and + on the left
                   if (rec != null && recLocked) {
                     IconButton(onClick = { finishRec(true) }) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary)
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) // 1.13: points right
                     }
                   } else if (rec != null || (text.isBlank() && editing == null && reqState != "out")) {
                     Box(
@@ -650,21 +654,67 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 Engine.sendText(convo, t, r)
                             }
                         }
-                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray) }
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) } // 1.13: points right, like the send key
+                  if (rec != null) {
+                    // recording: elapsed time and how to cancel / lock
+                    val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
+                    Row(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFE53935).copy(alpha = blink)))
+                        Spacer(Modifier.width(8.dp))
+                        Text(U.dur(recElapsed), fontSize = 16.sp)
+                        Spacer(Modifier.weight(1f))
+                        if (recLocked) TextButton(onClick = { finishRec(false) }) { Text("لغو", color = MaterialTheme.colorScheme.error) }
+                        else Text(
+                            "برای لغو به کنار بکشید · برای قفل بالا",
+                            fontSize = 12.sp, maxLines = 1, color = MaterialTheme.colorScheme.onSurface.copy(alpha = (0.6f - kotlin.math.abs(recDrag) / 400f).coerceAtLeast(0.15f))
+                        )
+                    }
+                  } else {
+                    OutlinedTextField(
+                        // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
+                        value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
+                        onValueChange = {
+                            if (it.text.length <= 4000) {
+                                if (it.text != text && it.text.isNotEmpty() && editing == null) Engine.sendTyping(convo)
+                                field = it; text = it.text
+                            }
+                        },
+                        placeholder = { Text("پیام…") }, interactionSource = inputTouch,
+                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
+                    )
+                    IconButton(onClick = {
+                        if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
+                        else { keyboard?.hide(); emojiOpen = true }
+                    }) { Text(if (emojiOpen) "⌨️" else "😊", fontSize = 22.sp) }
+                    if (reqState != "out") Box {
+                        IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
+                        DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                            DropdownMenuItem(text = { Text("🖼  عکس از گالری") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
+                            DropdownMenuItem(text = { Text("📷  عکس با دوربین") }, onClick = { attachMenu = false; openCamera() })
+                            DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
+                            DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
+                        }
+                    }
+                  }
                 }
-                if (emojiOpen && recorder == null) EmojiPanel { e ->
+                if (emojiOpen && recorder == null) EmojiStickerPanel(onEmoji = { e ->
                     val cur = if (field.text == text) field else TextFieldValue(text, TextRange(text.length))
                     val a = minOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
                     val b = maxOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
                     val t = text.substring(0, a) + e + text.substring(b)
                     if (t.length <= 4000) { text = t; field = TextFieldValue(t, TextRange(a + e.length)) }
-                }
+                }, onSticker = { k ->
+                    // 1.10: a sticker goes out at once (like Telegram); a reply in progress goes with it
+                    val r = replyTo
+                    replyTo = null
+                    Engine.sendSticker(convo, k, r)
+                })
               }
             }
         }
     }
 
-    viewer?.let { ImageViewer(it) { viewer = null } }
+    viewer?.let { (p, vm) -> ImageViewer(p, MediaSave.refOf(vm, p)) { viewer = null } }
     forwarding?.let { list ->
         ForwardDialog(list.size, onClose = { forwarding = null }) { targets, hide ->
             Engine.forward(list, targets, hide)
@@ -731,18 +781,21 @@ fun Bubble(
     val dark = Look.dark()
     val bg = if (m.mine) (if (dark) Color(0xFF2B5278) else Color(0xFFEFFDDE)) else (if (dark) Color(0xFF182533) else Color.White)
     val fg = if (dark) Color(0xFFF5F5F5) else Color(0xFF111111)
-    // 1.9: like Telegram, the time and ticks on my bubbles are green in the light theme
-    val sub = if (m.mine && !dark) Color(0xFF5FA55A) else fg.copy(alpha = 0.55f)
+    // 1.10.1: time and the "sent" tick are grey; delivered ✓ and seen ✓✓ are blue
+    val sub = if (m.mine && !dark) Color(0xFF8A969F) else fg.copy(alpha = 0.55f)
     var menu by remember { mutableStateOf(false) }
     var playVideo by remember { mutableStateOf<String?>(null) }
-    playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, m.mime) { playVideo = null } }
+    playVideo?.let { p -> VideoPlayerDialog(p, m.fileName, MediaSave.refOf(m, p)) { playVideo = null } }
     val textSize by Prefs.textSize.collectAsState()
     val autoAllowed = remember(m.id) { Prefs.autoDownloadAllowed(ctx) }
     val autoImage = m.type == "image" && m.localPath == null && m.fileId != null && m.size <= 25L * 1024 * 1024 && autoAllowed
     val autoVoice = m.type == "voice" && m.localPath == null && m.fileId != null && autoAllowed
-    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF4FAE4E)
+    val tickBlue = if (dark) Color(0xFF72C8FF) else Color(0xFF2A9BF0)
     val reactable = m.id > 0 && m.status == 0 && m.type != "call" && m.text != LOCKED_TEXT
-    val bigEmoji = remember(m.text, m.type, m.replyId) { m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0 }
+    val bigEmoji = remember(m.text, m.type, m.replyId) { (m.type == "text" && m.replyId == 0L && Emoji.onlyEmojiCount(m.text) > 0) || m.type == "sticker" }
+    var showPack by remember { mutableStateOf<String?>(null) }
+    showPack?.let { StickerPackDialog(it) { showPack = null } }
+    val stickerGone by Stickers.gone.collectAsState()
 
     LaunchedEffect(m.id, m.localPath) {
         if (autoImage || autoVoice) Engine.downloadMedia(m)
@@ -786,7 +839,7 @@ fun Bubble(
                     }
                     when (m.type) {
                         "image" -> {
-                            ImageContent(m, progress, autoImage, onImage)
+                            ImageContent(m, progress, autoImage, onImage, onLong = { if (selecting) onSelect() else menu = true })
                             if (m.status == 1 && progress != null) ProgressBar(progress, Modifier.width(240.dp).padding(top = 4.dp))
                         }
                         "file" -> {
@@ -823,6 +876,7 @@ fun Bubble(
                         }
                         "voice" -> VoiceContent(m, progress, sub)
                         "location" -> m.loc?.let { LocationContent(it, fg, sub) } ?: Text(m.text, color = fg, fontSize = textSize.sp)
+                        "sticker" -> if (m.stk != null) StickerContent(m) else Text(m.text, color = fg, fontSize = textSize.sp)
                         "call" -> Text(m.text, color = sub, fontSize = 14.sp)
                         else -> if (bigEmoji) BigEmoji(m.text, m.id, textSize * 2) else MentionText(m.text, fg, textSize.sp, LocalOpenMention.current)
                     }
@@ -882,7 +936,24 @@ fun Bubble(
                 if (Engine.canEdit(m)) DropdownMenuItem(text = { Text("ویرایش") }, onClick = { menu = false; onEdit() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("فوروارد") }, onClick = { menu = false; onForward() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
+                if (m.status == 0 && m.fileId != null && m.type in MEDIA_TYPES) {
+                    val media = LocalMediaActions.current
+                    val galleryOk = m.type == "image" || MediaSave.isGalleryType(m.mime)
+                    if (media != null) {
+                        if (galleryOk) DropdownMenuItem(text = { Text("ذخیره در گالری") }, onClick = { menu = false; media.withMsg(m) { media.gallery(it) } })
+                        DropdownMenuItem(text = { Text("ذخیره در…") }, onClick = { menu = false; media.withMsg(m) { media.saveAs(it) } })
+                        DropdownMenuItem(text = { Text("اشتراک‌گذاری") }, onClick = { menu = false; media.withMsg(m) { media.share(it) } })
+                    }
+                }
                 if (m.type == "text") DropdownMenuItem(text = { Text("کپی") }, onClick = { menu = false; clipboard.setText(AnnotatedString(m.text)) })
+                m.stk?.let { k ->
+                    DropdownMenuItem(text = { Text(if (Stickers.isFav(k.id)) "برداشتن از علاقه‌مندی‌ها" else "⭐ افزودن به علاقه‌مندی‌ها") }, onClick = {
+                        menu = false
+                        val fav = Stickers.toggleFav(k)
+                        Toast.makeText(ctx, if (fav) "به علاقه‌مندی‌ها اضافه شد ⭐" else "از علاقه‌مندی‌ها برداشته شد", Toast.LENGTH_SHORT).show()
+                    })
+                    if (k.id !in stickerGone) DropdownMenuItem(text = { Text("🎭 نمایش پک") }, onClick = { menu = false; showPack = k.p })
+                }
                 if (m.id > 0) DropdownMenuItem(text = { Text("اطلاعات پیام") }, onClick = { menu = false; onInfo() })
                 if (group && m.mine && m.id > 0 && m.status == 0) DropdownMenuItem(text = { Text("دیده شده توسط…") }, onClick = { menu = false; onSeenBy() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text(if (pinned) "برداشتن پین" else "پین کردن") }, onClick = { menu = false; onPin() })
@@ -980,8 +1051,9 @@ private fun LocationContent(l: Loc, fg: Color, sub: Color) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (String) -> Unit) {
+private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (String) -> Unit, onLong: () -> Unit) {
     val scope = rememberCoroutineScope()
     val bmp by produceState<ImageBitmap?>(null, m.localPath) {
         value = m.localPath?.let { p -> withContext(Dispatchers.IO) { decodeSampled(p, 900) } }
@@ -990,8 +1062,10 @@ private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (Stri
     Box(
         Modifier.width(240.dp).aspectRatio(ratio).clip(RoundedCornerShape(8.dp))
             .background(Color.Gray.copy(alpha = 0.25f))
-            .clickable(enabled = m.localPath != null || (!auto && m.fileId != null && progress == null)) {
-                if (m.localPath != null) onImage(m.localPath) else scope.launch { Engine.downloadMedia(m) }
+            // 1.12: a long press opens the message menu (reply, forward, save…), like every other message
+            .combinedClickable(onLongClick = onLong) {
+                if (m.localPath != null) onImage(m.localPath)
+                else if (!auto && m.fileId != null && progress == null) scope.launch { Engine.downloadMedia(m) }
             },
         contentAlignment = Alignment.Center
     ) {
@@ -1005,8 +1079,12 @@ private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (Stri
     }
 }
 
+/** Save / share actions of the open chat (1.12); hoisted so the pickers' results survive bubbles scrolling away. */
+val LocalMediaActions = staticCompositionLocalOf<MediaActions?> { null }
+private val MEDIA_TYPES = setOf("image", "file", "voice")
+
 @Composable
-fun ImageViewer(path: String, onClose: () -> Unit) {
+fun ImageViewer(path: String, ref: MediaRef, onClose: () -> Unit) {
     Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         var scale by remember { mutableStateOf(1f) }
         var off by remember { mutableStateOf(Offset.Zero) }
@@ -1030,6 +1108,8 @@ fun ImageViewer(path: String, onClose: () -> Unit) {
             IconButton(onClick = onClose, modifier = Modifier.align(Alignment.TopEnd).padding(16.dp)) {
                 Icon(Icons.Default.Close, contentDescription = "بستن", tint = Color.White)
             }
+            // 1.12: ⋮ = save to gallery, save to…, share
+            MediaMoreMenu(ref, Modifier.align(Alignment.TopStart).padding(16.dp))
         }
     }
 }
@@ -1059,4 +1139,42 @@ fun MentionText(text: String, color: Color, size: TextUnit, onMention: (String) 
         }
     }
     Text(annotated, color = color, fontSize = size, style = TextStyle(textDirection = TextDirection.Content))
+}
+
+
+/** Preview of a photo about to be sent, with a «compress» switch whose last value is remembered. */
+@Composable
+private fun PhotoSendDialog(uri: Uri, onSend: (Boolean) -> Unit, onCancel: () -> Unit) {
+    val ctx = LocalContext.current
+    var compress by remember { mutableStateOf(Engine.prefs.getBoolean("photo_compress", true)) }
+    val img by produceState<ImageBitmap?>(null, uri) { value = withContext(Dispatchers.IO) { previewOf(ctx, uri, 900) } }
+    val size = remember(uri) { U.fileSize(ctx, uri) }
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("ارسال عکس") },
+        text = {
+            Column {
+                Box(Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 360.dp), contentAlignment = Alignment.Center) {
+                    val b = img
+                    if (b != null) Image(b, contentDescription = null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxWidth().heightIn(max = 360.dp).clip(RoundedCornerShape(8.dp)))
+                    else CircularProgressIndicator()
+                }
+                Spacer(Modifier.height(10.dp))
+                Row(Modifier.fillMaxWidth().clickable { compress = !compress }, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("فشرده‌سازی", fontWeight = FontWeight.SemiBold)
+                        Text(
+                            if (compress) "حجم کمتر، کیفیت مناسب چت" else "عکس اصلی" + (if (size > 0) " (" + U.size(size) + ")" else ""),
+                            fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Switch(checked = compress, onCheckedChange = { compress = it })
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { Engine.prefs.edit().putBoolean("photo_compress", compress).apply(); onSend(compress) }) { Text("ارسال") }
+        },
+        dismissButton = { TextButton(onClick = onCancel) { Text("انصراف") } }
+    )
 }
