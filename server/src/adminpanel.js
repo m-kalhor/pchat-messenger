@@ -13,6 +13,7 @@ const auth = require('./auth');
 const diag = require('./diag');
 const callcfg = require('./callcfg');
 const stickers = require('./stickers');
+const usage = require('./usage');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
 const sessions = new Map(); // token -> { csrf, ts }
@@ -388,6 +389,7 @@ async function route(ctx, req, res, secure) {
     if (action === 'delete') {
       core.deleteUser(name);
       stickers.deleteUser(name);
+      usage.deleteUser(name);
       ctx.kick(name);
       try { fs.unlinkSync(path.join(DATA_DIR, 'avatars', name + '.webp')); } catch { }
       ctx.refreshAll();
@@ -455,6 +457,15 @@ async function route(ctx, req, res, secure) {
       messages: db.prepare('SELECT COUNT(*) AS n FROM messages').get().n,
       filesBytes: files.s, filesCount: files.n, dbBytes,
     }));
+  }
+
+  // 1.14: «مصرف کاربران» — messages, storage, traffic, calls, devices per user
+  if (sub === '/usage' && req.method === 'GET') {
+    const r = usage.report(ctx);
+    let dbBytes = 0, diskTotal = 0, diskFree = 0;
+    try { dbBytes = fs.statSync(path.join(DATA_DIR, 'messenger.db')).size; } catch { }
+    try { const s = fs.statfsSync(DATA_DIR); diskTotal = s.blocks * s.bsize; diskFree = s.bavail * s.bsize; } catch { }
+    return json(res, 200, { ...r, dbBytes, diskTotal, diskFree });
   }
 
   if (sub === '/backup' && req.method === 'GET') return json(res, 200, backupInfo());
