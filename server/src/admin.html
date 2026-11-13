@@ -377,7 +377,7 @@ function usageTab(box){
       function(r){return 'فایل‌ها '+fmtB(r.files_bytes)+' · متن پیام‌ها '+fmtB(r.text_bytes)+' · عکس پروفایل '+fmtB(r.avatar_bytes)+' · استیکرهای خودش '+fmtB(r.stickers_bytes)+' ('+fa(r.stickers)+')';}],
     ['traffic','ترافیک کل',function(r){return fmtB(r.traffic);},function(r){return 'آپلود '+fmtB(r.up)+' · دانلود '+fmtB(r.down);}],
     ['traffic30','ترافیک ۳۰ روز',function(r){return fmtB(r.traffic30);}],
-    ['calls','تماس',function(r){return fa(r.calls_out)+' ↗ / '+fa(r.calls_in)+' ↙';},function(){return 'گرفته ↗ / دریافتی ↙ (صوتی و تصویری)';}],
+    ['calls','تماس',function(r){return 'گرفته '+fa(r.calls_out)+' · دریافتی '+fa(r.calls_in);},function(){return 'صوتی و تصویری با هم';}],
     ['call_secs','مدت تماس',function(r){return dur(r.call_secs);}],
     ['devices','دستگاه',function(r){return fa(r.devices);},function(r){return r.device_names.join('، ');}],
     ['requests','درخواست ارسالی',function(r){return fa(r.requests);},function(){return 'درخواست ارتباط با افراد ناآشنا';}],
@@ -399,12 +399,12 @@ function usageTab(box){
       return h('th',{class:U.sort===c[0]?'on':'',title:'مرتب‌سازی',onclick:function(){if(U.sort===c[0])U.dir=-U.dir;else{U.sort=c[0];U.dir=c[0]==='username'?1:-1;}draw();}},c[1],U.sort===c[0]?(U.dir<0?' ▼':' ▲'):'');
     }));
     var list=rows();
-    var trs=list.map(function(r){return h('tr',null,COLS.map(function(c,i){return h('td',{class:i?'n':'',title:c[3]?c[3](r):''},c[2](r));}));});
+    var trs=list.map(function(r){return h('tr',null,COLS.map(function(c,i){return h('td',{class:i&&c[0]!=='calls'?'n':'',title:c[3]?c[3](r):''},c[2](r));}));});
     var sum=function(k){return list.reduce(function(a,r){return a+(r[k]||0);},0);};
     var t=h('tr',{class:'tot'},h('td',null,'جمع ('+fa(list.length)+' کاربر)'),h('td',{class:'n'},fa(sum('sent'))),h('td',{class:'n'},fa(sum('sent7'))),h('td',{class:'n'},fa(sum('sent30'))),h('td',{class:'n'},fa(sum('received'))),
       h('td',{class:'n'},fa(sum('files'))),h('td',{class:'n'},fmtB(sum('files_bytes'))),h('td',{class:'n'},fmtB(sum('storage'))),h('td',{class:'n'},fmtB(sum('traffic'))),h('td',{class:'n'},fmtB(sum('traffic30'))),
       h('td',{class:'n'},fa(sum('calls_out'))),h('td',{class:'n'},dur(sum('call_secs'))),h('td',{class:'n'},fa(sum('devices'))),h('td',{class:'n'},fa(sum('requests'))),h('td',{class:'n'},fa(sum('blocked_by'))),h('td'),h('td'));
-    tbl.replaceChildren(head,trs.length?trs:h('tr',null,h('td',{colspan:COLS.length,class:'mut'},'کاربری پیدا نشد')),t);
+    tbl.replaceChildren.apply(tbl,[head].concat(trs.length?trs:[h('tr',null,h('td',{colspan:COLS.length,class:'mut'},'کاربری پیدا نشد'))],[t]));
   }
   function csv(){
     if(!D)return;
