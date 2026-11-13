@@ -58,6 +58,10 @@ canvas{width:100%;height:150px;background:#0f1720;border-radius:8px;display:bloc
 .filt button.on{border-color:var(--pri);color:var(--text)}
 select{background:#0f1720;color:var(--text);border:1px solid var(--line);border-radius:8px;padding:6px}
 .leg span{display:inline-block;margin-left:12px}.leg i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-left:4px}
+.srt th{cursor:pointer;user-select:none}.srt th:hover{color:var(--text)}.srt th.on{color:var(--pri)}
+.srt td.n{direction:ltr;text-align:right}.srt tr.tot td{font-weight:bold;border-top:2px solid var(--line)}
+.bar{height:4px;background:var(--pri);border-radius:2px;margin-top:3px;min-width:1px}
+.tag{font-size:11px;background:#3a1d22;color:#ff8b8b;border-radius:6px;padding:1px 6px;margin-right:4px}
 </style>
 </head>
 <body>
@@ -160,7 +164,7 @@ async function reload(){S=await api('GET','/state');prune();render();}
 
 function render(){
   clearInterval(timer);
-  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود، پیامک و تماس'],['stk','استیکرها'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
+  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود، پیامک و تماس'],['stk','استیکرها'],['use','مصرف کاربران'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
   var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
   var box=h('main');
   var cnt=h('span',{class:'cnt'}),save=h('button',{class:'grn',onclick:saveAll},'ذخیرهٔ همهٔ تغییرات');
@@ -169,7 +173,7 @@ function render(){
   app.replaceChildren(
     h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},links:{},backup:null};showLogin();}},'خروج')),
     nav,smsAlert,box,bar.el);
-  ({users:users,cats:cats,links:links,login:loginTab,stk:stickersTab,mon:monitor,bak:backups,acct:account})[tab](box);
+  ({users:users,cats:cats,links:links,login:loginTab,stk:stickersTab,use:usageTab,mon:monitor,bak:backups,acct:account})[tab](box);
   checkSms();
   updateBar();
 }
@@ -339,6 +343,100 @@ function chart(cv,series,max,fmt){
     s.data.forEach(function(v,i){var x=n<2?0:i*(w/(n-1));var y=hh-2-(Math.min(v,max)/max)*(hh-4);if(i===0)g.moveTo(x,y);else g.lineTo(x,y);});
     g.stroke();});
   g.fillStyle='#8aa0b5';g.font='11px sans-serif';g.fillText(fmt(max),4,12);g.fillText('0',4,hh-4);
+}
+// ---------------- 1.14: usage per user (messages, storage, traffic, calls, devices) ----------------
+var U={sort:'storage',dir:-1,q:''};
+function usageTab(box){
+  var kv=h('div',{class:'kv'}),note=h('div',{class:'mut',style:'font-size:12px;line-height:1.9'});
+  var search=h('input',{placeholder:'جست‌وجوی نام، نام کاربری یا موبایل',value:U.q,oninput:function(){U.q=search.value;draw();}});
+  var csvBtn=h('button',{class:'sec',onclick:function(){csv();}},'خروجی CSV (اکسل)');
+  var reload=h('button',{class:'sec',onclick:function(){load();}},'به‌روزرسانی');
+  var tbl=h('table',{class:'srt'});
+  box.appendChild(h('div',{class:'card'},kv,note));
+  box.appendChild(h('div',{class:'card'},h('div',{class:'row'},search,reload,csvBtn),tbl));
+  var D=null;
+  var fa=function(n){return Number(n||0).toLocaleString('fa-IR');};
+  var dur=function(s){s=Math.round(s||0);if(!s)return '—';var hh=Math.floor(s/3600),m=Math.floor(s%3600/60);return hh?fa(hh)+' ساعت '+fa(m)+' دقیقه':m?fa(m)+' دقیقه':fa(s)+' ثانیه';};
+  var day=function(t){return t?new Date(t).toLocaleDateString('fa-IR'):'—';};
+  function ago(r){
+    if(r.online)return 'آنلاین';
+    if(!r.last_seen)return '—';
+    var m=Math.floor((D.now-r.last_seen)/60000);
+    if(m<60)return fa(m)+' دقیقه پیش';if(m<1440)return fa(Math.floor(m/60))+' ساعت پیش';return fa(Math.floor(m/1440))+' روز پیش';
+  }
+  // [key, header, cell, tooltip, csv value]
+  var COLS=[
+    ['username','کاربر',function(r){return [h('span',{class:'dot'+(r.online?' on':'')}),r.display_name||r.username,' ',h('small',{class:'mut'},'@'+r.username),r.disabled?h('span',{class:'tag'},'غیرفعال'):null];},function(r){return r.phone||'';}],
+    ['sent','پیام ارسالی',function(r){return fa(r.sent);},function(r){return 'خصوصی '+fa(r.sent-r.sent_group)+' · گروهی '+fa(r.sent_group);}],
+    ['sent7','۷ روز اخیر',function(r){return fa(r.sent7);}],
+    ['sent30','۳۰ روز اخیر',function(r){return fa(r.sent30);}],
+    ['received','پیام دریافتی',function(r){return fa(r.received);},function(){return 'فقط پیام‌های خصوصی';}],
+    ['files','فایل',function(r){return fa(r.files);}],
+    ['files_bytes','حجم فایل‌ها',function(r){return fmtB(r.files_bytes);}],
+    ['storage','فضای اشغالی',function(r){var p=tot.storage?100*r.storage/tot.storage:0;return [fmtB(r.storage)+' ('+p.toFixed(p<10?1:0)+'٪)',h('div',{class:'bar',style:'width:'+Math.max(1,Math.round(p))+'%'})];},
+      function(r){return 'فایل‌ها '+fmtB(r.files_bytes)+' · متن پیام‌ها '+fmtB(r.text_bytes)+' · عکس پروفایل '+fmtB(r.avatar_bytes)+' · استیکرهای خودش '+fmtB(r.stickers_bytes)+' ('+fa(r.stickers)+')';}],
+    ['traffic','ترافیک کل',function(r){return fmtB(r.traffic);},function(r){return 'آپلود '+fmtB(r.up)+' · دانلود '+fmtB(r.down);}],
+    ['traffic30','ترافیک ۳۰ روز',function(r){return fmtB(r.traffic30);}],
+    ['calls','تماس',function(r){return fa(r.calls_out)+' ↗ / '+fa(r.calls_in)+' ↙';},function(){return 'گرفته ↗ / دریافتی ↙ (صوتی و تصویری)';}],
+    ['call_secs','مدت تماس',function(r){return dur(r.call_secs);}],
+    ['devices','دستگاه',function(r){return fa(r.devices);},function(r){return r.device_names.join('، ');}],
+    ['requests','درخواست ارسالی',function(r){return fa(r.requests);},function(){return 'درخواست ارتباط با افراد ناآشنا';}],
+    ['blocked_by','بلاک‌شده',function(r){return r.blocked_by?h('b',{style:'color:#ff8b8b'},fa(r.blocked_by)):'۰';},function(){return 'تعداد کسانی که این کاربر را بلاک کرده‌اند';}],
+    ['last_seen','آخرین بازدید',function(r){return ago(r);}],
+    ['created','عضویت',function(r){return day(r.created);}]
+  ];
+  var tot={};
+  function val(r,k){if(k==='calls')return r.calls_out+r.calls_in;if(k==='username')return (r.display_name||r.username).toLowerCase();if(k==='last_seen')return r.online?Infinity:(r.last_seen||0);return r[k]||0;}
+  function rows(){
+    var q=U.q.trim().toLowerCase();
+    var list=D.rows.filter(function(r){return !q||r.username.indexOf(q)>=0||(r.display_name||'').toLowerCase().indexOf(q)>=0||(r.phone||'').indexOf(q)>=0;});
+    list.sort(function(a,b){var x=val(a,U.sort),y=val(b,U.sort);return (x<y?-1:x>y?1:0)*U.dir||a.username.localeCompare(b.username);});
+    return list;
+  }
+  function draw(){
+    if(!D)return;
+    var head=h('tr',null,COLS.map(function(c){
+      return h('th',{class:U.sort===c[0]?'on':'',title:'مرتب‌سازی',onclick:function(){if(U.sort===c[0])U.dir=-U.dir;else{U.sort=c[0];U.dir=c[0]==='username'?1:-1;}draw();}},c[1],U.sort===c[0]?(U.dir<0?' ▼':' ▲'):'');
+    }));
+    var list=rows();
+    var trs=list.map(function(r){return h('tr',null,COLS.map(function(c,i){return h('td',{class:i?'n':'',title:c[3]?c[3](r):''},c[2](r));}));});
+    var sum=function(k){return list.reduce(function(a,r){return a+(r[k]||0);},0);};
+    var t=h('tr',{class:'tot'},h('td',null,'جمع ('+fa(list.length)+' کاربر)'),h('td',{class:'n'},fa(sum('sent'))),h('td',{class:'n'},fa(sum('sent7'))),h('td',{class:'n'},fa(sum('sent30'))),h('td',{class:'n'},fa(sum('received'))),
+      h('td',{class:'n'},fa(sum('files'))),h('td',{class:'n'},fmtB(sum('files_bytes'))),h('td',{class:'n'},fmtB(sum('storage'))),h('td',{class:'n'},fmtB(sum('traffic'))),h('td',{class:'n'},fmtB(sum('traffic30'))),
+      h('td',{class:'n'},fa(sum('calls_out'))),h('td',{class:'n'},dur(sum('call_secs'))),h('td',{class:'n'},fa(sum('devices'))),h('td',{class:'n'},fa(sum('requests'))),h('td',{class:'n'},fa(sum('blocked_by'))),h('td'),h('td'));
+    tbl.replaceChildren(head,trs.length?trs:h('tr',null,h('td',{colspan:COLS.length,class:'mut'},'کاربری پیدا نشد')),t);
+  }
+  function csv(){
+    if(!D)return;
+    var cols=['username','display_name','phone','disabled','sent','sent_group','sent7','sent30','received','files','files_bytes','text_bytes','avatar_bytes','stickers_bytes','storage','up','down','traffic','traffic30','calls_out','calls_in','call_secs','devices','requests','blocked_by','last_seen','created'];
+    var esc=function(v){v=v==null?'':String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
+    var iso=function(t){return t?new Date(t).toISOString().replace('T',' ').slice(0,16):'';};
+    var lines=[cols.join(',')].concat(rows().map(function(r){return cols.map(function(k){return esc(k==='last_seen'||k==='created'?iso(r[k]):r[k]);}).join(',');}));
+    var a=h('a',{href:'data:text/csv;charset=utf-8,'+encodeURIComponent('﻿'+lines.join('\r\n')),download:'sepan-usage-'+new Date().toISOString().slice(0,10)+'.csv'});
+    document.body.appendChild(a);a.click();a.remove();
+  }
+  async function load(){
+    try{D=await api('GET','/usage');}catch(e){note.textContent='خطا: '+msg(e);return;}
+    tot={storage:D.rows.reduce(function(a,r){return a+r.storage;},0)};
+    var all=function(k){return D.rows.reduce(function(a,r){return a+(r[k]||0);},0);};
+    var top=D.rows.slice().sort(function(a,b){return b.storage-a.storage;})[0];
+    kv.replaceChildren(
+      h('div',null,'کاربران',h('b',null,fa(D.rows.length)+' ('+fa(D.rows.filter(function(r){return r.online;}).length)+' آنلاین)')),
+      h('div',null,'پیام‌های روی سرور',h('b',null,fa(all('sent')))),
+      h('div',null,'فضای اشغالی کاربران',h('b',null,fmtB(tot.storage))),
+      h('div',null,'حجم دیتابیس',h('b',null,fmtB(D.dbBytes))),
+      h('div',null,'دیسک سرور',h('b',null,fmtB(D.diskTotal-D.diskFree)+' / '+fmtB(D.diskTotal))),
+      h('div',null,'ترافیک کاربران',h('b',null,fmtB(all('traffic')))),
+      h('div',null,'تماس‌ها',h('b',null,fa(all('calls_out'))+' · '+dur(all('call_secs')/2))),
+      top&&top.storage?h('div',null,'بیشترین فضا',h('b',null,(top.display_name||top.username)+' · '+fmtB(top.storage))):null);
+    note.replaceChildren(
+      'پیام‌ها پس از ۹۰ روز و فایل‌ها پس از ۳۰ روز خودکار از سرور پاک می‌شوند؛ این جدول وضعیت فعلی سرور را نشان می‌دهد. ',
+      'ترافیک و تماس‌ها '+(D.since?'از '+day(new Date(D.since+'T00:00:00Z').getTime()):'از همین نسخه')+' شمرده می‌شوند. ',
+      'نوع پیام (متن، عکس، صدا) و صوتی یا تصویری بودن تماس به‌خاطر رمزنگاری سرتاسری برای سرور معلوم نیست. ',
+      'روی عنوان هر ستون بزنید تا مرتب شود؛ نشانگر را روی خانه‌ها نگه دارید تا جزئیات را ببینید.');
+    draw();
+  }
+  load();
 }
 function monitor(box){
   var kv=h('div',{class:'kv'});

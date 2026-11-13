@@ -9,7 +9,7 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 
-const VERSION = '1.13.2';
+const VERSION = '1.14.0';
 const S = E.S;
 const app = document.getElementById('app');
 

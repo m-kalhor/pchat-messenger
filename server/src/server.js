@@ -16,6 +16,7 @@ const diag = require('./diag');
 const callcfg = require('./callcfg');
 const { apkVersion } = require('./apkinfo');
 const stickers = require('./stickers');
+const usage = require('./usage');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -526,6 +527,7 @@ async function route(req, res) {
   const a = authInfo(req);
   if (!a) return send(res, 401, { error: 'unauthorized' });
   const user = a.user;
+  usage.track(user, req, res); // 1.14: per-user traffic for the admin panel (request/response bodies)
 
   if (p === '/api/logout' && req.method === 'POST') { q.delSess.run(a.th); return send(res, 200, { ok: true }); }
 
@@ -813,7 +815,9 @@ async function route(req, res) {
     if (tr.error) return send(res, tr.code, { error: tr.error });
     if (kind.startsWith('sig_')) { // live-only signalling (typing, calls) — private chats only, never stored
       if (tr.type !== 'dm') return send(res, 400, { error: 'sig_needs_target' });
-      return send(res, 200, { delivered: emit(target, 'sig', { from: user, kind, payload: b.payload }) });
+      const delivered = emit(target, 'sig', { from: user, kind, payload: b.payload });
+      usage.signal(user, target, kind, delivered); // 1.14: call counts and lengths
+      return send(res, 200, { delivered });
     }
     let fileId = null;
     if (b.fileId != null) {
@@ -1175,6 +1179,7 @@ function cleanup() {
     db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     push.cleanup();
+    usage.cleanup();
     auth.cleanup();
     db.prepare('DELETE FROM msg_changes WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
     db.prepare('DELETE FROM sessions WHERE created<?').run(now() - SESSION_DAYS * DAY);
@@ -1193,6 +1198,7 @@ setInterval(cleanup, 3600e3);
 cleanup();
 
 stats.start();
+usage.start();
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
