@@ -1894,11 +1894,14 @@ function StickerPackScreen(id) {
 }
 
 // ---------------- call screen (overlay above everything) ----------------
-let callEl = null, callTick = null, callSwap = false, routeMenu = null; // routeMenu (1.15): null | 'top' | 'server'
+let callEl = null, callTick = null, callSwap = false, routeLevel = 'top'; // routeLevel (1.15): 'top' | 'server'
+// 1.15: the 🔀 path panel is shown; the button toggles it like the ping eye and the choice is remembered
+const routePanelOn = () => { try { return localStorage.getItem('sepan_route_panel') !== '0'; } catch { return true; } };
+const setRoutePanel = (v) => { try { localStorage.setItem('sepan_route_panel', v ? '1' : '0'); } catch { } };
 function renderCall(c) {
   if (c.phase === 'idle') {
     if (callEl) { callEl.remove(); callEl = null; clearInterval(callTick); Diag.detach(); }
-    callSwap = false; routeMenu = null;
+    callSwap = false; routeLevel = 'top';
     if (c.note) toast(c.note);
     return;
   }
@@ -1932,9 +1935,8 @@ function renderCall(c) {
   let status = c.note;
   if (c.phase === 'active') { const s = Math.floor((Date.now() - c.startedAt) / 1000); status = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   else if (c.phase === 'incoming') status = c.video ? 'تماس تصویری ورودی' : 'تماس صوتی ورودی';
-  // 1.15: the path in use, and a note while it changes or when a path could not be reached
-  const routeLine = c.canRoute && c.phase === 'active'
-    ? h('div', { class: 'route-now' }, c.routing ? 'در حال تغییر مسیر…' : (c.path ? 'مسیر: ' + c.path : ''), c.note ? h('div', null, c.note) : null) : null;
+  // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
+  const routeLine = c.canRoute && c.phase === 'active' && c.note ? h('div', { class: 'route-now' }, c.note) : null;
   const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status), routeLine);
   const btn = (label, cls, fn, title) => h('button', { class: 'cb ' + cls, title, onclick: fn }, label);
   const ctrls = c.phase === 'incoming'
@@ -1943,25 +1945,27 @@ function renderCall(c) {
       btn(c.muted ? '🔇' : '🎙', c.muted ? 'on' : '', Call.toggleMute, 'قطع صدا'),
       localVideo ? btn(c.camOff ? '🚫' : '📷', c.camOff ? 'on' : '', Call.toggleCamera, 'دوربین') : null,
       localVideo ? btn('🔄', '', Call.switchCamera, 'چرخش دوربین') : null,
-      c.canRoute && c.phase === 'active'
-        ? btn('🔀', routeMenu ? 'on' : '', () => { routeMenu = routeMenu ? null : 'top'; renderCall(Call.C); },
-          c.peerRoute ? 'مسیر اتصال' : 'طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست') : null,
       btn('✕', 'red', Call.hangup, 'پایان تماس'));
-  if (ctrls.querySelector('button[title^="طرف مقابل"]')) ctrls.querySelector('button[title^="طرف مقابل"]').disabled = true;
-  // 1.15: path menu as a small tree: خودکار / مستقیم / از طریق سرور › UDP, TCP, TLS
+  // 1.15: 🔀 button + small see-through panel (at most a third of the screen wide):
+  // خودکار / مستقیم / سرور › UDP, TCP, TLS. The button shows / hides the panel, remembered.
   let menu = null;
-  if (routeMenu && c.canRoute && c.peerRoute && c.phase === 'active') {
-    const pick = (m) => () => { routeMenu = null; Call.setRoute(m); renderCall(Call.C); };
-    const item = (m, label) => h('button', { class: 'ri' + (c.route === m ? ' cur' : ''), disabled: c.routing || !c.routes.includes(m), onclick: pick(m) }, (c.route === m ? '✓ ' : '') + label);
-    const server = ['udp', 'tcp', 'tls'].includes(c.route);
-    menu = routeMenu === 'server'
-      ? h('div', { class: 'route-menu' },
-        h('button', { class: 'ri back', onclick: () => { routeMenu = 'top'; renderCall(Call.C); } }, '→ از طریق سرور'),
-        item('udp', 'UDP (سریع‌تر)'), item('tcp', 'TCP'), item('tls', 'TLS (پورت ۵۳۴۹، شبیه https)'))
-      : h('div', { class: 'route-menu' },
-        h('div', { class: 'rt' }, 'مسیر اتصال'),
-        item('auto', 'خودکار'), item('direct', 'مستقیم (UDP)'),
-        h('button', { class: 'ri' + (server ? ' cur' : ''), disabled: c.routing, onclick: () => { routeMenu = 'server'; renderCall(Call.C); } }, (server ? '✓ ' : '') + 'از طریق سرور ‹'));
+  if (c.canRoute && c.phase === 'active') {
+    const shown = routePanelOn() && c.peerRoute;
+    const tog = h('button', { class: 'rtog' + (shown ? ' on' : ''), title: c.peerRoute ? 'نمایش / پنهان کردن مسیر اتصال' : 'طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست', disabled: !c.peerRoute,
+      onclick: () => { setRoutePanel(!routePanelOn()); renderCall(Call.C); } }, '🔀');
+    let panel = null;
+    if (shown) {
+      const pick = (m) => () => { routeLevel = 'top'; Call.setRoute(m); renderCall(Call.C); };
+      const item = (m, label) => h('button', { class: 'ri' + (c.route === m ? ' cur' : ''), disabled: c.routing || !c.routes.includes(m), onclick: pick(m) }, (c.route === m ? '✓ ' : '') + label);
+      const server = ['udp', 'tcp', 'tls'].includes(c.route);
+      const head = h('div', { class: 'rt' }, c.routing ? 'در حال تغییر…' : (c.path || 'مسیر اتصال'));
+      panel = routeLevel === 'server'
+        ? h('div', { class: 'rp' }, head, h('button', { class: 'ri back', onclick: () => { routeLevel = 'top'; renderCall(Call.C); } }, '→ سرور'),
+          item('udp', 'UDP'), item('tcp', 'TCP'), item('tls', 'TLS'))
+        : h('div', { class: 'rp' }, head, item('auto', 'خودکار'), item('direct', 'مستقیم'),
+          h('button', { class: 'ri' + (server ? ' cur' : ''), disabled: c.routing, onclick: () => { routeLevel = 'server'; renderCall(Call.C); } }, (server ? '✓ ' : '') + 'سرور ‹'));
+    }
+    menu = h('div', { class: 'route-menu' }, tog, panel);
   }
   callEl.querySelectorAll('.info, .ctrls, .route-menu').forEach((x) => x.remove());
   callEl.append(info, ctrls);

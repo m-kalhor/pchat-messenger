@@ -204,14 +204,18 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .call .cb.red { background: #e53935; }
 .call .cb.green { background: #43a047; }
 .call .cb:disabled { opacity: .4; }
-/* 1.15: call path menu */
-.call .route-now { margin-top: 6px; font-size: 13px; opacity: .85; }
-.call .route-menu { position: absolute; bottom: calc(env(safe-area-inset-bottom) + 120px); z-index: 3; background: rgba(16, 32, 47, .92); border-radius: 14px; padding: 6px; min-width: 230px; display: flex; flex-direction: column; box-shadow: 0 4px 16px rgba(0, 0, 0, .4); }
-.call .route-menu .rt { font-size: 13px; opacity: .7; padding: 6px 10px; }
-.call .route-menu .ri { background: none; border: 0; color: #fff; text-align: right; padding: 11px 12px; font-size: 15px; border-radius: 10px; font-family: inherit; }
-.call .route-menu .ri:hover:not(:disabled) { background: rgba(255, 255, 255, .1); }
+/* 1.15: call path panel: top-left, at most a third of the screen wide, see-through */
+.call .route-now { margin-top: 6px; font-size: 13px; color: #ffcc80; }
+.call .route-menu { position: absolute; top: 34%; right: 12px; z-index: 3; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; max-width: 33vw; }
+.call .route-menu .rtog { width: 40px; height: 40px; border-radius: 50%; border: 0; font-size: 18px; background: rgba(255, 255, 255, .2); color: #fff; }
+.call .route-menu .rtog.on { background: rgba(51, 144, 236, .4); }
+.call .route-menu .rtog:disabled { opacity: .4; }
+.call .route-menu .rp { background: rgba(16, 32, 47, .5); border-radius: 10px; padding: 4px; display: flex; flex-direction: column; width: max-content; max-width: 33vw; }
+.call .route-menu .rt { font-size: 11px; opacity: .7; padding: 3px 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call .route-menu .ri { background: none; border: 0; color: #fff; text-align: right; padding: 7px 8px; font-size: 13px; border-radius: 8px; font-family: inherit; white-space: nowrap; }
+.call .route-menu .ri:hover:not(:disabled) { background: rgba(255, 255, 255, .12); }
 .call .route-menu .ri.cur { color: #64b5f6; }
-.call .route-menu .ri.back { opacity: .8; font-size: 13px; }
+.call .route-menu .ri.back { opacity: .8; }
 .call .route-menu .ri:disabled { opacity: .4; }
 .setting select { width: auto; max-width: 55%; flex: none; }
 /* forward / edit / selection (1.3) */
