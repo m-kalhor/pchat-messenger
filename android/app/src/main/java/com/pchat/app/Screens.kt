@@ -23,6 +23,11 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
@@ -66,6 +71,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import android.widget.Toast
+import android.Manifest
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.platform.LocalContext
 
@@ -114,7 +120,13 @@ fun LoginScreen() {
     var newName by remember { mutableStateOf("") }
     var byPassword by remember { mutableStateOf(false) }
     var codeStep by remember { mutableStateOf(false) }
+    val ctx = LocalContext.current
+    // 1.17: country picker + the national number without its leading 0; the server gets "+98912…"
+    var country by remember { mutableStateOf(Countries.guess(ctx)) }
+    var pickCountry by remember { mutableStateOf(false) }
     var phone by remember { mutableStateOf("") }
+    val full = Countries.join(country, phone)
+    val shown = "\u200E" + full
     var code by remember { mutableStateOf("") }
     var user by remember { mutableStateOf("") }
     var pass by remember { mutableStateOf("") }
@@ -134,12 +146,19 @@ fun LoginScreen() {
 
     fun sendSms() {
         if (phone.isBlank()) { error = "شمارهٔ موبایل را وارد کنید"; return }
+        if (!Countries.valid(country, phone)) { error = "شمارهٔ موبایل درست نیست؛ شماره را بدون ۰ اول بنویسید"; return }
+        if (!full.startsWith("+98")) {
+            // the SMS line is Iranian: a foreign number signs in with a code from another device or the admin
+            codeStep = true; error = null
+            info = "پیامک ورود فعلاً فقط برای شماره‌های ایران فرستاده می‌شود. کد ورود را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید و این‌جا وارد کنید."
+            return
+        }
         busy = true; error = null
         scope.launch {
-            val (err, w) = Engine.requestSms(phone)
+            val (err, w) = Engine.requestSms(full)
             busy = false
             when {
-                err == null -> { codeStep = true; wait = w; info = "کد ۵ رقمی به ${phone.trim()} پیامک شد." }
+                err == null -> { codeStep = true; wait = w; info = "کد ۵ رقمی به $shown پیامک شد." }
                 w > 0 -> { codeStep = true; wait = w; error = err }
                 err == SMS_DOWN -> { codeStep = true; error = err }
                 else -> error = err
@@ -164,7 +183,7 @@ fun LoginScreen() {
         Spacer(Modifier.height(6.dp))
         Text(
             when {
-                signupStep -> "شمارهٔ ${phone.trim()} تأیید شد. یک نام کاربری برای خودتان انتخاب کنید."
+                signupStep -> "شمارهٔ $shown تأیید شد. یک نام کاربری برای خودتان انتخاب کنید."
                 byPassword -> "نام کاربری و رمز را مدیر سرور به شما داده است"
                 cfgSignup -> "با شمارهٔ موبایل وارد شوید؛ اگر حساب ندارید، همین‌جا ساخته می‌شود"
                 else -> "با شمارهٔ موبایلی که مدیر برای شما ثبت کرده"
@@ -223,13 +242,29 @@ fun LoginScreen() {
                 modifier = Modifier.fillMaxWidth()
             )
         } else {
-            OutlinedTextField(
-                value = phone, onValueChange = { phone = it }, singleLine = true, label = { Text("شمارهٔ موبایل") },
-                placeholder = { Text("+98 912 345 6789") },
-                supportingText = { Text("با پیش‌شمارهٔ کشور (+98…) یا به شکل 09…") },
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                modifier = Modifier.fillMaxWidth()
-            )
+            OutlinedButton(
+                onClick = { pickCountry = true }, enabled = !busy && !codeStep,
+                modifier = Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(6.dp)
+            ) {
+                Text(country.flag, fontSize = 20.sp)
+                Spacer(Modifier.width(10.dp))
+                Text(country.name, fontSize = 15.sp, modifier = Modifier.weight(1f), color = MaterialTheme.colorScheme.onBackground)
+                Text("\u200E+" + country.dial + "  ▾", fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.7f))
+            }
+            Spacer(Modifier.height(10.dp))
+            // the number reads left to right, after the country code, like on the phone's dialler
+            CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
+                OutlinedTextField(
+                    value = phone, onValueChange = { phone = Countries.clean(it) }, singleLine = true, enabled = !codeStep,
+                    label = { Text("شمارهٔ موبایل") },
+                    prefix = { if (!phone.startsWith("+")) Text("+" + country.dial + " ") },
+                    placeholder = { Text(if (country.dial == "98") "912 345 6789" else "") },
+                    supportingText = { Text("شماره را بدون ۰ اول بنویسید") },
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (pickCountry) CountryPicker(onPick = { country = it; pickCountry = false; error = null }, onClose = { pickCountry = false })
             if (codeStep) {
                 Spacer(Modifier.height(12.dp))
                 OutlinedTextField(
@@ -255,7 +290,7 @@ fun LoginScreen() {
                 else {
                     busy = true; error = null
                     scope.launch {
-                        val r = if (byPassword) Engine.login(user, pass) else Engine.codeLogin(phone, code)
+                        val r = if (byPassword) Engine.login(user, pass) else Engine.codeLogin(full, code)
                         if (r == SIGNUP) { signupStep = true; error = null; info = null } else error = r
                         busy = false
                     }
@@ -298,6 +333,7 @@ fun LoginScreen() {
 @Composable
 fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: () -> Unit) {
     val ctx = LocalContext.current
+    val scope = rememberCoroutineScope()
     val tick by Engine.tick.collectAsState()
     val users by Engine.users.collectAsState()
     val connected by Engine.connected.collectAsState()
@@ -318,6 +354,30 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     var addContact by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
     val incoming by Engine.incomingRequests.collectAsState()
+
+    // 1.17: members among the phone's contacts. Asked once after sign-in, then kept up to date by itself.
+    val phoneMatches by Engine.phoneMatches.collectAsState()
+    var askContacts by remember { mutableStateOf(false) }
+    var contactsGranted by remember { mutableStateOf(Engine.hasContactsPermission()) }
+    var opening by remember { mutableStateOf(false) }
+    val contactsPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        contactsGranted = ok
+        if (ok) scope.launch { Engine.syncContacts(force = true) }
+    }
+    LaunchedEffect(Unit) {
+        Engine.syncContacts()
+        if (!Engine.hasContactsPermission() && !Engine.contactsAsked) { delay(1500); askContacts = true }
+    }
+    /** Opens the chat with a member from the contacts (a stranger first goes through a message request). */
+    fun openMember(u: String) {
+        if (opening) return
+        opening = true
+        scope.launch {
+            val (name, err) = Engine.findUser(u)
+            opening = false
+            if (name != null) onOpen(name) else if (err != null) Toast.makeText(ctx, err, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     SystemBars.HeaderShown()
     Scaffold(
@@ -418,8 +478,53 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
               }
             }
+            // 1.17: «مخاطبان گوشی در سپن»: members in the phone's contacts who have no chat here yet
+            val inList = rows.map { it.convo }.toSet()
+            val extra = phoneMatches.filter { it.username !in inList }
+            if (extra.isNotEmpty() || !contactsGranted) item(key = "phone_contacts_header") {
+                Text(
+                    "مخاطبان گوشی در سپن", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f)).padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+            if (!contactsGranted) item(key = "phone_contacts_ask") {
+                Row(
+                    Modifier.fillMaxWidth().clickable { contactsPerm.launch(Manifest.permission.READ_CONTACTS) }.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("📇", fontSize = 22.sp)
+                    Spacer(Modifier.width(12.dp))
+                    Text("ببینید کدام مخاطبان گوشی‌تان سپن دارند", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("اجازه", color = MaterialTheme.colorScheme.primary)
+                }
+            }
+            items(extra, key = { "pc:" + it.username }) { f ->
+                Column {
+                    Row(
+                        Modifier.fillMaxWidth().clickable(enabled = !opening) { openMember(f.username) }.padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Avatar(f.username, users.firstOrNull { it.username == f.username }?.online ?: false)
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(f.name ?: f.displayName ?: f.username, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text("@" + f.username + " · \u200E" + f.phone, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                        Text(if (f.connected) "گفتگو" else "پیام", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+                    }
+                    HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                }
+            }
         }
     }
+    if (askContacts) AlertDialog(
+        onDismissRequest = { askContacts = false; Engine.contactsAsked = true },
+        title = { Text("مخاطبان شما در سپن") },
+        text = { Text("سپن می‌تواند ببیند کدام‌یک از مخاطبان گوشی‌تان سپن را نصب کرده‌اند تا آن‌ها را این‌جا ببینید. شماره‌ها فقط روی سرور مقایسه می‌شوند و نگه داشته نمی‌شوند.", fontSize = 14.sp) },
+        confirmButton = { TextButton(onClick = { askContacts = false; Engine.contactsAsked = true; contactsPerm.launch(Manifest.permission.READ_CONTACTS) }) { Text("اجازه می‌دهم") } },
+        dismissButton = { TextButton(onClick = { askContacts = false; Engine.contactsAsked = true }) { Text("بعداً") } }
+    )
     if (addContact) AddContactDialog(onClose = { addContact = false }, onOpen = onOpen)
     if (showRequests) RequestsDialog(onClose = { showRequests = false }, onOpen = onOpen)
 }

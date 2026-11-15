@@ -8,8 +8,9 @@ import * as Emoji from './emoji.mjs';
 import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
+import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.16.0';
+const VERSION = '1.17.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -488,7 +489,24 @@ function LoginScreen() {
   const reason = logoutReason || '';
   logoutReason = null;
   const input = (ph, extra) => h('input', { type: 'text', placeholder: ph, class: 'ltr', autocapitalize: 'off', autocorrect: 'off', spellcheck: 'false', ...extra });
-  const phone = input('شمارهٔ موبایل، مثل ‎+98 936 575 1198', { inputmode: 'tel', autocomplete: 'tel' });
+  // 1.17: country picker + the national number without its leading 0; the server gets "+98912…"
+  const country = h('select', { 'aria-label': 'کشور' }, COUNTRIES.map(([iso, name, dial]) => h('option', { value: iso }, flag(iso) + ' ' + name + '  \u200E+' + dial)));
+  try { const last = localStorage.getItem('sepan_country'); if (last && COUNTRIES.some((c) => c[0] === last)) country.value = last; } catch { }
+  const dialOf = () => (COUNTRIES.find((c) => c[0] === country.value) || COUNTRIES[0])[2];
+  const phone = input('912 345 6789', { inputmode: 'tel', autocomplete: 'tel-national' });
+  const dialEl = h('span', { class: 'dial' });
+  const phRow = h('div', { class: 'phrow' }, dialEl, phone);
+  const showDial = () => { dialEl.textContent = '+' + dialOf(); dialEl.style.display = phone.value.trim().startsWith('+') ? 'none' : ''; phone.placeholder = dialOf() === '98' ? '912 345 6789' : 'شماره بدون ۰ اول'; };
+  phone.addEventListener('input', () => {
+    const v = phone.value.replace(/[۰-۹]/g, (c) => c.charCodeAt(0) - 0x6f0).replace(/[٠-٩]/g, (c) => c.charCodeAt(0) - 0x660);
+    phone.value = v.trim().startsWith('+') ? '+' + v.replace(/\D/g, '').slice(0, 15) : v.replace(/\D/g, '').replace(/^0+/, '').slice(0, 14);
+    showDial();
+  });
+  country.addEventListener('change', () => { try { localStorage.setItem('sepan_country', country.value); } catch { } showDial(); });
+  showDial();
+  const fullPhone = () => joinPhone(dialOf(), phone.value);
+  const shownPhone = () => '\u200E' + fullPhone();
+  const phoneHint = h('div', { class: 'hint', style: { margin: '-6px 0 0' } }, 'شماره را بدون ۰ اول بنویسید');
   const code = input('کد', { inputmode: 'numeric', autocomplete: 'one-time-code', maxLength: 8 });
   const user = input('نام کاربری', { autocomplete: 'username' });
   const pass = h('input', { type: 'password', placeholder: 'رمز عبور', autocomplete: 'current-password', class: 'ltr' });
@@ -521,15 +539,24 @@ function LoginScreen() {
   }
   async function sendSms(btn) {
     if (!phone.value.trim()) { err.textContent = 'شمارهٔ موبایل را وارد کنید'; return; }
+    const full = fullPhone();
+    if (full.startsWith('+98') ? !/^\+989\d{9}$/.test(full) : !/^\+[1-9]\d{6,14}$/.test(full)) { err.textContent = 'شمارهٔ موبایل درست نیست؛ شماره را بدون ۰ اول بنویسید'; return; }
+    if (!full.startsWith('+98')) {
+      // the SMS line is Iranian: a foreign number signs in with a code from another device or the admin
+      step = 'code'; render();
+      info.textContent = 'پیامک ورود فعلاً فقط برای شماره‌های ایران فرستاده می‌شود. کد ورود را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید و این‌جا وارد کنید.';
+      code.focus();
+      return;
+    }
     await busy(btn, async () => {
-      try { await api.smsCode(phone.value); }
+      try { await api.smsCode(full); }
       catch (ex) {
         if (ex instanceof api.HttpError && ex.body.error === 'wait') { step = 'code'; render(); countdown(ex.body.wait || 60); return; }
         if (ex instanceof api.HttpError && ex.body.error === 'sms_unavailable') { step = 'code'; render(); }
         throw ex;
       }
       step = 'code'; render();
-      info.textContent = 'کد ۵ رقمی به ' + phone.value.trim() + ' پیامک شد.';
+      info.textContent = 'کد ۵ رقمی به ' + shownPhone() + ' پیامک شد.';
       countdown(60);
       code.focus();
     });
@@ -551,7 +578,7 @@ function LoginScreen() {
     }
     if (!phone.value.trim() || !code.value.trim()) { err.textContent = 'شمارهٔ موبایل و کد را وارد کنید'; return; }
     return busy(loginBtn, async () => {
-      const r = await E.codeLogin(phone.value, code.value);
+      const r = await E.codeLogin(fullPhone(), code.value);
       if (r && r.signup) { ticket = r.ticket; step = 'signup'; clearInterval(timer); render(); uname.focus(); }
     });
   }
@@ -565,13 +592,14 @@ function LoginScreen() {
     if (step === 'signup') {
       loginBtn.textContent = 'ساخت حساب';
       fill(box,
-        h('div', { class: 'hint', style: { margin: 0 } }, 'شمارهٔ ' + phone.value.trim() + ' تأیید شد و هنوز حسابی ندارد. یک نام کاربری انتخاب کنید؛ دیگران با همین نام شما را پیدا می‌کنند.'),
+        h('div', { class: 'hint', style: { margin: 0 } }, 'شمارهٔ ' + shownPhone() + ' تأیید شد و هنوز حسابی ندارد. یک نام کاربری انتخاب کنید؛ دیگران با همین نام شما را پیدا می‌کنند.'),
         uname, dname, err, loginBtn,
         link('انصراف', () => { step = 'phone'; ticket = null; loginBtn.textContent = 'ورود'; render(); }));
       return;
     }
+    country.disabled = phone.disabled = step === 'code';
     fill(box,
-      phone,
+      country, phRow, step === 'phone' ? phoneHint : null,
       step === 'code' ? [code, info] : null,
       step === 'phone' && cfg.signup ? h('div', { class: 'hint', style: { margin: 0 } }, 'حساب ندارید؟ با همین شماره و کد پیامکی ثبت‌نام می‌شوید.') : null,
       step === 'phone' && noSms ? h('div', { class: 'hint', style: { margin: 0 } }, 'ورود با پیامک روی این سرور فعال نیست. کد ورود را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید.') : null,

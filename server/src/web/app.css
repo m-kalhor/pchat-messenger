@@ -307,3 +307,7 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .m.me .bubble.sticker .meta { margin-left: 0; }
 .stk-maker { width: 280px; height: 280px; touch-action: none; border-radius: 12px; cursor: move;
   background: repeating-conic-gradient(var(--bg2) 0 25%, var(--bg) 0 50%) 0 0 / 20px 20px; }
+/* 1.17: sign-in number after the country code, read left to right */
+.phrow { display: flex; align-items: stretch; direction: ltr; gap: 6px; }
+.phrow .dial { display: flex; align-items: center; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg2); font-size: 16px; color: var(--fg2); white-space: nowrap; }
+.phrow input { flex: 1; min-width: 0; }
