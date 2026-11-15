@@ -2002,7 +2002,7 @@ function CallsScreen() {
   const list = h('div', { class: 'scroll' });
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
     h('div', { class: 'bar' }, h('h1', null, 'تماس‌ها'),
-      h('button', { class: 'icon', title: 'تماس جدید', onclick: newCall }, '📞➕')),
+      h('button', { class: 'icon newcall', title: 'تماس جدید', onclick: newCall }, '📞+')),
     tabsRow('calls'), list);
   const render = batched(() => {
     const logs = [];
@@ -2025,7 +2025,7 @@ function CallsScreen() {
           group ? h('button', { class: 'icon', title: 'تماس گروهی', onclick: () => groupCall(m.convo) }, '📞')
             : h('button', { class: 'icon', title: 'تماس', onclick: () => Call.startCall(m.convo, false) }, '📞'));
       }),
-      !logs.length && !live.length ? h('div', { class: 'empty' }, 'هنوز تماسی ندارید. با دکمهٔ 📞➕ با یک یا چند نفر تماس بگیرید.') : null);
+      !logs.length && !live.length ? h('div', { class: 'empty' }, 'هنوز تماسی ندارید. با دکمهٔ 📞+ با یک یا چند نفر تماس بگیرید.') : null);
   });
   render();
   return { el, update: (k) => { if (k === 'msg' || k === 'gcall' || k === 'users') render(); } };
@@ -2045,6 +2045,7 @@ function renderGcall(g) {
     gcTick = setInterval(() => renderGcall(GC.G), 1000);
   }
   const r = g.room;
+  if (!r) { fill(gcEl, h('div', { class: 'info' }, h('h2', null, 'تماس گروهی'), h('div', null, g.note || 'در حال پیوستن…'))); return; }
   const title = r.title || (r.host === S.me ? 'تماس گروهی' : E.nameOf(r.host));
   const btn = (label, cls, fn, t) => h('button', { class: 'cb ' + cls, title: t, onclick: fn }, label);
   if (g.phase === 'incoming') {

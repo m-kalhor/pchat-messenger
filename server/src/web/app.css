@@ -341,3 +341,5 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .call.gcall .tile .ti { position: absolute; top: 6px; left: 8px; font-size: 16px; }
 .call.gcall .tile .treact { position: absolute; top: 4px; right: 8px; font-size: 30px; animation: gcpop .3s ease-out; }
 @keyframes gcpop { from { transform: scale(.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.call.gcall .gtop .icon, .bar .icon.newcall { white-space: nowrap; font-size: 16px; }
+.bar .icon.newcall { width: auto; padding: 0 10px; }
