@@ -18,6 +18,8 @@ const { apkVersion } = require('./apkinfo');
 const stickers = require('./stickers');
 const usage = require('./usage');
 const gcall = require('./gcall');
+const ugroups = require('./ugroups');
+const { domainName } = require('./web');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -239,6 +241,118 @@ function kick(username) {
 const gcalls = gcall.create({ core, emit, isConnected, usage, okEmoji: (e) => okEmoji(e) });
 setInterval(() => gcalls.sweep(), 10000);
 const gcallCfgFor = () => { const c = gcall.cfg(); return { on: c.on, video: c.video, max_voice: c.max_voice, max_video: c.max_video }; };
+
+// ---------- 1.20: groups users make themselves ----------
+function ugroupsFor(user) {
+  const c = ugroups.cfg();
+  return { on: c.on, limit: ugroups.limitOf(user), owned: ugroups.ownedCount(user), max_members: c.max_members, calls: c.calls };
+}
+function groupModerator(user, target) {
+  if (!/^g:\d+$/.test(target)) return false;
+  const g = core.groupByKey(target);
+  return ugroups.isUser(g) && ugroups.canManage(user, g);
+}
+/** Where an invite link opens: the web app on the domain (or the server address). */
+function inviteLink(token) {
+  if (!token) return null;
+  const dom = PLAIN ? '' : domainName(path.join(CERT_DIR, 'le'));
+  const port = +(process.env.WEB_PORT || 443);
+  const host = dom || PUBLIC_HOST;
+  if (!host) return null;
+  return `https://${host}${port === 443 ? '' : ':' + port}${dom ? '/app' : '/'}#join=${token}`;
+}
+/** Everyone who should reload their chat list after a change to group g (plus extra people, e.g. removed). */
+function groupChanged(g, extra = []) {
+  const who = new Set([...core.membersOf(g.id), ...extra]);
+  for (const u of who) emit(u, 'refresh', {});
+}
+async function ugroupRoute(req, res, p, url, user) {
+  const ok = (o) => send(res, 200, o);
+  const groupOut = (g) => {
+    const full = core.groupByKey(g.gkey);
+    if (!full || !core.isMember(user, full.id)) return { id: g.id, key: g.gkey, name: g.name, left: true };
+    const info = ugroups.info(user, full);
+    return { id: full.id, key: full.gkey, name: full.name, members: core.membersOf(full.id), call: gcall.groupAllowed(full.gkey), ...info, invite_link: inviteLink(info.invite) };
+  };
+  try {
+    if (p === '/api/ugroups' && req.method === 'GET') return ok(ugroupsFor(user));
+    if (p === '/api/ugroups/create' && req.method === 'POST') {
+      const b = await readJson(req, 16384);
+      if (limited('ugcreate:' + user, 10)) return send(res, 429, { error: 'rate_limited' });
+      addFail('ugcreate:' + user);
+      const g = ugroups.create(user, b);
+      groupChanged(g);
+      return ok({ group: groupOut(g) });
+    }
+    const jm = /^\/api\/ugroups\/join\/([A-Za-z0-9_-]{12,32})$/.exec(p);
+    if (jm) {
+      if (limited('ugjoin:' + user, 30)) return send(res, 429, { error: 'rate_limited' });
+      if (req.method === 'GET') { addFail('ugjoin:' + user); return ok(ugroups.preview(user, jm[1])); }
+      if (req.method === 'POST') {
+        addFail('ugjoin:' + user);
+        const g = ugroups.join(user, jm[1]);
+        groupChanged(g);
+        return ok({ group: groupOut(g) });
+      }
+    }
+    const m = /^\/api\/ugroups\/(\d+)(?:\/([a-z]+))?$/.exec(p);
+    if (!m) return send(res, 404, { error: 'not_found' });
+    const id = Number(m[1]);
+    const op = m[2] || '';
+    if (op === '' && req.method === 'GET') {
+      const g = ugroups.mine(user, id);
+      const out = groupOut(g);
+      if (ugroups.canManage(user, g)) out.roles = db.prepare('SELECT username, role, joined, via FROM user_categories WHERE category_id=? ORDER BY joined, username').all(g.id);
+      else out.roles = db.prepare("SELECT username, role FROM user_categories WHERE category_id=? ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, username").all(g.id);
+      return ok(out);
+    }
+    if (op === 'qr' && req.method === 'GET') {
+      const g = ugroups.managed(user, id);
+      const link = inviteLink(g.invite);
+      if (!link) return send(res, 404, { error: 'no_invite' });
+      const body = Buffer.from(require('./web').qrSvg(link));
+      res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': body.length, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' });
+      res.end(body);
+      return;
+    }
+    if (op === 'avatar' && (req.method === 'POST' || req.method === 'DELETE')) {
+      const g = ugroups.managed(user, id);
+      const dest = path.join(AVATARS_DIR, 'grp-' + g.id + '.webp');
+      if (req.method === 'POST') {
+        const len = Number(req.headers['content-length']);
+        if (!len || len > 400 * 1024) { res.setHeader('Connection', 'close'); return send(res, 413, { error: 'avatar_too_large' }); }
+        const clean = sanitizeWebp(await readBody(req, 400 * 1024));
+        if (!clean) return send(res, 400, { error: 'bad_avatar' });
+        fs.writeFileSync(dest + '.tmp', clean);
+        fs.renameSync(dest + '.tmp', dest);
+        db.prepare('UPDATE categories SET avatar_ver=abs(avatar_ver)+1 WHERE id=?').run(g.id);
+      } else {
+        try { fs.unlinkSync(dest); } catch { }
+        db.prepare('UPDATE categories SET avatar_ver=-abs(avatar_ver) WHERE id=?').run(g.id);
+      }
+      groupChanged(g);
+      return ok({ group: groupOut(g) });
+    }
+    if (req.method !== 'POST') return send(res, 404, { error: 'not_found' });
+    const b = await readJson(req, 16384);
+    let g; let extra = [];
+    if (op === 'edit') g = ugroups.edit(user, id, b);
+    else if (op === 'add') { g = ugroups.managed(user, id); ugroups.add(user, id, b.users); }
+    else if (op === 'remove') { g = ugroups.remove(user, id, b.user); extra = [String(b.user || '').toLowerCase()]; }
+    else if (op === 'role') g = ugroups.setRole(user, id, b.user, String(b.role || ''));
+    else if (op === 'transfer') { ugroups.owned(user, id); g = ugroups.transfer(id, user, b.user); }
+    else if (op === 'invite') { ugroups.invite(user, id, !!b.revoke); g = ugroups.mine(user, id); }
+    else if (op === 'leave') { g = ugroups.leave(user, id); extra = [user]; }
+    else if (op === 'delete') { const old = core.membersOf(id); g = ugroups.del(user, id); extra = old; }
+    else return send(res, 404, { error: 'not_found' });
+    if (core.groupByKey(g.gkey)) groupChanged(core.groupByKey(g.gkey), extra);
+    else for (const u of extra) emit(u, 'refresh', {});
+    return ok({ group: groupOut(g) });
+  } catch (e) {
+    if (!e.code || typeof e.code !== 'number') throw e;
+    return send(res, e.code, { error: e.message, ...(e.detail ? { detail: e.detail } : {}) });
+  }
+}
 
 // ---------- permissions ----------
 function resolveTarget(user, target) {
@@ -592,6 +706,7 @@ async function route(req, res) {
       allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(), ...diag.meInfo(user),
       call_route: callcfg.routeAllowed(user), // 1.15: may pick the call path in a call (admin panel, users tab)
       gcall: gcallCfgFor(), // 1.19: group calls (admin panel, card «تماس گروهی»)
+      ugroups: ugroupsFor(user), // 1.20: groups users make themselves
     });
   }
 
@@ -687,7 +802,23 @@ async function route(req, res) {
 
   if (p === '/api/groups' && req.method === 'GET') {
     const gc = gcall.cfg();
-    return send(res, 200, core.groupsOf(user).map((g) => ({ id: g.id, key: g.gkey, name: g.name, members: core.membersOf(g.id), call: gcall.groupAllowed(g.gkey, gc) })));
+    return send(res, 200, core.groupsOf(user).map((g) => ({ id: g.id, key: g.gkey, name: g.name, members: core.membersOf(g.id), call: gcall.groupAllowed(g.gkey, gc), ...ugroups.info(user, g) })));
+  }
+
+  // ---- 1.20: groups users make themselves (see ugroups.js) ----
+  if (p.startsWith('/api/ugroups')) {
+    const r = await ugroupRoute(req, res, p, url, user);
+    if (r !== false) return;
+  }
+  const gam = /^\/api\/gavatar\/(\d+)$/.exec(p);
+  if (gam && req.method === 'GET') {
+    const g = db.prepare('SELECT * FROM categories WHERE id=?').get(Number(gam[1]));
+    if (!g || !core.isMember(user, g.id)) return send(res, 404, { error: 'not_found' });
+    const fp = path.join(AVATARS_DIR, 'grp-' + g.id + '.webp');
+    if (!fs.existsSync(fp)) return send(res, 404, { error: 'no_avatar' });
+    const buf = fs.readFileSync(fp);
+    res.writeHead(200, { 'Content-Type': 'image/webp', 'Content-Length': buf.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    return res.end(buf);
   }
 
   // ---- 1.19: group calls ----
@@ -871,6 +1002,7 @@ async function route(req, res) {
       for (const u of [user, target]) { emit(u, 'contacts', {}); emit(u, 'refresh', {}); }
     }
     if (tr.error) return send(res, tr.code, { error: tr.error });
+    if (tr.type === 'group' && !kind.startsWith('sig_') && !ugroups.canWrite(user, tr.cat)) return send(res, 403, { error: tr.cat.frozen ? 'group_frozen' : 'admins_only' });
     if (kind.startsWith('sig_')) { // live-only signalling (typing, calls) — private chats only, never stored
       if (tr.type !== 'dm') return send(res, 400, { error: 'sig_needs_target' });
       const delivered = emit(target, 'sig', { from: user, kind, payload: b.payload });
@@ -900,7 +1032,9 @@ async function route(req, res) {
   if ((p === '/api/edit' || p === '/api/delete') && req.method === 'POST') {
     const b = await readJson(req, 2 * 131072 + 2048);
     const m = q.msg.get(Number(b.id));
-    if (!m || m.deleted || m.sender !== user || m.kind.startsWith('sig_')) return send(res, 404, { error: 'no_such_message' });
+    // 1.20: the owner and admins of a user group may delete (not edit) anybody's message there
+    const modDel = !!m && !m.deleted && m.sender !== user && p === '/api/delete' && groupModerator(user, m.target);
+    if (!m || m.deleted || (m.sender !== user && !modDel) || m.kind.startsWith('sig_')) return send(res, 404, { error: 'no_such_message' });
     const tr = resolveTarget(user, m.target);
     // a message request can always be taken back (deleted), even before the other side accepts it
     if (tr.error && !(p === '/api/delete' && tr.error === 'not_allowed')) return send(res, tr.code, { error: tr.error });
@@ -933,6 +1067,7 @@ async function route(req, res) {
     const target = String(b.target || '').toLowerCase();
     const tr = resolveTarget(user, target);
     if (tr.error) return send(res, tr.code, { error: tr.error });
+    if (tr.type === 'group' && ugroups.isUser(tr.cat) && !ugroups.canManage(user, tr.cat)) return send(res, 403, { error: 'not_group_admin' });
     const key = pinKey(user, tr);
     if (b.messageId == null) {
       q.delPin.run(key);

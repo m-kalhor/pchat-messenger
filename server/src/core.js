@@ -90,10 +90,11 @@ function createUser(username, display, catIds) {
   return pw;
 }
 
+/** The admin's categories of a user (1.20: groups users made themselves are left alone). */
 function setUserCategories(username, catIds) {
-  db.prepare('DELETE FROM user_categories WHERE username=?').run(username);
-  const ins = db.prepare('INSERT OR IGNORE INTO user_categories(username,category_id) SELECT ?, id FROM categories WHERE id=?');
-  for (const id of catIds) ins.run(username, Number(id));
+  db.prepare("DELETE FROM user_categories WHERE username=? AND category_id IN (SELECT id FROM categories WHERE kind='cat')").run(username);
+  const ins = db.prepare("INSERT OR IGNORE INTO user_categories(username,category_id,joined,via) SELECT ?, id, ?, 'panel' FROM categories WHERE id=? AND kind='cat'");
+  for (const id of catIds) ins.run(username, Date.now(), Number(id));
 }
 
 function resetPassword(username) {
@@ -116,9 +117,15 @@ function deleteUser(username) {
   return db.prepare('DELETE FROM users WHERE username=?').run(username).changes > 0;
 }
 
+/** 1.20: names of the admin's categories stay unique (user groups may repeat names). */
+function catNameTaken(name, exceptId = 0) {
+  return !!db.prepare("SELECT 1 FROM categories WHERE kind='cat' AND name=? AND id<>?").get(name, exceptId);
+}
+
 function createCategory(name) {
   const n = cleanDisplay(name);
   if (!n) throw new Error('bad_name');
+  if (catNameTaken(n)) throw new Error('UNIQUE name');
   const r = db.prepare("INSERT INTO categories(name,gkey) VALUES(?, 'tmp')").run(n);
   const id = Number(r.lastInsertRowid);
   db.prepare('UPDATE categories SET gkey=? WHERE id=?').run('g:' + id, id);
@@ -127,5 +134,5 @@ function createCategory(name) {
 
 module.exports = {
   NAME_RE, q, activeUser, isBlocked, isCut, pairKey, groupsOf, membersOf, isMember, groupByKey, canDM, contacts, convoKey,
-  genPw, cleanDisplay, cleanBio, createUser, setUserCategories, resetPassword, deleteUser, createCategory,
+  genPw, cleanDisplay, cleanBio, createUser, setUserCategories, resetPassword, deleteUser, createCategory, catNameTaken,
 };

@@ -14,6 +14,7 @@ const sms = require('./sms');
 const diag = require('./diag');
 const callcfg = require('./callcfg');
 const gcall = require('./gcall');
+const ugroups = require('./ugroups');
 const stickers = require('./stickers');
 const usage = require('./usage');
 const totp = require('./totp');
@@ -84,8 +85,8 @@ function session(req) {
 
 function stateDump(ctx) {
   const users = db.prepare('SELECT username, display_name, bio, phone, disabled, created, avatar_ver FROM users ORDER BY username').all();
-  const uc = db.prepare('SELECT username, category_id FROM user_categories').all();
-  const cats = db.prepare('SELECT c.id, c.name, c.gkey, (SELECT COUNT(*) FROM user_categories WHERE category_id=c.id) AS count FROM categories c ORDER BY c.id').all();
+  const uc = db.prepare("SELECT uc.username, uc.category_id FROM user_categories uc JOIN categories c ON c.id=uc.category_id WHERE c.kind='cat'").all();
+  const cats = db.prepare('SELECT c.id, c.name, c.gkey, (SELECT COUNT(*) FROM user_categories WHERE category_id=c.id) AS count FROM categories c WHERE c.kind=\'cat\' ORDER BY c.id').all();
   return {
     users: users.map((u) => ({
       username: u.username, display_name: u.display_name || '', bio: u.bio || '', phone: u.phone || '', disabled: !!u.disabled, created: u.created, has_avatar: u.avatar_ver > 0, diag: diag.enabledFor(u.username), route: callcfg.routeAllowed(u.username),
@@ -276,7 +277,7 @@ async function route(ctx, req, res, secure) {
     }
     const setName = db.prepare('UPDATE users SET display_name=? WHERE username=?');
     const setPhone = db.prepare('UPDATE users SET phone=? WHERE username=?');
-    const renameCat = db.prepare('UPDATE categories SET name=? WHERE id=?');
+    const renameCat = db.prepare("UPDATE categories SET name=? WHERE id=? AND kind='cat'");
     const visOn = db.prepare('INSERT OR IGNORE INTO visibility(viewer,target) VALUES(?,?)');
     const visOff = db.prepare('DELETE FROM visibility WHERE viewer=? AND target=?');
     const blockOn = db.prepare('INSERT OR IGNORE INTO blocks(viewer,target) VALUES(?,?)');
@@ -289,6 +290,7 @@ async function route(ctx, req, res, secure) {
         if (Array.isArray(u.categories)) core.setUserCategories(name, u.categories);
       }
       for (const [id, name] of Object.entries(cats)) renameCat.run(core.cleanDisplay(name), Number(id));
+      if (db.prepare("SELECT 1 FROM categories WHERE kind='cat' GROUP BY name HAVING COUNT(*)>1").get()) throw new Error('UNIQUE name');
       // a cell is true (can see), false (cannot) or 'block' (cannot, and no connection requests either way)
       for (const [v, t, on] of vis) {
         (on === true ? visOn : visOff).run(v, t);
@@ -349,7 +351,7 @@ async function route(ctx, req, res, secure) {
     if (b.gcall && typeof b.gcall === 'object') { try { gcall.setCfg(b.gcall); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.signup_category !== undefined) {
       const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);
-      if (c && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(Number(c))) return json(res, 400, { error: 'bad_category' });
+      if (c && !db.prepare("SELECT 1 FROM categories WHERE id=? AND kind='cat'").get(Number(c))) return json(res, 400, { error: 'bad_category' });
       setSetting('signup_category', c);
     }
     return json(res, 200, authInfo(ctx));
@@ -446,6 +448,7 @@ async function route(ctx, req, res, secure) {
       return json(res, 200, { password: pw });
     }
     if (action === 'delete') {
+      ugroups.userDeleted(name); // 1.20: their groups go to the oldest admin there, or are frozen
       core.deleteUser(name);
       stickers.deleteUser(name);
       usage.deleteUser(name);
@@ -466,6 +469,38 @@ async function route(ctx, req, res, secure) {
     return json(res, 200, { ok: true });
   }
 
+  // ---- 1.20: groups users made (tab «گروه‌ها و کانال‌های کاربران») ----
+  if (sub === '/ugroups' && req.method === 'GET') return json(res, 200, { cfg: ugroups.cfg(), groups: ugroups.adminList(), limits: ugroups.userLimits() });
+  if (sub === '/ugroups/settings' && req.method === 'POST') {
+    const b = await readJson(req);
+    try { const c = ugroups.setCfg(b); ctx.refreshAll(); return json(res, 200, { cfg: c }); }
+    catch (e) { return json(res, 400, { error: e.message }); }
+  }
+  if (sub === '/ugroups/limit' && req.method === 'POST') {
+    const b = await readJson(req);
+    try { ugroups.setUserLimit(String(b.username || ''), b.limit); ctx.refreshAll(); return json(res, 200, { ok: true }); }
+    catch (e) { return json(res, e.code || 400, { error: e.message }); }
+  }
+  m = /^\/ugroups\/(\d+)\/(members|add|remove|role|freeze|delete)$/.exec(sub);
+  if (m) {
+    const id = Number(m[1]);
+    try {
+      if (m[2] === 'members' && req.method === 'GET') return json(res, 200, { members: ugroups.adminMembers(id) });
+      if (req.method !== 'POST') return json(res, 404, { error: 'not_found' });
+      const b = await readJson(req);
+      if (m[2] === 'add') { const n = ugroups.adminAdd(id, b.users, b.category); ctx.refreshAll(); return json(res, 200, { added: n }); }
+      if (m[2] === 'remove') ugroups.adminRemove(id, b.username, b.ban);
+      else if (m[2] === 'role') ugroups.adminRole(id, String(b.username || '').toLowerCase(), String(b.role || ''));
+      else if (m[2] === 'freeze') ugroups.adminFreeze(id, !!b.on);
+      else if (m[2] === 'delete') ugroups.dropGroup(id);
+      ctx.refreshAll();
+      return json(res, 200, { ok: true });
+    } catch (e) {
+      if (typeof e.code !== 'number') throw e;
+      return json(res, e.code, { error: e.message });
+    }
+  }
+
   if (sub === '/categories' && req.method === 'POST') {
     const b = await readJson(req);
     try { core.createCategory(b.name); ctx.refreshAll(); return json(res, 200, { ok: true }); }
@@ -474,6 +509,7 @@ async function route(ctx, req, res, secure) {
   m = /^\/categories\/(\d+)\/(rename|delete)$/.exec(sub);
   if (m && req.method === 'POST') {
     const id = Number(m[1]);
+    if (!db.prepare("SELECT 1 FROM categories WHERE id=? AND kind='cat'").get(id)) return json(res, 404, { error: 'no_such_category' });
     if (m[2] === 'delete') {
       db.prepare('DELETE FROM user_categories WHERE category_id=?').run(id);
       db.prepare('DELETE FROM categories WHERE id=?').run(id);
@@ -481,6 +517,7 @@ async function route(ctx, req, res, secure) {
       const b = await readJson(req);
       const n = core.cleanDisplay(b.name);
       if (!n) return json(res, 400, { error: 'bad_name' });
+      if (core.catNameTaken(n, id)) return json(res, 400, { error: 'name_exists' });
       try { db.prepare('UPDATE categories SET name=? WHERE id=?').run(n, id); }
       catch (e) { return json(res, 400, { error: 'name_exists' }); }
     }

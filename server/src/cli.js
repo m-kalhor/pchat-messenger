@@ -25,6 +25,7 @@ if (cmd === 'add') {
   catch (e) { console.error('Error:', e.message); process.exit(1); }
 } else if (cmd === 'del') {
   need();
+  require('./ugroups').userDeleted(name);
   console.log(core.deleteUser(name) ? 'Deleted.' : 'No such user');
 } else if (cmd === 'list') {
   for (const u of db.prepare('SELECT username,display_name,disabled,created FROM users ORDER BY username').all())

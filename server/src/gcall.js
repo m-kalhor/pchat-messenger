@@ -67,7 +67,11 @@ function setCfg(b) {
 function groupAllowed(gkey, c = cfg()) {
   if (!c.on) return false;
   if (gkey === 'all' && !c.all) return false;
-  return !c.off_groups.includes(gkey);
+  if (c.off_groups.includes(gkey)) return false;
+  // 1.20: a group a user made: the panel switch for user groups, and the owner's own switch
+  const g = require('./core').groupByKey(gkey);
+  if (g && g.kind === 'user') return getSetting('ugroups_calls', '1') === '1' && !!g.call_on && !g.frozen;
+  return true;
 }
 
 /**
