@@ -113,6 +113,7 @@ import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
@@ -378,10 +379,16 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         else -> U.lastSeen(peer)
     }
     var showProfile by remember { mutableStateOf(false) }
+    var showGroupInfo by remember { mutableStateOf(false) } // 1.20
     var muteMenu by remember { mutableStateOf(false) }
     val notifTick by Prefs.notifTick.collectAsState()
     val muted = remember(notifTick, convo) { Prefs.isMuted(convo) }
     val canSend = isGroup || peer == null || peer.dm || allMsgs.any { !it.mine }
+    // 1.20: a user group where only admins write, or one the server admin froze
+    val writeBlock = group?.let { g ->
+        if (!g.isUser) null else if (g.frozen) "این گروه را مدیر سرور معلق کرده است" else if (g.adminsOnly && !g.manages) "فقط مدیران این گروه پیام می‌فرستند" else null
+    }
+    val modGroup = isGroup && group?.isUser == true
     val pinnedId = pins[convo]
     val pinnedMsg = remember(pinnedId, tick) { pinnedId?.let { Engine.db.get(it) } }
 
@@ -407,7 +414,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                             )
                         )
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !isGroup) { showProfile = true }) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !isGroup || group?.isUser == true) { if (isGroup) showGroupInfo = true else showProfile = true }) {
                             Avatar(convo, false, 38)
                             Spacer(Modifier.width(10.dp))
                             Column {
@@ -533,7 +540,9 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                     onEdit = { editing = it; replyTo = null; text = it.text; field = TextFieldValue(it.text, TextRange(it.text.length)) },
                                     onForward = { forwarding = listOf(it) },
                                     onInfo = { info = it },
-                                    onDeleteAll = { deleteAll = it }
+                                    onDeleteAll = { deleteAll = it },
+                                    canPin = !modGroup || group?.manages == true,
+                                    modDelete = modGroup && group?.manages == true && !it.mine && it.type != "call"
                                 )
                             } else {
                                 Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
@@ -603,7 +612,14 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     }
                 }
             }
-            if (!canSend) {
+            if (writeBlock != null) {
+                Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        writeBlock, fontSize = 14.sp, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(14.dp),
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                    )
+                }
+            } else if (!canSend) {
                 Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
                     Text(
                         "شما اجازه‌ی شروع گفتگو با این کاربر را ندارید؛ فقط می‌توانید به پیام‌های او پاسخ دهید.",
@@ -742,6 +758,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         )
     }
     if (showProfile) ContactProfileDialog(convo) { showProfile = false }
+    if (showGroupInfo) GroupInfoScreen(convo, onClose = { showGroupInfo = false }, onOpenUser = { u -> showGroupInfo = false; onOpenUser(u) }, onLeft = { showGroupInfo = false; onBack() })
     reactFor?.let { m -> ReactionPickerDialog(onClose = { reactFor = null }) { e -> reactFor = null; react(m, e) } }
     reactorsOf?.let { m ->
         val fresh = remember(tick, m.id) { Engine.db.get(m.id) ?: m }
@@ -781,7 +798,9 @@ fun Bubble(
     onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {},
     /** "sent" / "delivered" / "seen" for my messages */
     tick: String? = null, onReact: (String?) -> Unit = {}, onMoreReactions: () -> Unit = {},
-    onReactors: () -> Unit = {}, onSeenBy: () -> Unit = {}
+    onReactors: () -> Unit = {}, onSeenBy: () -> Unit = {},
+    /** 1.20: in a user group only its owner/admins pin, and they may delete other people's messages */
+    canPin: Boolean = true, modDelete: Boolean = false
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -964,10 +983,10 @@ fun Bubble(
                 }
                 if (m.id > 0) DropdownMenuItem(text = { Text("اطلاعات پیام") }, onClick = { menu = false; onInfo() })
                 if (group && m.mine && m.id > 0 && m.status == 0) DropdownMenuItem(text = { Text("دیده شده توسط…") }, onClick = { menu = false; onSeenBy() })
-                if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text(if (pinned) "برداشتن پین" else "پین کردن") }, onClick = { menu = false; onPin() })
+                if (canPin && m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text(if (pinned) "برداشتن پین" else "پین کردن") }, onClick = { menu = false; onPin() })
                 if (m.status == 2) DropdownMenuItem(text = { Text("تلاش دوباره") }, onClick = { menu = false; onRetry() })
-                if (m.mine && m.status == 0 && m.id > 0) DropdownMenuItem(
-                    text = { Text("حذف برای همه", color = MaterialTheme.colorScheme.error) },
+                if ((m.mine || modDelete) && m.status == 0 && m.id > 0) DropdownMenuItem(
+                    text = { Text(if (m.mine) "حذف برای همه" else "حذف برای همه (مدیر گروه)", color = MaterialTheme.colorScheme.error) },
                     onClick = { menu = false; onDeleteAll() }
                 )
                 DropdownMenuItem(

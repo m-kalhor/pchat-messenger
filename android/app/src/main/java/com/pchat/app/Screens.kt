@@ -79,9 +79,12 @@ import androidx.compose.ui.platform.LocalContext
 fun Avatar(name: String, online: Boolean, size: Int = 48) {
     val group = Engine.isGroup(name)
     val users by Engine.users.collectAsState()
-    val ver = if (group) 0 else (users.firstOrNull { it.username == name }?.avatarVer ?: 0)
+    val groups by Engine.groups.collectAsState()
+    // 1.20: a group a user made can have its own photo
+    val g = if (group) groups.firstOrNull { it.key == name } else null
+    val ver = if (group) (g?.avatarVer ?: 0) else (users.firstOrNull { it.username == name }?.avatarVer ?: 0)
     val bmp by produceState<ImageBitmap?>(null, name, ver) {
-        value = if (ver > 0) Engine.avatarBitmap(name, ver) else null
+        value = if (ver <= 0) null else if (g != null) Engine.groupAvatarBitmap(g.id, ver) else Engine.avatarBitmap(name, ver)
     }
     Box(Modifier.size(size.dp)) {
         Box(
@@ -353,6 +356,10 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     var menu by remember { mutableStateOf(false) }
     var addContact by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
+    // 1.20: groups users make themselves
+    val ug by Engine.ugCfg.collectAsState()
+    var newGroup by remember { mutableStateOf(false) }
+    var joinGroup by remember { mutableStateOf(false) }
     val incoming by Engine.incomingRequests.collectAsState()
     // 1.19: «گفتگوها» / «تماس‌ها» tabs, and a green 📞 on groups with a running call
     var tab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
@@ -397,6 +404,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("پیام به @نام‌کاربری / افزودن مخاطب") }, onClick = { menu = false; addContact = true })
+                        if (ug.on) DropdownMenuItem(text = { Text("👥 گروه تازه" + if (ug.limit > 0) " (${ug.owned} از ${ug.limit})" else "") }, onClick = { menu = false; newGroup = true })
+                        if (ug.on) DropdownMenuItem(text = { Text("🔗 پیوستن با لینک دعوت") }, onClick = { menu = false; joinGroup = true })
                         DropdownMenuItem(text = { Text("درخواست‌ها" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
                         DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
                         DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
@@ -534,6 +543,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
         dismissButton = { TextButton(onClick = { askContacts = false; Engine.contactsAsked = true }) { Text("بعداً") } }
     )
     if (addContact) AddContactDialog(onClose = { addContact = false }, onOpen = onOpen)
+    if (newGroup) NewGroupDialog(onClose = { newGroup = false }, onOpen = onOpen)
+    if (joinGroup) JoinGroupDialog(null, onClose = { joinGroup = false }, onOpen = onOpen)
     if (showRequests) RequestsDialog(onClose = { showRequests = false }, onOpen = onOpen)
 }
 

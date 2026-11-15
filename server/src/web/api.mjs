@@ -78,6 +78,24 @@ export const createUpload = (size) => call('POST', '/api/uploads', { size });
 export const uploadStatus = (id) => call('GET', '/api/uploads/' + id);
 export const patchUpload = (id, offset, bytes) => call('PATCH', '/api/uploads/' + id, bytes, { 'upload-offset': String(offset), 'content-type': 'application/octet-stream' });
 
+// 1.20: groups users make themselves
+export const ugroup = (id) => call('GET', '/api/ugroups/' + id);
+export const ugroupOp = (path, body) => call('POST', '/api/ugroups' + path, body || {});
+export const joinPreview = (t) => call('GET', '/api/ugroups/join/' + encodeURIComponent(t));
+export const joinGroup = (t) => call('POST', '/api/ugroups/join/' + encodeURIComponent(t), {});
+export const uploadGroupAvatar = (id, webp) => call('POST', '/api/ugroups/' + id + '/avatar', webp, { 'content-type': 'image/webp' });
+export const deleteGroupAvatar = (id) => call('DELETE', '/api/ugroups/' + id + '/avatar');
+export async function groupAvatar(id) {
+  const r = await fetch('/api/gavatar/' + id, { headers: { authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new HttpError(r.status);
+  return r.blob();
+}
+export async function groupQr(id) {
+  const r = await fetch('/api/ugroups/' + id + '/qr', { headers: { authorization: 'Bearer ' + token }, cache: 'no-store' });
+  if (!r.ok) throw new HttpError(r.status);
+  return r.blob();
+}
+
 export async function avatar(user) {
   const r = await fetch('/api/avatar/' + encodeURIComponent(user), { headers: { authorization: 'Bearer ' + token } });
   if (!r.ok) throw new HttpError(r.status);

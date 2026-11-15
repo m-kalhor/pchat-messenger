@@ -95,6 +95,21 @@ export function errText(e) {
     case 'no_such_pack': return 'این پک دیگر وجود ندارد';
     case 'bad_title': return 'نام پک را بنویسید';
     case 'weak_password': return 'رمز تازه باید دست‌کم ۸ نویسه باشد';
+    // 1.20: groups users make
+    case 'ugroups_off': return 'ساختن گروه را مدیر سرور خاموش کرده است';
+    case 'group_limit': return 'به حداکثر تعداد گروه و کانالی که می‌توانید بسازید رسیده‌اید';
+    case 'their_group_limit': return 'این عضو به حداکثر تعداد گروه‌هایش رسیده و نمی‌تواند مالک شود';
+    case 'cannot_add': return 'فقط کسانی را می‌شود اضافه کرد که با شما در ارتباط‌اند' + (e.body && e.body.detail ? ' (@' + e.body.detail + ')' : '') + '؛ برای بقیه لینک دعوت بفرستید';
+    case 'group_full': return 'گروه به حداکثر تعداد اعضا رسیده است';
+    case 'not_group_admin': return 'فقط مالک و مدیران گروه این کار را می‌توانند';
+    case 'not_group_owner': return 'فقط مالک گروه این کار را می‌تواند';
+    case 'group_frozen': return 'این گروه را مدیر سرور معلق کرده است';
+    case 'admins_only': return 'در این گروه فقط مدیران پیام می‌فرستند';
+    case 'bad_invite': return 'این لینک دعوت معتبر نیست یا باطل شده';
+    case 'removed_from_group': return 'شما از این گروه بیرون شده‌اید و فقط مدیران می‌توانند دوباره اضافه‌تان کنند';
+    case 'no_such_group': return 'این گروه دیگر وجود ندارد';
+    case 'cannot_remove': return 'مالک گروه را نمی‌شود بیرون کرد';
+    case 'bad_name': return 'نام را بنویسید';
     default: break;
   }
   if (e instanceof api.HttpError) return 'خطای سرور (' + e.status + ')';
@@ -337,7 +352,7 @@ export async function refreshRequests() {
 export async function refreshMe() {
   const r = await api.me();
   S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false, allow_requests: r.allow_requests !== false };
-  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false, call_route: !!r.call_route, gcall: r.gcall || null };
+  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false, call_route: !!r.call_route, gcall: r.gcall || null, ugroups: r.ugroups || null };
   await store.kvSet('privacy', S.privacy);
   emit('privacy');
 }
@@ -1239,6 +1254,43 @@ export function avatarUrl(u) {
   }
   return a ? a.url : null;
 }
+
+// ---------------- 1.20: groups users make themselves ----------------
+export const groupOf = (c) => S.groups.find((g) => g.key === c) || null;
+export const isUserGroup = (c) => { const g = groupOf(c); return !!g && g.kind === 'user'; };
+export const canManageGroup = (c) => { const g = groupOf(c); return !!g && (g.role === 'owner' || g.role === 'admin'); };
+/** Why the user cannot write here ('' = can write). */
+export function writeBlock(c) {
+  const g = groupOf(c);
+  if (!g || g.kind !== 'user') return '';
+  if (g.frozen) return 'این گروه را مدیر سرور معلق کرده است';
+  if (g.admins_only && !(g.role === 'owner' || g.role === 'admin')) return 'فقط مدیران این گروه پیام می‌فرستند';
+  return '';
+}
+const gAvatars = new Map(); // group id -> { ver, url }
+export function groupAvatarUrl(c) {
+  const g = groupOf(c);
+  if (!g || !(g.avatar_ver > 0)) return null;
+  const a = gAvatars.get(g.id);
+  if (a && a.ver === g.avatar_ver) return a.url;
+  const k = 'g' + g.id + ':' + g.avatar_ver;
+  if (!loadingAv.has(k)) {
+    loadingAv.add(k);
+    api.groupAvatar(g.id).then((b) => {
+      const old = gAvatars.get(g.id);
+      if (old) URL.revokeObjectURL(old.url);
+      gAvatars.set(g.id, { ver: g.avatar_ver, url: URL.createObjectURL(b) });
+      emit('avatar', c);
+    }).catch(() => { });
+  }
+  return a ? a.url : null;
+}
+/** Runs a group call to the server; returns { error } or the server's answer, then reloads the groups. */
+export async function groupAction(fn) {
+  try { const r = await fn(api); refreshGroups().catch(() => { }); refreshMe().catch(() => { }); refreshUsers().catch(() => { }); return r || {}; }
+  catch (e) { return { error: errText(e) }; }
+}
+export async function groupDetails(id) { try { return await api.ugroup(id); } catch (e) { return { error: errText(e) }; } }
 
 export async function saveProfile(name, bio) {
   try { await api.setProfile(name, bio); await refreshUsers(); return null; } catch (e) { return errText(e); }

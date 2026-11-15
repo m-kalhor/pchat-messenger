@@ -94,7 +94,7 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={bad_gcall_settings:'مقدار نامعتبر (حداکثر نفرات ۲ تا ۸، تماس هم‌زمان ۱ تا ۵۰)',bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری، رمز یا کد اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۵ دقیقه صبر کنید',bad_code:'کد اشتباه است یا وقتش گذشته؛ کد تازه را بزنید',bad_password_or_code:'رمز یا کد اشتباه است',totp_not_started:'دوباره از «فعال کردن» شروع کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_sms_provider:'سرویس‌دهندهٔ پیامک ناشناخته است',bad_sms_token:'توکن API نامعتبر است',bad_sms_from:'شمارهٔ خط ارسال فقط رقم (با + در ابتدا)',bad_sms_pattern:'کد الگو فقط حروف لاتین، رقم، - و _',bad_sms_param:'نام متغیر فقط حروف لاتین، رقم و _',sms_no_credit:'این سرویس‌دهنده نمایش اعتبار ندارد',sms_foreign_number:'پیامک فقط به شماره‌های ایران فرستاده می‌شود',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'تنظیمات پیامک کامل نیست',timeout:'سرور به سرویس پیامک نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
+var ERR={ugroups_off:'ساخت گروه توسط کاربران خاموش است',bad_ugroup_settings:'مقدار نامعتبر (سقف هر کاربر ۰ تا ۵۰، اعضا ۲ تا ۱۰۰۰)',no_such_group:'این گروه دیگر نیست',not_member:'این کاربر عضو گروه نیست',bad_role:'نقش نامعتبر',bad_gcall_settings:'مقدار نامعتبر (حداکثر نفرات ۲ تا ۸، تماس هم‌زمان ۱ تا ۵۰)',bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری، رمز یا کد اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۵ دقیقه صبر کنید',bad_code:'کد اشتباه است یا وقتش گذشته؛ کد تازه را بزنید',bad_password_or_code:'رمز یا کد اشتباه است',totp_not_started:'دوباره از «فعال کردن» شروع کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_sms_provider:'سرویس‌دهندهٔ پیامک ناشناخته است',bad_sms_token:'توکن API نامعتبر است',bad_sms_from:'شمارهٔ خط ارسال فقط رقم (با + در ابتدا)',bad_sms_pattern:'کد الگو فقط حروف لاتین، رقم، - و _',bad_sms_param:'نام متغیر فقط حروف لاتین، رقم و _',sms_no_credit:'این سرویس‌دهنده نمایش اعتبار ندارد',sms_foreign_number:'پیامک فقط به شماره‌های ایران فرستاده می‌شود',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'تنظیمات پیامک کامل نیست',timeout:'سرور به سرویس پیامک نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
 function msg2(e){return e?(ERR[e]||e):'';}
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
@@ -169,7 +169,7 @@ async function reload(){S=await api('GET','/state');prune();render();}
 
 function render(){
   clearInterval(timer);
-  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود، پیامک و تماس'],['stk','استیکرها'],['use','مصرف کاربران'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
+  var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود، پیامک و تماس'],['stk','استیکرها'],['ugr','گروه‌ها و کانال‌های کاربران'],['use','مصرف کاربران'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
   var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
   var box=h('main');
   var cnt=h('span',{class:'cnt'}),save=h('button',{class:'grn',onclick:saveAll},'ذخیرهٔ همهٔ تغییرات');
@@ -178,7 +178,7 @@ function render(){
   app.replaceChildren(
     h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},links:{},backup:null};showLogin();}},'خروج')),
     nav,smsAlert,box,bar.el);
-  ({users:users,cats:cats,links:links,login:loginTab,stk:stickersTab,use:usageTab,mon:monitor,bak:backups,acct:account})[tab](box);
+  ({users:users,cats:cats,links:links,login:loginTab,stk:stickersTab,ugr:ugroupsTab,use:usageTab,mon:monitor,bak:backups,acct:account})[tab](box);
   checkSms();
   updateBar();
 }
@@ -356,6 +356,95 @@ function chart(cv,series,max,fmt){
     s.data.forEach(function(v,i){var x=n<2?0:i*(w/(n-1));var y=hh-2-(Math.min(v,max)/max)*(hh-4);if(i===0)g.moveTo(x,y);else g.lineTo(x,y);});
     g.stroke();});
   g.fillStyle='#8aa0b5';g.font='11px sans-serif';g.fillText(fmt(max),4,12);g.fillText('0',4,hh-4);
+}
+// ---------------- 1.20: groups (and later channels) that users make themselves ----------------
+var UG={q:'',sort:'last',dir:-1,open:null};
+function ugroupsTab(box){
+  var D=null,note=h('span');
+  var setCard=h('div',{class:'card',style:'max-width:760px'}),listCard=h('div',{class:'card'}),memCard=h('div'),limCard=h('div',{class:'card',style:'max-width:760px'});
+  box.appendChild(setCard);box.appendChild(listCard);box.appendChild(memCard);box.appendChild(limCard);
+  var fa=function(n){return Number(n||0).toLocaleString('fa-IR');};
+  var uname=function(u){var x=(S.users||[]).find(function(y){return y.username===u;});return x?(x.display_name||u)+' (@'+u+')':'@'+u;};
+  function settings(){
+    var C=D.cfg,on=h('input',{type:'checkbox',checked:C.on}),calls=h('input',{type:'checkbox',checked:C.calls});
+    var lim=h('input',{value:C.limit,style:'direction:ltr;width:60px',inputmode:'numeric'}),mx=h('input',{value:C.max_members,style:'direction:ltr;width:70px',inputmode:'numeric'});
+    var r=h('span');
+    setCard.replaceChildren(h('h3',null,'تنظیمات گروه‌های کاربران'),
+      h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'کاربران از منوی + در برنامه گروه می‌سازند و از میان مخاطبان متصل خود عضو اضافه می‌کنند (هرگز با ⛔ ماتریس)، یا لینک دعوت می‌دهند. سازنده «مالک» است و می‌تواند مدیر تعیین کند. محتوای پیام‌ها رمزنگاری سرتاسری است و اینجا دیده نمی‌شود؛ فقط آمار و اعضا.'),
+      h('div',{class:'row'},h('label',null,on,' کاربران بتوانند گروه بسازند')),
+      h('div',{class:'row'},h('span',null,'حداکثر گروه و کانال هر کاربر (روی‌هم):'),lim,h('span',null,'حداکثر اعضای هر گروه:'),mx),
+      h('div',{class:'row'},h('label',null,calls,' تماس گروهی در گروه‌های کاربران (اگر تماس گروهی در زبانهٔ «ورود، پیامک و تماس» روشن باشد)')),
+      h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){r.textContent='';
+        try{var j=await api('POST','/ugroups/settings',{on:on.checked,calls:calls.checked,limit:Number(lim.value),max_members:Number(mx.value)});D.cfg=j.cfg;r.textContent='✓ ذخیره شد';}catch(e){r.textContent='✗ '+msg(e);}}},'ذخیره'),r));
+  }
+  var COLS=[['name','نام'],['owner','مالک'],['count','اعضا'],['msgs','پیام'],['bytes','حجم فایل‌ها'],['last','آخرین فعالیت'],['created','ساخت'],['state','وضعیت']];
+  function val(g,k){if(k==='state')return g.frozen?1:0;if(k==='name'||k==='owner')return String(g[k]||'').toLowerCase();return g[k]||0;}
+  function list(){
+    var search=h('input',{placeholder:'جست‌وجوی نام گروه یا مالک',value:UG.q,oninput:function(){UG.q=search.value;draw();}});
+    var tbl=h('table',{class:'srt'});
+    function draw(){
+      var q=UG.q.trim().toLowerCase();
+      var rows=D.groups.filter(function(g){return !q||g.name.toLowerCase().indexOf(q)>=0||String(g.owner||'').indexOf(q)>=0;});
+      rows.sort(function(a,b){var x=val(a,UG.sort),y=val(b,UG.sort);return (x<y?-1:x>y?1:0)*UG.dir||a.id-b.id;});
+      var head=h('tr',null,COLS.map(function(c){return h('th',{class:UG.sort===c[0]?'on':'',onclick:function(){if(UG.sort===c[0])UG.dir=-UG.dir;else{UG.sort=c[0];UG.dir=c[0]==='name'||c[0]==='owner'?1:-1;}draw();}},c[1],UG.sort===c[0]?(UG.dir<0?' ▼':' ▲'):'');}),h('th'));
+      var trs=rows.map(function(g){
+        return h('tr',{style:UG.open===g.id?'background:rgba(90,160,255,.12)':''},
+          h('td',{title:g.about||''},g.name,g.admins_only?h('span',{class:'tag'},'فقط مدیران'):null,g.invite?h('span',{class:'tag'},'لینک'):null),
+          h('td',null,g.owner?uname(g.owner):h('b',{style:'color:#ff8b8b'},'بی‌مالک')),
+          h('td',{class:'n'},fa(g.count)),h('td',{class:'n'},fa(g.msgs)),h('td',{class:'n'},fmtB(g.bytes||0)),
+          h('td',{class:'n'},g.last?fmtDate(g.last):'—'),h('td',{class:'n'},g.created?new Date(g.created).toLocaleDateString('fa-IR'):'—'),
+          h('td',null,g.frozen?h('span',{class:'tag',style:'color:#ff8b8b'},'معلق'):'فعال'),
+          h('td',null,h('button',{class:'sec',onclick:function(){UG.open=g.id;draw();members(g);}},'اعضا و مدیریت')));
+      });
+      tbl.replaceChildren.apply(tbl,[head].concat(trs.length?trs:[h('tr',null,h('td',{colspan:COLS.length+1,class:'mut'},D.groups.length?'گروهی پیدا نشد':'هنوز کاربری گروه نساخته'))]));
+    }
+    listCard.replaceChildren(h('h3',null,'گروه‌های کاربران ('+fa(D.groups.length)+')'),h('div',{class:'row'},search,h('button',{class:'sec',onclick:load},'به‌روزرسانی'),note),tbl);
+    draw();
+  }
+  async function members(g){
+    memCard.replaceChildren(h('div',{class:'card'},'…'));
+    var M;try{M=(await api('GET','/ugroups/'+g.id+'/members')).members;}catch(e){memCard.replaceChildren(h('div',{class:'card'},'خطا: '+msg(e)));return;}
+    var er=h('span');
+    var act=function(path,body,ask){return async function(){if(ask&&!confirm(ask))return;er.textContent='';try{await api('POST','/ugroups/'+g.id+path,body);await load();var ng=D.groups.find(function(x){return x.id===g.id;});if(ng)members(ng);else memCard.replaceChildren();}catch(e){er.textContent='✗ '+msg(e);}};};
+    var RL={owner:'مالک',admin:'مدیر',member:'عضو'};
+    var VIA=function(v){if(!v)return '';if(v==='created')return 'سازنده';if(v==='link')return 'با لینک';if(v==='panel')return 'از پنل';if(v.indexOf('added:')===0)return 'افزوده: @'+v.slice(6);return v;};
+    var trs=M.map(function(m){
+      if(m.banned)return h('tr',{style:'opacity:.6'},h('td',null,uname(m.username)),h('td',null,'بیرون‌شده'),h('td',null,fmtDate(m.joined)),h('td'),
+        h('td',null,h('button',{class:'sec',onclick:act('/remove',{username:m.username,ban:false})},'اجازهٔ بازگشت با لینک')));
+      return h('tr',null,h('td',null,uname(m.username)),h('td',null,RL[m.role]||m.role),h('td',null,m.joined?fmtDate(m.joined):'—'),h('td',null,VIA(m.via)),
+        h('td',null,
+          m.role==='member'?h('button',{class:'sec',onclick:act('/role',{username:m.username,role:'admin'})},'مدیر شود'):null,
+          m.role==='admin'?h('button',{class:'sec',onclick:act('/role',{username:m.username,role:'member'})},'عضو عادی'):null,
+          m.role!=='owner'?h('button',{class:'sec',onclick:act('/role',{username:m.username,role:'owner'},'مالکیت گروه به @'+m.username+' منتقل شود؟')},'مالک شود'):null,
+          h('button',{class:'red',onclick:act('/remove',{username:m.username},'@'+m.username+' از گروه بیرون شود؟ (با لینک برنمی‌گردد)')},'بیرون کردن')));
+    });
+    var addIn=h('input',{placeholder:'نام‌های کاربری، با فاصله یا ویرگول',style:'direction:ltr;min-width:240px'});
+    var catSel=h('select',null,h('option',{value:''},'— یا همهٔ اعضای یک دسته —'),(S.categories||[]).map(function(c){return h('option',{value:c.id},c.name+' ('+c.count+')');}));
+    memCard.replaceChildren(h('div',{class:'card'},
+      h('h3',null,'اعضای «'+g.name+'» ('+fa(M.filter(function(m){return !m.banned;}).length)+')'),
+      g.about?h('div',{class:'mut',style:'white-space:pre-wrap;margin-bottom:8px'},g.about):null,
+      h('div',{class:'row'},
+        h('button',{class:g.frozen?'grn':'sec',onclick:act('/freeze',{on:!g.frozen},g.frozen?null:'گروه معلق شود؟ (کسی نمی‌تواند پیام بفرستد)')},g.frozen?'رفع تعلیق':'معلق کردن'),
+        h('button',{class:'red',onclick:act('/delete',{},'گروه «'+g.name+'» و همهٔ پیام‌هایش برای همیشه حذف شود؟')},'حذف گروه'),er),
+      h('div',{class:'row'},addIn,catSel,h('button',{class:'pri',onclick:function(){var us=addIn.value.split(/[\s,،]+/).filter(Boolean);act('/add',{users:us,category:catSel.value?Number(catSel.value):undefined})();}},'افزودن')),
+      h('table',null,h('tr',null,h('th',null,'کاربر'),h('th',null,'نقش'),h('th',null,'پیوستن'),h('th',null,'راه پیوستن'),h('th')),trs)));
+  }
+  function limits(){
+    var rows=D.limits.filter(function(r){return r.owned||r.limit!=null;});
+    var un=h('input',{placeholder:'نام کاربری',style:'direction:ltr;width:150px'}),lv=h('input',{placeholder:'سقف',style:'direction:ltr;width:60px',inputmode:'numeric'}),r=h('span');
+    var setL=function(u,v){return async function(){r.textContent='';try{await api('POST','/ugroups/limit',{username:u,limit:v===''||v==null?null:Number(v)});await load();}catch(e){r.textContent='✗ '+msg(e);}};};
+    limCard.replaceChildren(h('h3',null,'سقف ساخت برای هر کاربر'),
+      h('div',{class:'mut',style:'margin-bottom:8px;white-space:normal'},'سقف پیش‌فرض همه '+fa(D.cfg.limit)+' است. برای یک کاربر خاص عدد دیگری بگذارید (۰ = نتواند بسازد) یا خالی بگذارید تا پیش‌فرض شود.'),
+      h('div',{class:'row'},un,lv,h('button',{class:'pri',onclick:function(){setL(un.value.trim().toLowerCase(),lv.value.trim())();}},'ثبت'),r),
+      rows.length?h('table',null,h('tr',null,h('th',null,'کاربر'),h('th',null,'ساخته'),h('th',null,'سقف'),h('th')),
+        rows.map(function(x){return h('tr',null,h('td',null,uname(x.username)),h('td',{class:'n'},fa(x.owned)),h('td',{class:'n'},x.limit==null?'پیش‌فرض ('+fa(D.cfg.limit)+')':fa(x.limit)),
+          h('td',null,x.limit!=null?h('button',{class:'sec',onclick:setL(x.username,null)},'پیش‌فرض'):null));})):null);
+  }
+  async function load(){
+    try{D=await api('GET','/ugroups');}catch(e){setCard.replaceChildren('خطا: '+msg(e));return;}
+    settings();list();limits();
+  }
+  load();
 }
 // ---------------- 1.14: usage per user (messages, storage, traffic, calls, devices) ----------------
 var U={sort:'storage',dir:-1,q:''};

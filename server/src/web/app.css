@@ -343,3 +343,6 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 @keyframes gcpop { from { transform: scale(.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .call.gcall .gtop .icon, .bar .icon.newcall { white-space: nowrap; font-size: 16px; }
 .bar .icon.newcall { width: auto; padding: 0 10px; }
+.lockbar { padding: 12px; text-align: center; color: var(--fg2); font-size: 14px; }
+.row .role { flex: none; font-size: 12px; color: var(--accent); }
+.row.toggle input { flex: none; width: 20px; height: 20px; }

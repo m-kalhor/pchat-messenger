@@ -114,6 +114,42 @@ if (getSetting('migrated_v13_links') !== '1') {
   db.exec('COMMIT');
 }
 
+// 1.20: groups that users make themselves live in the same table as the admin's categories (same `g:<id>`
+// keys, so messages, receipts, pins and group calls work unchanged), marked kind='user'. Their names need not
+// be unique, so the table is rebuilt once without UNIQUE(name); the admin's own categories stay unique in code.
+const catCols = db.prepare('PRAGMA table_info(categories)').all().map((r) => r.name);
+if (!catCols.includes('kind')) {
+  db.exec('BEGIN');
+  try {
+    db.exec(`CREATE TABLE categories_v20 (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, gkey TEXT UNIQUE NOT NULL,
+      kind TEXT NOT NULL DEFAULT 'cat', owner TEXT, created INTEGER, about TEXT,
+      avatar_ver INTEGER NOT NULL DEFAULT 0, invite TEXT, admins_only INTEGER NOT NULL DEFAULT 0,
+      frozen INTEGER NOT NULL DEFAULT 0, call_on INTEGER NOT NULL DEFAULT 1)`);
+    db.exec('INSERT INTO categories_v20(id,name,gkey) SELECT id,name,gkey FROM categories');
+    // never hand out the id (and so the g:<id> key) of a deleted category again: its old messages may remain
+    const seqRow = db.prepare("SELECT seq FROM sqlite_sequence WHERE name='categories'").get();
+    const usedRow = db.prepare("SELECT MAX(CAST(substr(target,3) AS INTEGER)) AS m FROM messages WHERE target GLOB 'g:[0-9]*'").get();
+    const seq = Math.max(seqRow ? Number(seqRow.seq) : 0, usedRow && usedRow.m ? Number(usedRow.m) : 0);
+    db.exec('DROP TABLE categories');
+    db.exec('ALTER TABLE categories_v20 RENAME TO categories');
+    if (seq > 0) {
+      db.prepare("DELETE FROM sqlite_sequence WHERE name='categories'").run();
+      db.prepare("INSERT INTO sqlite_sequence(name,seq) VALUES('categories',?)").run(Math.max(seq, Number(db.prepare('SELECT COALESCE(MAX(id),0) AS m FROM categories').get().m)));
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+}
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_cat_invite ON categories(invite) WHERE invite IS NOT NULL");
+db.exec('CREATE INDEX IF NOT EXISTS idx_cat_owner ON categories(owner)');
+const ucCols = db.prepare('PRAGMA table_info(user_categories)').all().map((r) => r.name);
+if (!ucCols.includes('role')) db.exec("ALTER TABLE user_categories ADD COLUMN role TEXT NOT NULL DEFAULT 'member'");
+if (!ucCols.includes('joined')) db.exec('ALTER TABLE user_categories ADD COLUMN joined INTEGER');
+if (!ucCols.includes('via')) db.exec('ALTER TABLE user_categories ADD COLUMN via TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_uc_cat ON user_categories(category_id)');
+db.exec('CREATE TABLE IF NOT EXISTS group_bans (category_id INTEGER NOT NULL, username TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (category_id, username))');
+if (!db.prepare('PRAGMA table_info(users)').all().some((r) => r.name === 'ugroup_limit')) db.exec('ALTER TABLE users ADD COLUMN ugroup_limit INTEGER');
+
 function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
   const h = crypto.scryptSync(pw, salt, 64);

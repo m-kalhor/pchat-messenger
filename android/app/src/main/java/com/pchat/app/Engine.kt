@@ -226,6 +226,20 @@ object Engine {
     private fun errText(e: Exception): String = when (e) {
         is UserError -> e.message ?: "خطا"
         is Api.HttpError -> when (e.error) {
+            "ugroups_off" -> "ساختن گروه را مدیر سرور خاموش کرده است"
+            "group_limit" -> "به حداکثر تعداد گروه و کانالی که می‌توانید بسازید رسیده‌اید"
+            "their_group_limit" -> "این عضو به حداکثر تعداد گروه‌هایش رسیده و نمی‌تواند مالک شود"
+            "cannot_add" -> "فقط کسانی را می‌شود اضافه کرد که با شما در ارتباط‌اند؛ برای بقیه لینک دعوت بفرستید"
+            "group_full" -> "گروه به حداکثر تعداد اعضا رسیده است"
+            "not_group_admin" -> "فقط مالک و مدیران گروه این کار را می‌توانند"
+            "not_group_owner" -> "فقط مالک گروه این کار را می‌تواند"
+            "group_frozen" -> "این گروه را مدیر سرور معلق کرده است"
+            "admins_only" -> "در این گروه فقط مدیران پیام می‌فرستند"
+            "bad_invite" -> "این لینک دعوت معتبر نیست یا باطل شده"
+            "removed_from_group" -> "شما از این گروه بیرون شده‌اید و فقط مدیران می‌توانند دوباره اضافه‌تان کنند"
+            "no_such_group" -> "این گروه دیگر وجود ندارد"
+            "cannot_remove" -> "مالک گروه را نمی‌شود بیرون کرد"
+            "bad_name" -> "نام را بنویسید"
             "stickers_disabled" -> "مدیر ساختن استیکر را خاموش کرده است"
             "pack_limit" -> "به حداکثر تعداد پک‌های شخصی رسیده‌اید"
             "pack_full" -> "این پک پر است"
@@ -1241,6 +1255,7 @@ object Engine {
         if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
         if (o.has("username")) callRoute.value = o.optBoolean("call_route", false)
         if (o.has("gcall")) GroupCall.cfg.value = parseGCfg(o.optJSONObject("gcall"))
+        o.optJSONObject("ugroups")?.let { u -> ugCfg.value = UgCfg(u.optBoolean("on", false), u.optInt("limit", 0), u.optInt("owned", 0), u.optInt("max_members", 200)) }
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 
@@ -1401,6 +1416,60 @@ object Engine {
             tick.value++
             null
         } catch (e: Exception) { errText(e) }
+    }
+
+    // ---------------- 1.20: groups users make themselves ----------------
+    data class UgCfg(val on: Boolean = false, val limit: Int = 0, val owned: Int = 0, val maxMembers: Int = 200)
+    val ugCfg = MutableStateFlow(UgCfg())
+
+    fun groupOf(convo: String): GroupInfo? = groups.value.firstOrNull { it.key == convo }
+    fun canManageGroup(convo: String): Boolean = groupOf(convo)?.let { it.isUser && it.manages } ?: false
+    fun isUserGroup(convo: String): Boolean = groupOf(convo)?.isUser == true
+    /** Why the user cannot write in this group, or null. */
+    fun writeBlock(convo: String): String? {
+        val g = groupOf(convo) ?: return null
+        if (!g.isUser) return null
+        if (g.frozen) return "این گروه را مدیر سرور معلق کرده است"
+        if (g.adminsOnly && !g.manages) return "فقط مدیران این گروه پیام می‌فرستند"
+        return null
+    }
+
+    /** Runs a group request; returns (answer, null) or (null, error text), then reloads groups, contacts and limits. */
+    suspend fun groupOp(block: () -> JSONObject): Pair<JSONObject?, String?> = withContext(Dispatchers.IO) {
+        try {
+            val r = block()
+            try { refreshGroups() } catch (e: Exception) { }
+            try { refreshUsers() } catch (e: Exception) { }
+            try { refreshMe() } catch (e: Exception) { }
+            r to null
+        } catch (e: Exception) { null to errText(e) }
+    }
+    suspend fun groupDetails(id: Int): JSONObject? = withContext(Dispatchers.IO) { try { Api.ugroup(id) } catch (e: Exception) { null } }
+    suspend fun joinPreview(token: String): Pair<JSONObject?, String?> = withContext(Dispatchers.IO) {
+        try { Api.joinPreview(token) to null } catch (e: Exception) { null to errText(e) }
+    }
+    suspend fun saveGroupAvatar(id: Int, uri: Uri): String? {
+        val webp = withContext(Dispatchers.IO) { makeAvatarWebp(app, uri) } ?: return "تصویر خوانده نشد"
+        return groupOp { Api.uploadGroupAvatar(id, webp) }.second
+    }
+    suspend fun groupAvatarBitmap(id: Int, ver: Int): ImageBitmap? = withContext(Dispatchers.IO) {
+        if (ver <= 0) return@withContext null
+        val key = "grp-$id#$ver"
+        avatarMem.get(key)?.let { return@withContext it }
+        val f = File(avatarDir(), "grp-${id}_$ver.webp")
+        try {
+            if (!f.exists()) {
+                f.writeBytes(Api.downloadGroupAvatar(id))
+                avatarDir().listFiles()?.forEach { if (it.name.startsWith("grp-${id}_") && it != f) it.delete() }
+            }
+            decodeBytes(f.readBytes())?.also { avatarMem.put(key, it) }
+        } catch (e: Exception) { null }
+    }
+    /** The invite token in a pasted link (…#join=TOKEN) or the bare token. */
+    fun inviteToken(text: String): String? {
+        val t = text.trim()
+        Regex("join=([A-Za-z0-9_-]{12,32})").find(t)?.let { return it.groupValues[1] }
+        return if (Regex("^[A-Za-z0-9_-]{12,32}$").matches(t)) t else null
     }
 
     // ---------------- pins ----------------
