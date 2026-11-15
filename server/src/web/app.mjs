@@ -10,7 +10,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.16.0';
+const VERSION = '1.17.0';
 const S = E.S;
 const app = document.getElementById('app');
 
