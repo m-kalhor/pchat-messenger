@@ -94,7 +94,7 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری یا رمز اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۰ دقیقه صبر کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_sms_provider:'سرویس‌دهندهٔ پیامک ناشناخته است',bad_sms_token:'توکن API نامعتبر است',bad_sms_from:'شمارهٔ خط ارسال فقط رقم (با + در ابتدا)',bad_sms_pattern:'کد الگو فقط حروف لاتین، رقم، - و _',bad_sms_param:'نام متغیر فقط حروف لاتین، رقم و _',sms_no_credit:'این سرویس‌دهنده نمایش اعتبار ندارد',sms_foreign_number:'پیامک فقط به شماره‌های ایران فرستاده می‌شود',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'تنظیمات پیامک کامل نیست',timeout:'سرور به سرویس پیامک نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
+var ERR={bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری، رمز یا کد اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۵ دقیقه صبر کنید',bad_code:'کد اشتباه است یا وقتش گذشته؛ کد تازه را بزنید',bad_password_or_code:'رمز یا کد اشتباه است',totp_not_started:'دوباره از «فعال کردن» شروع کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_sms_provider:'سرویس‌دهندهٔ پیامک ناشناخته است',bad_sms_token:'توکن API نامعتبر است',bad_sms_from:'شمارهٔ خط ارسال فقط رقم (با + در ابتدا)',bad_sms_pattern:'کد الگو فقط حروف لاتین، رقم، - و _',bad_sms_param:'نام متغیر فقط حروف لاتین، رقم و _',sms_no_credit:'این سرویس‌دهنده نمایش اعتبار ندارد',sms_foreign_number:'پیامک فقط به شماره‌های ایران فرستاده می‌شود',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'تنظیمات پیامک کامل نیست',timeout:'سرور به سرویس پیامک نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
 function msg2(e){return e?(ERR[e]||e):'';}
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
@@ -147,13 +147,18 @@ async function saveAll(){
 function confirmDiscard(){return !dirty()||confirm('تغییرات ذخیره‌نشده دور ریخته شود؟');}
 window.addEventListener('beforeunload',function(ev){if(csrf&&dirty()){ev.preventDefault();ev.returnValue='';}});
 
-function showLogin(){
+async function showLogin(){
   clearInterval(timer);bar=null;
   var un=h('input',{type:'text',placeholder:'نام کاربری',value:'admin',autocomplete:'username',style:'direction:ltr'});
   var pw=h('input',{type:'password',placeholder:'رمز',autocomplete:'current-password'}),er=h('div',{class:'err'});
-  var go=async function(){er.textContent='';try{var j=await api('POST','/login',{username:un.value,password:pw.value});csrf=j.csrf;admin=j.username;start();}catch(e){er.textContent=msg(e);}};
-  pw.addEventListener('keydown',function(ev){if(ev.key==='Enter')go();});
-  app.replaceChildren(h('div',{id:'login',class:'card'},h('h3',null,'ورود به پنل مدیریت'),un,h('div',{style:'height:8px'}),pw,h('div',{style:'height:10px'}),h('button',{class:'pri',onclick:go},'ورود'),er));
+  // 1.18: with the second factor on, the 6-digit code from the authenticator app as well
+  var need=false;try{need=!!(await api('GET','/login-info')).totp;}catch(e){}
+  var code=h('input',{type:'text',inputmode:'numeric',autocomplete:'one-time-code',maxlength:'6',placeholder:'کد ۶ رقمی برنامهٔ Authenticator',style:'direction:ltr;text-align:center;letter-spacing:4px'});
+  var go=async function(){er.textContent='';try{var j=await api('POST','/login',{username:un.value,password:pw.value,code:need?code.value:undefined});csrf=j.csrf;admin=j.username;start();}catch(e){er.textContent=msg(e);code.value='';}};
+  pw.addEventListener('keydown',function(ev){if(ev.key==='Enter'){if(need&&!code.value)code.focus();else go();}});
+  code.addEventListener('keydown',function(ev){if(ev.key==='Enter')go();});
+  app.replaceChildren(h('div',{id:'login',class:'card'},h('h3',null,'ورود به پنل مدیریت'),un,h('div',{style:'height:8px'}),pw,
+    need?h('div',{style:'height:8px'}):null,need?code:null,h('div',{style:'height:10px'}),h('button',{class:'pri',onclick:go},'ورود'),er));
   pw.focus();
 }
 async function start(){
@@ -683,6 +688,39 @@ function account(box){
       catch(e){er.textContent=msg(e);}
     }},'به‌روزرسانی حساب'),er,
     h('div',{class:'mut',style:'margin-top:8px'},'این بخش برای امنیت با رمز فعلی و دکمهٔ جداگانه ثبت می‌شود. اگر رمز را فراموش کردید، روی سرور «msgadmin adminpw» را اجرا کنید.')));
+  totpCard(box);
+}
+// 1.18: second factor for the panel (Google Authenticator, Microsoft Authenticator, Aegis, ...)
+async function totpCard(box){
+  var on=false;try{on=!!(await api('GET','/session')).totp;}catch(e){}
+  var card=h('div',{class:'card',style:'max-width:480px'}),er=h('div',{class:'err'});
+  var inp=function(ph,type){return type?h('input',{type:type,placeholder:ph,autocomplete:'current-password'}):h('input',{type:'text',placeholder:ph,autocomplete:'one-time-code',inputmode:'numeric',maxlength:'6',style:'direction:ltr;text-align:center;letter-spacing:4px'});};
+  box.appendChild(card);
+  if(on){
+    var cur=inp('رمز فعلی','password'),code=inp('کد ۶ رقمی');
+    card.append(h('h3',null,'رمز دوم ورود (کد Authenticator)'),h('div',{class:'row'},h('b',{style:'color:#1a7f37'},'✓ روشن است')),
+      h('div',{class:'mut'},'برای ورود به پنل، رمز و کد ۶ رقمی برنامه هر دو لازم است.'),
+      h('div',{class:'row'},h('span',{style:'width:110px'},'رمز فعلی'),cur),h('div',{class:'row'},h('span',{style:'width:110px'},'کد برنامه'),code),
+      h('button',{class:'sec',onclick:async function(){er.textContent='';if(!confirm('رمز دوم خاموش شود؟ پنل دوباره فقط با رمز باز می‌شود.'))return;
+        try{await api('POST','/totp/disable',{current:cur.value,code:code.value});alert('رمز دوم خاموش شد');render();}catch(e){er.textContent=msg(e);}}},'خاموش کردن رمز دوم'),er,
+      h('div',{class:'mut',style:'margin-top:8px'},'اگر گوشی را گم کردید: روی سرور «msgadmin totp-off» را اجرا کنید و بعد دوباره فعالش کنید.'));
+    return;
+  }
+  var cur2=inp('رمز فعلی','password'),step=h('div');
+  card.append(h('h3',null,'رمز دوم ورود (کد Authenticator)'),h('div',{class:'row'},h('b',{style:'color:#b42318'},'خاموش است')),
+    h('div',{class:'mut'},'با روشن کردن آن، ورود به پنل علاوه بر رمز، کد ۶ رقمی برنامهٔ Google Authenticator (یا مشابه) روی گوشی شما را هم لازم دارد. پس اگر کسی رمز را بداند هم بدون گوشی شما وارد نمی‌شود.'),
+    h('div',{class:'row'},h('span',{style:'width:110px'},'رمز فعلی'),cur2),
+    h('button',{class:'pri',onclick:async function(){er.textContent='';
+      try{var j=await api('POST','/totp/start',{current:cur2.value});}catch(e){er.textContent=msg(e);return;}
+      var code=inp('کد ۶ رقمی');
+      step.replaceChildren(h('div',{class:'mut',style:'margin-top:10px'},'۱. در برنامهٔ Authenticator گوشی «+» را بزنید و این QR را اسکن کنید:'),
+        h('div',{style:'text-align:center;margin:8px 0'},h('img',{src:j.qr,alt:'QR',style:'width:220px;height:220px;background:#fff;padding:6px;border-radius:8px'})),
+        h('div',{class:'mut'},'اگر اسکن نشد، این کلید را دستی وارد کنید:'),h('div',{style:'direction:ltr;font-family:monospace;word-break:break-all;margin:4px 0 10px'},j.secret.replace(/(.{4})/g,'$1 ').trim()),
+        h('div',{class:'mut'},'۲. کد ۶ رقمی که برنامه نشان می‌دهد را بنویسید و تأیید کنید:'),
+        h('div',{class:'row'},code,h('button',{class:'pri',onclick:async function(){er.textContent='';
+          try{await api('POST','/totp/confirm',{code:code.value});alert('رمز دوم روشن شد. از این به بعد ورود به پنل کد برنامه را هم می‌خواهد. بقیهٔ نشست‌های باز پنل خارج شدند.');render();}catch(e){er.textContent=msg(e);}}},'تأیید و روشن کردن')));
+      code.focus();
+    }},'فعال کردن رمز دوم'),step,er);
 }
 
 (async function init(){try{var j=await api('GET','/session');csrf=j.csrf;admin=j.username;start();}catch(e){showLogin();}})();
