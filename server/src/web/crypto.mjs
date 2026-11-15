@@ -99,6 +99,36 @@ export async function decryptFrom(my, me, sender, target, senderPub, payload) {
   return open(k, unb64(o.c), aad);
 }
 
+// ---------------- 1.21: channels (shared channel key) ----------------
+// A channel has a random AES-256 key per version kv. An owner/admin device seals it for each member with the
+// pair key of ECDH(device, member), AAD "sepan-ck|<channel key>|<kv>|<member>". A post is
+// {v:2, kv, c: AES-GCM(channel key, plaintext, AAD "<sender>|<target>")}: one copy for everybody.
+export const newChanKey = () => randomBytes(32);
+const ckAad = (gkey, kv, member) => te.encode(`sepan-ck|${gkey}|${kv}|${member}`);
+/** Seals key `raw` of version kv for `member` (whose public key is memberPub). */
+export async function sealChanKey(my, me, member, memberPub, gkey, kv, raw) {
+  const sk = member === me ? await pairKey(my, my.pubB64, me, me) : await pairKey(my, memberPub, me, member);
+  return b64(await seal(sk, raw, ckAad(gkey, kv, member)));
+}
+/** Opens my copy, sealed by `byUser` whose public key was byPub. */
+export async function openChanKey(my, me, byUser, byPub, gkey, kv, wrapped) {
+  const sk = byUser === me ? await pairKey(my, my.pubB64, me, me) : await pairKey(my, byPub, byUser, me);
+  return open(sk, unb64(wrapped), ckAad(gkey, kv, me));
+}
+export async function chanEncrypt(raw, kv, sender, target, plain) {
+  const k = await aesKey(raw, ['encrypt']);
+  const body = typeof plain === 'string' ? te.encode(plain) : plain;
+  return JSON.stringify({ v: 2, kv, c: b64(await seal(k, body, te.encode(`${sender}|${target}`))) });
+}
+/** The version a channel post was sealed with (0 = not a channel post). */
+export function chanVersion(payload) {
+  try { const o = JSON.parse(payload); return o && o.v === 2 && Number.isInteger(o.kv) ? o.kv : 0; } catch { return 0; }
+}
+export async function chanDecrypt(raw, sender, target, payload) {
+  const o = JSON.parse(payload);
+  return open(await aesKey(raw, ['decrypt']), unb64(o.c), te.encode(`${sender}|${target}`));
+}
+
 // ---------------- files ----------------
 export const chunkCount = (plain) => (plain <= 0 ? 1 : Math.ceil(plain / FILE_CHUNK));
 export const cipherSize = (plain) => plain + TAG * chunkCount(plain);

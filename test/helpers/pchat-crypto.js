@@ -141,7 +141,22 @@ function importBackup(kb, username, password) {
   return { priv: crypto.createPrivateKey({ key: der, format: 'der', type: 'pkcs8' }), pubB64: kb.pub };
 }
 
-module.exports = { exportBackup, importBackup,
+// ---------------- 1.21: channels (Crypto.kt sealChanKey / openChanKey / chanEncrypt / chanDecrypt) ----------------
+const ckAad = (gkey, kv, member) => Buffer.from(`sepan-ck|${gkey}|${kv}|${member}`);
+function sealChanKey(my, me, member, memberPub, gkey, kv, raw) {
+  return b64(seal(pairKey(my, member === me ? my.pubB64 : memberPub, me, member), raw, ckAad(gkey, kv, member)));
+}
+function openChanKey(my, me, byUser, byPub, gkey, kv, wrapped) {
+  return open(pairKey(my, byUser === me ? my.pubB64 : byPub, byUser, me), unb64(wrapped), ckAad(gkey, kv, me));
+}
+function chanEncrypt(raw, kv, sender, target, plain) {
+  return JSON.stringify({ v: 2, kv, c: b64(seal(raw, Buffer.from(plain), Buffer.from(`${sender}|${target}`))) });
+}
+function chanDecrypt(raw, sender, target, payload) {
+  return open(raw, unb64(JSON.parse(payload).c), Buffer.from(`${sender}|${target}`));
+}
+
+module.exports = { exportBackup, importBackup, sealChanKey, openChanKey, chanEncrypt, chanDecrypt,
   b64, unb64, newIdentity, fingerprint, hkdf, pairKey, seal, open,
   FILE_CHUNK, TAG, CIPHER_CHUNK, chunkCount, cipherSize, newFileKey, isChunked,
   sealChunk, openChunk, sealFileChunks, openFileChunks, encryptFor, decryptFrom,
