@@ -58,7 +58,7 @@ test('SMS code signs in once; every spelling of the number works', async () => {
   assert.equal(sent.at(-1).pattern, 'qka6e0fb86auvc4');
   assert.equal(sent.at(-1).from, '+983000505', 'the line is sent in the +98 form');
   assert.equal(sent.at(-1).name, 'code');
-  assert.match(lastCode(), /^\d{5}$/);
+  assert.match(lastCode(), /^\d{6}$/, '6 digits since 1.18.1');
   const id = C.newIdentity();
   const ok = await post('/api/auth/code', { phone: '+989121112233', code: lastCode(), pubkey: id.pubB64, device: 'Android' });
   assert.equal(ok.status, 200);

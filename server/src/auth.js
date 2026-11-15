@@ -3,11 +3,11 @@
  * Sign-in by mobile number (1.5.0). A user is found by the mobile number on the account (entered by the admin, or confirmed by SMS at open sign-up);
  * one-time codes come from three places, so a dead SMS service never locks
  * anybody out:
- *   'sms'    5 digits by SMS (provider chosen in the panel, see sms/), 2 minutes;
+ *   'sms'    6 digits by SMS (provider chosen in the panel, see sms/), 2 minutes (5 digits before 1.18.1);
  *   'device' 6 digits shown on one of the user's devices that is already signed in, 5 minutes;
  *   'admin'  6 digits made by the admin in the panel and passed on in person or by phone, 10 minutes;
- *   'reauth' 5 digits by SMS to confirm the account before the key backup changes (no login password);
- *   'signup' 5 digits by SMS to a number that has no account yet (open sign-up, 1.6), kept under 'tel:<number>'.
+ *   'reauth' 6 digits by SMS to confirm the account before the key backup changes (no login password);
+ *   'signup' 6 digits by SMS to a number that has no account yet (open sign-up, 1.6), kept under 'tel:<number>'.
  * Every code is single-use, stored only as an HMAC and dies after 3 wrong tries. A code opens the account
  * only; the messages still need the key password, which only the user knows.
  */
@@ -17,7 +17,7 @@ const sms = require('./sms');
 
 const MIN = 60e3;
 const TTL = { sms: 2 * MIN, device: 5 * MIN, admin: 10 * MIN, reauth: 5 * MIN, signup: 2 * MIN };
-const DIGITS = { sms: 5, device: 6, admin: 6, reauth: 5, signup: 5 };
+const DIGITS = { sms: 6, device: 6, admin: 6, reauth: 6, signup: 6 };
 const MAX_TRIES = 3;
 
 const q = {
@@ -125,10 +125,59 @@ function phoneMap() {
   return m;
 }
 
-/** Sends the code by SMS (Iranian numbers only). Throws when the SMS did not go out. */
-async function sendSms(phone, code) {
+// ---- 1.18.1: overall SMS budget, so nobody can empty the SMS account by asking for codes from many addresses ----
+// At most sms_max_hour and sms_max_day codes go out server-wide (set in the panel; 0 = no limit), and at most
+// SMS_PER_NET a day to requests from one network (IPv4 /24, IPv6 /64). The panel's test SMS does not count.
+const HOUR = 3600e3, DAY = 24 * HOUR;
+const SMS_PER_NET = +(process.env.SMS_PER_NET_DAY || 50);
+const sentLog = []; // times of the codes sent (last 24 h)
+const netLog = new Map(); // network -> { n, t }
+const smsLimits = () => {
+  const n = (k, d) => { const v = Number(getSetting(k, String(d))); return Number.isInteger(v) && v >= 0 ? v : d; };
+  return { hour: n('sms_max_hour', 40), day: n('sms_max_day', 300) };
+};
+function netOf(ip) {
+  const a = String(ip || '').replace(/^::ffff:/, '');
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(a)) return a.split('.').slice(0, 3).join('.') + '.0/24';
+  return a.split(':').slice(0, 4).join(':') + '::/64';
+}
+function prune(t = Date.now()) {
+  while (sentLog.length && t - sentLog[0] > DAY) sentLog.shift();
+  for (const [k, v] of netLog) if (t - v.t > DAY) netLog.delete(k);
+}
+/** How many codes went out in the last hour / day, and the limits. */
+function smsUsage(t = Date.now()) {
+  prune(t);
+  const lim = smsLimits();
+  return { hour: sentLog.filter((x) => t - x < HOUR).length, day: sentLog.length, max_hour: lim.hour, max_day: lim.day, last_cap: Number(getSetting('sms_cap_hit', '0')) || null };
+}
+/** null when one more code may go out to a request from `ip`, else the reason. */
+function smsBudget(ip, t = Date.now()) {
+  const u = smsUsage(t);
+  if ((u.max_hour && u.hour >= u.max_hour) || (u.max_day && u.day >= u.max_day)) return 'cap';
+  const nl = ip ? netLog.get(netOf(ip)) : null;
+  if (nl && nl.n >= SMS_PER_NET) return 'net';
+  return null;
+}
+function countSms(ip, t = Date.now()) {
+  sentLog.push(t);
+  if (!ip) return;
+  const k = netOf(ip), v = netLog.get(k);
+  netLog.set(k, v && t - v.t < DAY ? { n: v.n + 1, t: v.t } : { n: 1, t });
+}
+
+/**
+ * Sends the code by SMS (Iranian numbers only). Throws when the SMS did not go out: 'sms_busy' when the
+ * budget above is used up (opts.ip = the requesting address; opts.test = the panel's test SMS, not counted).
+ */
+async function sendSms(phone, code, opts = {}) {
   const p = normPhone(phone);
   if (!isIran(p)) throw new Error('sms_foreign_number');
+  if (!opts.test) {
+    const why = smsBudget(opts.ip);
+    if (why) { if (why === 'cap') setSetting('sms_cap_hit', Date.now()); throw new Error('sms_busy'); }
+    countSms(opts.ip);
+  }
   return sms.send(p, code);
 }
 
@@ -136,5 +185,5 @@ function cleanup() { q.dead.run(Date.now(), MAX_TRIES); }
 
 module.exports = {
   TTL, normPhone, isIran, findUser, phoneOf, phoneMap, issue, consume, smsReady, passwordLogin, openSignup, signupCategory,
-  smsStatus: sms.status, sendSms, smsCredit: sms.credit, cleanup,
+  smsStatus: sms.status, sendSms, smsCredit: sms.credit, cleanup, smsUsage, smsLimits, netOf,
 };

@@ -25,6 +25,9 @@ const MAX_UPLOAD = +(process.env.MAX_UPLOAD_MB || 2048) * 1024 * 1024;   // chun
 const MAX_TOTAL = +(process.env.MAX_TOTAL_MB || 10000) * 1024 * 1024;
 const MIN_FREE = +(process.env.MIN_FREE_MB || 1500) * 1024 * 1024;
 const CHUNK_MAX = 16 * 1024 * 1024;
+// 1.18.1: one user cannot fill the server: files they uploaded (kept FILE_TTL_DAYS) plus uploads still open
+const MAX_USER = +(process.env.MAX_USER_MB || 3000) * 1024 * 1024;
+const MAX_OPEN_UPLOADS = +(process.env.MAX_OPEN_UPLOADS || 8);
 const FILE_TTL_DAYS = +(process.env.FILE_TTL_DAYS || 30);
 const MSG_TTL_DAYS = +(process.env.MSG_TTL_DAYS || 90);
 const EDIT_WINDOW = +(process.env.EDIT_WINDOW_HOURS || 48) * 3600e3;
@@ -61,6 +64,8 @@ const q = {
   file: db.prepare('SELECT * FROM files WHERE id=?'),
   totalFiles: db.prepare('SELECT COALESCE(SUM(size),0) AS t FROM files'),
   totalUploads: db.prepare('SELECT COALESCE(SUM(size),0) AS t FROM uploads'),
+  userFiles: db.prepare('SELECT COALESCE(SUM(size),0) AS t FROM files WHERE owner=?'),
+  userUploads: db.prepare('SELECT COALESCE(SUM(size),0) AS t, COUNT(*) AS n FROM uploads WHERE owner=?'),
   addUp: db.prepare('INSERT INTO uploads(id,owner,size,off,ts) VALUES(?,?,?,0,?)'),
   up: db.prepare('SELECT * FROM uploads WHERE id=?'),
   setOff: db.prepare('UPDATE uploads SET off=?, ts=? WHERE id=?'),
@@ -141,6 +146,17 @@ const addFail = (key) => {
   if (!f || now() - f.t > 600000) fails.set(key, { n: 1, t: now() });
   else { f.n++; f.t = now(); }
 };
+// 1.18.1: counters over a fixed window (wrong sign-in codes per account and day, password guesses per account and hour)
+const windows = new Map(); // key -> { n, t }
+const overWindow = (key, max, ms) => { const w = windows.get(key); return !!w && now() - w.t < ms && w.n >= max; };
+const addWindow = (key, ms) => { const w = windows.get(key); windows.set(key, w && now() - w.t < ms ? { n: w.n + 1, t: w.t } : { n: 1, t: now() }); };
+setInterval(() => {
+  const t = now();
+  for (const [k, f] of fails) if (t - f.t > 600000) fails.delete(k);
+  for (const [k, w] of windows) if (t - w.t > DAY) windows.delete(k);
+}, 600e3).unref();
+const CODE_FAILS_DAY = +(process.env.CODE_FAILS_PER_DAY || 15);
+const PW_FAILS_HOUR = +(process.env.PW_FAILS_PER_HOUR || 100);
 
 // ---------- live connections (SSE) ----------
 // username -> Set(res). Each connection carries res.dev (the device's id) and res.active: the app is on
@@ -444,11 +460,18 @@ async function route(req, res) {
     if (!auth.passwordLogin()) return send(res, 403, { error: 'password_login_disabled' });
     const username = String(b.username || '').toLowerCase();
     const ip = req.socket.remoteAddress;
-    if (limited('ip:' + ip, 20) || limited('u:' + username, 5)) return send(res, 429, { error: 'rate_limited' });
+    // 1.18.1: the lock is per account AND address, so guessing from elsewhere cannot lock the owner out;
+    // a very high count from everywhere (PW_FAILS_HOUR an hour) still stops a spread-out guess
+    const ukey = 'u:' + username.slice(0, 40) + '|' + ip;
+    if (limited('ip:' + ip, 20) || limited(ukey, 5) || limited('net:' + auth.netOf(ip), 100) || overWindow('pwh:' + username.slice(0, 40), PW_FAILS_HOUR, 3600e3)) return send(res, 429, { error: 'rate_limited' });
     const u = core.q.user.get(username);
     const ok = u ? checkPassword(b.password || '', u.pass) : (checkPassword(b.password || '', DUMMY), false);
-    if (!ok || u.disabled) { addFail('ip:' + ip); addFail('u:' + username); return send(res, 401, { error: 'bad_credentials' }); }
-    fails.delete('u:' + username);
+    if (!ok || u.disabled) {
+      addFail('ip:' + ip); addFail(ukey); addFail('net:' + auth.netOf(ip));
+      if (u) addWindow('pwh:' + username, 3600e3);
+      return send(res, 401, { error: 'bad_credentials' });
+    }
+    fails.delete(ukey);
     return send(res, 200, newSession(u, 'password', b));
   }
 
@@ -476,7 +499,10 @@ async function route(req, res) {
     const holder = username || (auth.openSignup() && !auth.phoneMap().has(phone) ? 'tel:' + phone : null);
     if (holder) {
       const { code } = auth.issue(holder, username ? 'sms' : 'signup');
-      try { await auth.sendSms(phone, code); } catch { smsSent.delete(phone); return send(res, 503, { error: 'sms_unavailable' }); }
+      try { await auth.sendSms(phone, code, { ip }); } catch (e) {
+        smsSent.delete(phone);
+        return e.message === 'sms_busy' ? send(res, 429, { error: 'sms_busy' }) : send(res, 503, { error: 'sms_unavailable' });
+      }
     }
     return send(res, 200, { ok: true, ttl: auth.TTL.sms / 1000 });
   }
@@ -485,9 +511,10 @@ async function route(req, res) {
     const b = await readJson(req, 4096);
     const ident = String(b.phone || b.username || '').slice(0, 40);
     const ip = req.socket.remoteAddress;
-    const key = 'code:' + (auth.normPhone(ident) || ident.toLowerCase());
-    if (limited('ip:' + ip, 20) || limited(key, 5)) return send(res, 429, { error: 'rate_limited' });
     const username = auth.findUser(ident);
+    // 1.18.1: counted per real account (or number), whatever spelling the request used for it, plus a daily cap
+    const key = 'code:' + (username || auth.normPhone(ident) || ident.trim().toLowerCase());
+    if (limited('ip:' + ip, 20) || limited(key, 5) || overWindow('codeday:' + key, CODE_FAILS_DAY, DAY)) return send(res, 429, { error: 'rate_limited' });
     const via = username && auth.consume(username, b.code, ['sms', 'device', 'admin']);
     if (!via) {
       // a new number with open sign-up: the code proves the number, the client then asks for a username
@@ -498,7 +525,7 @@ async function route(req, res) {
         signupTickets.set(ticket, { phone, t: now() });
         return send(res, 200, { signup: true, ticket, phone });
       }
-      addFail('ip:' + ip); addFail(key); return send(res, 401, { error: 'bad_code' });
+      addFail('ip:' + ip); addFail(key); addWindow('codeday:' + key, DAY); return send(res, 401, { error: 'bad_code' });
     }
     fails.delete(key);
     return send(res, 200, newSession(core.q.user.get(username), via, b));
@@ -546,7 +573,7 @@ async function route(req, res) {
     if (limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });
     addFail('sms:' + phone);
     const { code } = auth.issue(user, 'reauth');
-    try { await auth.sendSms(phone, code); } catch { return send(res, 503, { error: 'sms_unavailable' }); }
+    try { await auth.sendSms(phone, code, { ip: req.socket.remoteAddress }); } catch (e) { return send(res, e.message === 'sms_busy' ? 429 : 503, { error: e.message === 'sms_busy' ? 'sms_busy' : 'sms_unavailable' }); }
     return send(res, 200, { ok: true, ttl: auth.TTL.reauth / 1000 });
   }
 
@@ -670,11 +697,11 @@ async function route(req, res) {
     const me = core.q.user.get(user);
     // the account must be confirmed, so a stolen session alone cannot swap the key: by the login password,
     // by an SMS code (/api/auth/reauth), or by a sign-in with a one-time code in the last 30 minutes
-    if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
+    if (limited('pw:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
     const pw = typeof b.password === 'string' ? b.password : '';
     const fresh = a.via !== 'password' && now() - a.created < 30 * 60e3;
     const proven = pw ? checkPassword(pw, me.pass) || !!auth.consume(user, pw, ['reauth']) : fresh;
-    if (!proven) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    if (!proven) { addFail('pw:' + user); return send(res, 403, { error: 'bad_password' }); }
     const kb = cleanKeyBackup(b.key_backup);
     if (!kb) return send(res, 400, { error: 'bad_key_backup' });
     const before = me.pubkey;
@@ -687,12 +714,12 @@ async function route(req, res) {
   // then the new one; every other session of the user is logged out
   if (p === '/api/password' && req.method === 'POST') {
     const b = await readJson(req, 4096);
-    if (limited('u:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
+    if (limited('pw:' + user, 5)) return send(res, 429, { error: 'rate_limited' });
     const cur = typeof b.current === 'string' ? b.current : '';
     const nw = typeof b.password === 'string' ? b.password : '';
     if (nw.length < 8 || nw.length > 128) return send(res, 400, { error: 'weak_password' });
     const me = core.q.user.get(user);
-    if (!cur || !(checkPassword(cur, me.pass) || auth.consume(user, cur, ['reauth']))) { addFail('u:' + user); return send(res, 403, { error: 'bad_password' }); }
+    if (!cur || !(checkPassword(cur, me.pass) || auth.consume(user, cur, ['reauth']))) { addFail('pw:' + user); return send(res, 403, { error: 'bad_password' }); }
     db.prepare('UPDATE users SET pass=? WHERE username=?').run(hashPassword(nw), user);
     db.prepare('DELETE FROM sessions WHERE username=? AND th<>?').run(user, a.th);
     kick(user); // the other devices get 401 on reconnect; this one reconnects with its still valid token
@@ -989,6 +1016,7 @@ async function route(req, res) {
     const len = Number(req.headers['content-length']);
     if (!len || len > MAX_LEGACY) { res.setHeader('Connection', 'close'); return send(res, 413, { error: 'file_too_large', maxBytes: MAX_LEGACY }); }
     if (q.totalFiles.get().t + q.totalUploads.get().t + len > MAX_TOTAL) { res.setHeader('Connection', 'close'); return send(res, 507, { error: 'storage_full' }); }
+    if (q.userFiles.get(user).t + q.userUploads.get(user).t + len > MAX_USER) { res.setHeader('Connection', 'close'); return send(res, 507, { error: 'user_quota', maxBytes: MAX_USER }); }
     const id = crypto.randomBytes(16).toString('hex');
     const tmp = path.join(FILES_DIR, id + '.part');
     const final = path.join(FILES_DIR, id);
@@ -1015,6 +1043,9 @@ async function route(req, res) {
     if (size > MAX_UPLOAD) return send(res, 413, { error: 'file_too_large', maxBytes: MAX_UPLOAD });
     if (q.totalFiles.get().t + q.totalUploads.get().t + size > MAX_TOTAL) return send(res, 507, { error: 'storage_full' });
     if (freeSpace() - size < MIN_FREE) return send(res, 507, { error: 'disk_full' });
+    const mine = q.userUploads.get(user);
+    if (mine.n >= MAX_OPEN_UPLOADS) return send(res, 429, { error: 'too_many_uploads' });
+    if (q.userFiles.get(user).t + mine.t + size > MAX_USER) return send(res, 507, { error: 'user_quota', maxBytes: MAX_USER });
     const id = crypto.randomBytes(16).toString('hex');
     fs.closeSync(fs.openSync(path.join(UPLOADS_DIR, id + '.part'), 'w'));
     q.addUp.run(id, user, size, now());
