@@ -62,6 +62,11 @@
 - کد: اندروید `GroupCall.kt` و `GroupCallScreen.kt`، وب `web/groupcall.mjs`.
 - ترافیک رله: `server/src/turnlog.js` خطوط `usage` لاگ coturn (`TURN_LOG_FILE`) را می‌خواند و در ستون `turn` جدول `usage_daily` جمع می‌کند.
 
+## گروه‌های کاربران (۱.۲۰)
+- در همان جدول `categories` با `kind='user'` و همان کلید `g:<id>`؛ بنابراین ارسال، رسید، پین، تایپ، فایل و تماس گروهی بدون تغییر کار می‌کنند. ستون‌های تازه: `owner`، `about`، `avatar_ver`، `invite`، `admins_only`، `frozen`، `call_on`؛ در `user_categories` ستون‌های `role` (owner/admin/member)، `joined` و `via`؛ جدول `group_bans` برای بیرون‌شده‌ها. در مهاجرت، جدول یک بار بدون UNIQUE(name) بازسازی می‌شود و شمارهٔ دسته‌های حذف‌شده دوباره داده نمی‌شود.
+- کد: `server/src/ugroups.js`؛ API: `GET /api/ugroups`، `POST /api/ugroups/create`، `GET|POST /api/ugroups/join/<token>`، `GET /api/ugroups/<id>`، `POST /api/ugroups/<id>/{edit,add,remove,role,transfer,invite,leave,delete}`، `POST|DELETE /api/ugroups/<id>/avatar`، `GET /api/ugroups/<id>/qr`، `GET /api/gavatar/<id>`. پنل: `/admin/api/ugroups…`.
+- سقف ساخت (تنظیم `ugroups_limit`، ستون `users.ugroup_limit` برای هر کاربر) فقط گروه‌هایی را می‌شمارد که کاربر الان مالک آن‌هاست.
+
 ## پنل مدیریت
 پورت جدا (۸۴۴۴)، رابط فارسی راست‌به‌چپ، CSRF، کوکی HttpOnly/SameSite=Strict/Secure، سیاست CSP سخت‌گیرانه، محدودیت تلاش ورود (۵ شکست برای هر IP ← ۱۰ دقیقه مسدودی)، و `ufw limit 8444/tcp`.
 

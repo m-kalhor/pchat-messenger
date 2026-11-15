@@ -37,7 +37,16 @@ data class ContactRequest(
 /** incoming (new), declined (can still be accepted), blocked, outgoing (mine, always shown as waiting) */
 data class RequestLists(val incoming: List<ContactRequest>, val declined: List<ContactRequest>, val blocked: List<ContactRequest>, val outgoing: List<ContactRequest>)
 /** [call]: group calls are allowed in this group (1.19, admin panel card «تماس گروهی»). */
-data class GroupInfo(val key: String, val name: String, val members: List<String>, val call: Boolean = false)
+data class GroupInfo(
+    val key: String, val name: String, val members: List<String>, val call: Boolean = false,
+    // 1.20: groups users make themselves (kind "user"); the admin's categories are kind "cat"
+    val id: Int = 0, val kind: String = "cat", val role: String? = null, val owner: String? = null, val about: String = "",
+    val avatarVer: Int = 0, val admins: List<String> = emptyList(), val adminsOnly: Boolean = false, val frozen: Boolean = false,
+    val callOn: Boolean = true, val invite: String? = null
+) {
+    val isUser: Boolean get() = kind == "user"
+    val manages: Boolean get() = role == "owner" || role == "admin"
+}
 /**
  * TURN credentials plus (1.10.1) the call path settings from the admin panel: [policy] auto / relay / direct,
  * the limits for switching a bad direct call to the relay, and the video bitrate cap (0 = none).
@@ -69,8 +78,20 @@ fun parseGroups(raw: String): List<GroupInfo> {
     return (0 until arr.length()).map {
         val o = arr.getJSONObject(it)
         val m = o.getJSONArray("members")
-        GroupInfo(o.getString("key"), o.getString("name"), (0 until m.length()).map { i -> m.getString(i) }, o.optBoolean("call", false))
+        parseGroup(o, m)
     }
+}
+
+fun parseGroup(o: JSONObject, m: JSONArray = o.optJSONArray("members") ?: JSONArray()): GroupInfo {
+    val a = o.optJSONArray("admins")
+    return GroupInfo(
+        o.getString("key"), o.getString("name"), (0 until m.length()).map { i -> m.getString(i) }, o.optBoolean("call", false),
+        o.optInt("id", 0), o.optString("kind", "cat"), if (o.isNull("role")) null else o.optString("role").ifEmpty { null },
+        if (o.isNull("owner")) null else o.optString("owner").ifEmpty { null }, o.optString("about", ""), o.optInt("avatar_ver", 0),
+        a?.let { (0 until it.length()).map { i -> it.getString(i) } } ?: emptyList(),
+        o.optBoolean("admins_only", false), o.optBoolean("frozen", false), o.optBoolean("call_on", true),
+        if (o.isNull("invite")) null else o.optString("invite").ifEmpty { null }
+    )
 }
 
 object Api {
@@ -251,6 +272,22 @@ object Api {
     /** body must be a WebP no larger than 512x512. Returns the new avatar version. */
     fun uploadAvatar(webp: ByteArray): Int =
         JSONObject(exec(req("/api/avatar").post(webp.toRequestBody("image/webp".toMediaType())).build())).getInt("avatar_ver")
+
+    // ---- 1.20: groups users make themselves ----
+    fun ugroup(id: Int): JSONObject = JSONObject(exec(req("/api/ugroups/$id").get().build()))
+    fun ugroupOp(path: String, body: JSONObject = JSONObject()): JSONObject =
+        JSONObject(exec(req("/api/ugroups$path").post(body.toString().toRequestBody(JSON)).build()))
+    fun joinPreview(token: String): JSONObject = JSONObject(exec(req("/api/ugroups/join/$token").get().build()))
+    fun joinGroup(token: String): JSONObject = JSONObject(exec(req("/api/ugroups/join/$token").post("{}".toRequestBody(JSON)).build()))
+    fun uploadGroupAvatar(id: Int, webp: ByteArray): JSONObject =
+        JSONObject(exec(req("/api/ugroups/$id/avatar").post(webp.toRequestBody("image/webp".toMediaType())).build()))
+    fun deleteGroupAvatar(id: Int): JSONObject = JSONObject(exec(req("/api/ugroups/$id/avatar").delete().build()))
+    fun downloadGroupAvatar(id: Int): ByteArray {
+        client.newCall(req("/api/gavatar/$id").get().build()).execute().use { resp ->
+            if (!resp.isSuccessful) throw HttpError(resp.code, "avatar")
+            return resp.body!!.bytes()
+        }
+    }
 
     fun downloadAvatar(user: String): ByteArray {
         client.newCall(req("/api/avatar/$user").get().build()).execute().use { resp ->
