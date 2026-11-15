@@ -354,6 +354,9 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     var addContact by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
     val incoming by Engine.incomingRequests.collectAsState()
+    // 1.19: «گفتگوها» / «تماس‌ها» tabs, and a green 📞 on groups with a running call
+    var tab by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(0) }
+    val grooms by GroupCall.rooms.collectAsState()
 
     // 1.17: members among the phone's contacts. Asked once after sign-in, then kept up to date by itself.
     val phoneMatches by Engine.phoneMatches.collectAsState()
@@ -402,7 +405,10 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
             )
         }
     ) { pad ->
-        LazyColumn(Modifier.padding(pad).fillMaxSize()) {
+      Column(Modifier.padding(pad).fillMaxSize()) {
+        ChatCallTabs(tab) { tab = it }
+        if (tab == 1) CallsTab(onOpen) else
+        LazyColumn(Modifier.fillMaxSize()) {
             if (incoming.isNotEmpty()) item(key = "requests") {
                 Row(
                     Modifier.fillMaxWidth().clickable { showRequests = true }.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
@@ -433,6 +439,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (group && grooms.values.any { it.group == r.convo }) Text("📞 ", fontSize = 13.sp, color = Color(0xFF2E7D32))
                             Text(Engine.titleOf(r.convo), fontWeight = FontWeight.SemiBold, fontSize = 16.sp, modifier = Modifier.weight(1f),
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
                             val last = r.last
@@ -517,6 +524,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 }
             }
         }
+      }
     }
     if (askContacts) AlertDialog(
         onDismissRequest = { askContacts = false; Engine.contactsAsked = true },

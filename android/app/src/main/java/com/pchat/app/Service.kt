@@ -131,7 +131,7 @@ class CallService : Service() {
         }
         foreground = true
         // the call may have ended before Android got here; then leave quietly
-        if (CallManager.state.value.phase == CallPhase.IDLE) stopSelf()
+        if (CallManager.state.value.phase == CallPhase.IDLE && !GroupCall.active()) stopSelf()
         return START_NOT_STICKY
     }
 }

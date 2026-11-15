@@ -214,6 +214,18 @@ fun CallScreen() {
                 RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
             }
         }
+        // 1.19: «افزودن نفر» turns this voice call into a group call (the other side moves over by itself)
+        val gcfg by GroupCall.cfg.collectAsState()
+        var adding by remember(s.callId) { mutableStateOf(false) }
+        if (gcfg.on && !s.video && s.phase == CallPhase.ACTIVE) {
+            Box(
+                Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(end = 12.dp, top = 24.dp).clip(RoundedCornerShape(18.dp))
+                    .background(Color(0x33FFFFFF)).clickable { adding = true }.padding(horizontal = 12.dp, vertical = 8.dp)
+            ) { Text("👤+", color = Color.White, fontSize = 16.sp, maxLines = 1, softWrap = false) }
+        }
+        if (adding) PeoplePicker(PickReq("افزودن به تماس", callablePeople().filter { it != s.peer }, "زنگ بزن", maxVoice() - 2) { users ->
+            if (CallManager.state.value.phase == CallPhase.ACTIVE) CallManager.upgradeToGroup(users)
+        }) { adding = false }
         // 1.15: path menu (users the admin allowed): خودکار / مستقیم / از طریق سرور › UDP, TCP, TLS
         if (s.canRoute && s.phase == CallPhase.ACTIVE) RouteMenu(s, Modifier.align(Alignment.CenterEnd).padding(end = 12.dp))
         // 1.7 test feature: ping and route for the admins listed in the panel (see Diag.kt)

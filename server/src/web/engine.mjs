@@ -35,6 +35,9 @@ function emit(kind, data) { for (const fn of listeners) { try { fn(kind, data); 
 
 export let onSignal = () => { };
 export const setSignalHandler = (fn) => { onSignal = fn; };
+// 1.19: group call events go to groupcall.mjs
+let gcallHook = null;
+export const setGcallHook = (fn) => { gcallHook = fn; };
 /** 1.8 direct transfer on the same Wi-Fi (lan.mjs): { offer(m), signal(from, payload) } */
 let lanHook = null;
 export const setLanHook = (o) => { lanHook = o; };
@@ -334,7 +337,7 @@ export async function refreshRequests() {
 export async function refreshMe() {
   const r = await api.me();
   S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false, allow_requests: r.allow_requests !== false };
-  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false, call_route: !!r.call_route };
+  S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false, call_route: !!r.call_route, gcall: r.gcall || null };
   await store.kvSet('privacy', S.privacy);
   emit('privacy');
 }
@@ -344,6 +347,7 @@ function refreshAll() {
   refreshRequests().catch(handleAuth);
   refreshMe().catch(handleAuth);
   refreshStickers().catch(() => { });
+  if (gcallHook) gcallHook('refresh', {});
 }
 function handleAuth(e) { if (e instanceof api.HttpError && e.status === 401 && api.getToken()) endSession(); }
 
@@ -442,6 +446,10 @@ async function handleEvent(ev, data) {
       if (o.kind === 'sig_typing') { S.typing[o.from] = Date.now(); emit('typing', o.from); setTimeout(() => emit('typing', o.from), 4500); return; }
       if (o.kind === 'sig_lan') { if (lanHook) lanHook.signal(o.from, o.payload); return; }
       return onSignal(o.from, o.kind, o.payload);
+    // 1.19: group calls (groupcall.mjs)
+    case 'gcall': case 'gcall_end': case 'gsig': case 'gcall_react': case 'gcall_host':
+      if (gcallHook) gcallHook(ev, o);
+      return;
     default: return;
   }
 }
@@ -914,6 +922,11 @@ async function encryptFor(convo, plain) {
   return C.encryptFor(S.identity, S.me, convo, rec, typeof plain === 'string' ? plain : JSON.stringify(plain));
 }
 export const encryptSignal = (peer, obj) => encryptFor(peer, obj);
+/** 1.19: a group call signal to someone who may not be a contact (the key comes with the call's room). */
+export const encryptTo = (peer, pub, obj) => C.encryptFor(S.identity, S.me, peer, { [peer]: pub }, JSON.stringify(obj));
+export async function decryptWith(from, pub, payload) {
+  try { return JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, from, S.me, pub || pubOf(from), payload))); } catch { return null; }
+}
 export async function decryptSignal(from, payload) {
   try { return JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, from, S.me, pubOf(from), payload))); } catch { return null; }
 }

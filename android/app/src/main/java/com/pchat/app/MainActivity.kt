@@ -125,18 +125,21 @@ fun App(deepLink: MutableState<String?>) {
     val updateOffer by Updater.offer.collectAsState()
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val call by CallManager.state.collectAsState()
+    val gcall by GroupCall.state.collectAsState()
+    val gOn = gcall.phase != GPhase.IDLE
+    val inCall = call.phase != CallPhase.IDLE || gOn
     val locked by AppLock.locked.collectAsState()
 
     // show over the lock screen only while a call is ringing / running
-    LaunchedEffect(call.phase) {
+    LaunchedEffect(call.phase, gcall.phase) {
         val act = ctx as? Activity
         if (act != null && Build.VERSION.SDK_INT >= 27) {
-            act.setShowWhenLocked(call.phase != CallPhase.IDLE)
-            act.setTurnScreenOn(call.phase == CallPhase.INCOMING)
+            act.setShowWhenLocked(inCall)
+            act.setTurnScreenOn(call.phase == CallPhase.INCOMING || gcall.phase == GPhase.INCOMING)
         }
         // never let the screen time out during a call (a video call used to go black)
         if (act != null) {
-            if (call.phase != CallPhase.IDLE) act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            if (inCall) act.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
             else act.window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
@@ -169,14 +172,16 @@ fun App(deepLink: MutableState<String?>) {
             ctx.stopService(Intent(ctx, MessengerService::class.java))
         }
     }
-    BackHandler(enabled = convo != null && call.phase == CallPhase.IDLE) { convo = null }
-    BackHandler(enabled = settings && convo == null && call.phase == CallPhase.IDLE) { settings = false }
+    BackHandler(enabled = convo != null && !inCall) { convo = null }
+    BackHandler(enabled = settings && convo == null && !inCall) { settings = false }
 
     val ks = keyStep
     if (!logged) {
         LoginScreen()
     } else if (call.phase != CallPhase.IDLE) {
         CallScreen()
+    } else if (gOn) {
+        GroupCallScreen() // 1.19
     } else if (locked) {
         LockScreen()
     } else if (ks != null) {
@@ -189,7 +194,7 @@ fun App(deepLink: MutableState<String?>) {
     }
 
     val offer = updateOffer
-    if (offer != null && offer.code != Updater.dismissed && logged && !askBattery && call.phase == CallPhase.IDLE && !locked && ks == null) {
+    if (offer != null && offer.code != Updater.dismissed && logged && !askBattery && !inCall && !locked && ks == null) {
         UpdateDialog(offer) { Updater.dismissed = offer.code; Updater.offer.value = null }
     }
 

@@ -54,6 +54,14 @@
 - عکس پروفایل با یک رمزگذار کوچک WebP بی‌اتلاف (VP8L) در `webp.mjs` ساخته می‌شود، چون Safari از canvas خروجی WebP نمی‌دهد.
 - تماس‌ها با WebRTC مرورگر و همان سیگنال‌های رمزشدهٔ `sig_invite/accept/ice/reject/hangup` اپ اندروید.
 
+## تماس گروهی (۱.۱۹)
+- مش: هر جفت شرکت‌کننده یک RTCPeerConnection جدا دارد؛ میکروفون یک بار گرفته و به همهٔ اتصال‌ها داده می‌شود. تازه‌وارد به همه offer می‌دهد و قدیمی‌ها answer.
+- سرور فقط «اتاق» را در حافظه نگه می‌دارد (`server/src/gcall.js`): چه کسی داخل است، گوشی چه کسانی زنگ می‌خورد (۴۵ ثانیه)، دست بالا، بی‌صدا، و کلید عمومی هر نفر برای رمز کردن سیگنال‌ها. اپی که بیش از ۳۰ ثانیه وصل نباشد از تماس بیرون می‌رود.
+- API: `GET /api/gcall` و `POST /api/gcall/{start,join,leave,decline,invite,sig,act,host}`؛ رویدادهای زنده: `gcall`، `gcall_end`، `gsig`، `gcall_react`، `gcall_host`. محتوای `gsig` (SDP و ICE) سرتاسری برای همان یک نفر رمز می‌شود.
+- تبدیل تماس دونفره: `sig_upgrade` با شناسهٔ اتاق؛ طرف مقابل تماس دونفره را بی‌صدا می‌بندد و به اتاق می‌پیوندد.
+- کد: اندروید `GroupCall.kt` و `GroupCallScreen.kt`، وب `web/groupcall.mjs`.
+- ترافیک رله: `server/src/turnlog.js` خطوط `usage` لاگ coturn (`TURN_LOG_FILE`) را می‌خواند و در ستون `turn` جدول `usage_daily` جمع می‌کند.
+
 ## پنل مدیریت
 پورت جدا (۸۴۴۴)، رابط فارسی راست‌به‌چپ، CSRF، کوکی HttpOnly/SameSite=Strict/Secure، سیاست CSP سخت‌گیرانه، محدودیت تلاش ورود (۵ شکست برای هر IP ← ۱۰ دقیقه مسدودی)، و `ufw limit 8444/tcp`.
 
