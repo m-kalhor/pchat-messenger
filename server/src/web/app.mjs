@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.19.0';
+const VERSION = '1.19.1';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -558,7 +558,7 @@ function LoginScreen() {
         throw ex;
       }
       step = 'code'; render();
-      info.textContent = 'کد ۵ رقمی به ' + shownPhone() + ' پیامک شد.';
+      info.textContent = 'کد ورود به ' + shownPhone() + ' پیامک شد.';
       countdown(60);
       code.focus();
     });

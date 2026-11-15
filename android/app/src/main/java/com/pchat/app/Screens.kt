@@ -158,7 +158,7 @@ fun LoginScreen() {
             val (err, w) = Engine.requestSms(full)
             busy = false
             when {
-                err == null -> { codeStep = true; wait = w; info = "کد ۵ رقمی به $shown پیامک شد." }
+                err == null -> { codeStep = true; wait = w; info = "کد ورود به $shown پیامک شد." }
                 w > 0 -> { codeStep = true; wait = w; error = err }
                 err == SMS_DOWN -> { codeStep = true; error = err }
                 else -> error = err

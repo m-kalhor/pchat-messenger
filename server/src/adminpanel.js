@@ -106,6 +106,7 @@ function authInfo(ctx) {
     open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
     msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '), route_users: callcfg.routeUsers().join(', '),
     calls: callcfg.get(),
+    sms_usage: auth.smsUsage(), // 1.18.1: codes sent in the last hour / day and the limits
     gcall: gcall.cfg(), // 1.19: group calls
   };
 }
@@ -336,6 +337,12 @@ async function route(ctx, req, res, secure) {
     if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
     if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
     if (typeof b.msg_requests === 'boolean') setSetting('msg_requests', b.msg_requests ? '1' : '0');
+    for (const k of ['sms_max_hour', 'sms_max_day']) {
+      if (b[k] === undefined) continue;
+      const v = Number(b[k]);
+      if (!Number.isInteger(v) || v < 0 || v > 100000) return json(res, 400, { error: 'bad_limit' });
+      setSetting(k, v);
+    }
     if (typeof b.diag_users === 'string') { try { diag.setUsers(b.diag_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (typeof b.route_users === 'string') { try { callcfg.setRouteUsers(b.route_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.calls && typeof b.calls === 'object') { try { callcfg.set(b.calls); } catch (e) { return json(res, 400, { error: e.message }); } }
@@ -352,7 +359,7 @@ async function route(ctx, req, res, secure) {
     const b = await readJson(req, 1024);
     const phone = auth.normPhone(b.phone);
     if (!phone) return json(res, 400, { error: 'bad_phone' });
-    try { await auth.sendSms(phone, String(crypto.randomInt(10000, 100000))); return json(res, 200, { ok: true, ...authInfo(ctx) }); }
+    try { await auth.sendSms(phone, String(crypto.randomInt(100000, 1000000)), { test: true }); return json(res, 200, { ok: true, ...authInfo(ctx) }); }
     catch (e) { return json(res, 200, { ok: false, error: e.message, ...authInfo(ctx) }); }
   }
   if (sub === '/auth/credit' && req.method === 'GET') {

@@ -133,14 +133,35 @@ function caInfo(certDir) {
   } catch { return null; }
 }
 
+/**
+ * 1.18.1: the domain name with its own (Let's Encrypt) certificate, or '' (looked at again once a minute).
+ * When there is one, the setup page, the iPhone profile and the APK are handed out only over https on it:
+ * over plain http somebody on the way could swap them.
+ */
+const domainCache = { t: 0, name: '' };
+function domainName(leDir, t = Date.now()) {
+  if (t - domainCache.t < 60e3) return domainCache.name;
+  let name = '';
+  try {
+    for (const n of fs.readdirSync(leDir).sort()) {
+      if (isName(n) && fs.existsSync(path.join(leDir, n, 'cert.pem')) && fs.existsSync(path.join(leDir, n, 'key.pem'))) { name = n; break; }
+    }
+  } catch { }
+  domainCache.t = t; domainCache.name = name;
+  return name;
+}
+/** Paths that only travel over https once there is a domain (see domainName). */
+const SECURE_ONLY = new Set(['/setup', '/setup.html', '/sepan-ca.mobileconfig', '/sepan-ca.crt', '/download/sepan.apk', '/download/sepan-qr.svg']);
+
 /** Routes shared by both listeners: setup page, CA downloads, fingerprint. Returns true if handled. */
-function setupRoute(req, res, p, files, certDir) {
+function setupRoute(req, res, p, files, certDir, appUrl = '/') {
   if (p === '/setup' || p === '/setup.html') {
     // the guide shows the CA fingerprint so it can be compared with the one install.sh printed
     const f = files.get('/setup.html');
     const ca = caInfo(certDir);
     if (!f) return false;
-    const body = Buffer.from(f.body.toString().replace('{{CA_FINGERPRINT}}', ca ? ca.fingerprint : '—'));
+    // «باز کردن سپن» opens the web app on the server address (the guide may be read on the domain)
+    const body = Buffer.from(f.body.toString().replace('{{CA_FINGERPRINT}}', ca ? ca.fingerprint : '—').replace('href="/" id="open"', `href="${esc(appUrl)}" id="open"`));
     serveFile(req, res, { ...f, body, etag: '"' + crypto.createHash('sha1').update(body).digest('hex').slice(0, 16) + '"' });
     return true;
   }
@@ -188,7 +209,10 @@ function apkRoute(req, res, p, opts) {
   if (p === '/download/sepan-qr.svg') {
     const host = opts.publicHost || String(req.headers.host || '').replace(/:\d+$/, '').replace(/[^\w.\-[\]:]/g, '');
     if (!opts.apkInfo() || !host) { res.writeHead(404, { 'Content-Type': 'text/plain' }); res.end('no apk'); return true; }
-    const body = qrSvg(`http://${host}${opts.httpPort === 80 ? '' : ':' + opts.httpPort}/download/sepan.apk`);
+    // with a domain the QR code opens the APK over https on it (1.18.1); without one, plain http as before
+    const dom = opts.domain ? opts.domain() : '';
+    const body = qrSvg(dom ? `https://${dom}${opts.port === 443 ? '' : ':' + opts.port}/download/sepan.apk`
+      : `http://${host}${opts.httpPort === 80 ? '' : ':' + opts.httpPort}/download/sepan.apk`);
     res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Content-Length': body.length, 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' });
     res.end(body);
     return true;
@@ -214,13 +238,19 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
   const httpPort = +(process.env.WEB_HTTP_PORT ?? 80);
   certDir = process.env.WEB_CERT_DIR || certDir;
   const files = loadStatic();
-  const apk = { serveApk, apkInfo, publicHost, httpPort: httpPort || 80 };
+  const leDir = path.join(certDir, '..', 'le');
+  const domain = () => (plain && !process.env.WEB_TEST_DOMAIN ? '' : domainName(leDir));
+  const apk = { serveApk, apkInfo, publicHost, httpPort: httpPort || 80, port, domain };
+  const appUrl = publicHost ? `https://${publicHost}${port === 443 ? '' : ':' + port}/` : '/';
   if (!files.has('/index.html')) { console.log('web app: ./web not found, web version disabled'); return null; }
 
   const handler = (req, res) => {
     const p = new URL(req.url, 'http://x').pathname;
+    // 1.18.1: a browser that came by the domain keeps to https there (not on the IP: its certificate is private)
+    const typed = reqHost(req);
+    if (!plain && typed && typed === domain()) res.setHeader('Strict-Transport-Security', 'max-age=15552000');
     if (p.startsWith('/api/') && p !== '/api/web/ca') return apiHandler(req, res);
-    if (setupRoute(req, res, p, files, certDir)) return;
+    if (setupRoute(req, res, p, files, certDir, appUrl)) return;
     if (serveApk && apkRoute(req, res, p, apk)) return;
     if (p === '/' && isName(reqHost(req)) && (req.method === 'GET' || req.method === 'HEAD')) {
       const body = Buffer.from(introPage(site() || {}, !!(apkInfo && apkInfo())));
@@ -247,7 +277,6 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
       return null;
     }
     // a domain with its own (Let's Encrypt) certificate; looked at again at most once a minute
-    const leDir = path.join(certDir, '..', 'le');
     const sni = new Map();
     tls.SNICallback = (name, cb) => {
       name = String(name || '').toLowerCase();
@@ -292,7 +321,13 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
         res.writeHead(body ? 200 : 404, { 'Content-Type': 'text/plain' });
         return res.end(body || 'not found');
       }
-      if (setupRoute(req, res, p, files, certDir)) return;
+      // 1.18.1: with a domain, the setup page, the iPhone profile and the APK only over https there
+      const dom = domain();
+      if (dom && SECURE_ONLY.has(p)) {
+        res.writeHead(302, { Location: `https://${dom}${port === 443 ? '' : ':' + port}${p}`, 'Cache-Control': 'no-store' });
+        return res.end();
+      }
+      if (setupRoute(req, res, p, files, certDir, appUrl)) return;
       if (serveApk && apkRoute(req, res, p, apk)) return;
       // a visitor who typed a domain name stays on it (SMS providers and browsers want the name, not the IP)
       const typed = reqHost(req);
@@ -307,4 +342,4 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
   return { srv, redirect };
 }
 
-module.exports = { start, caInfo, qrSvg, isName, introPage };
+module.exports = { start, caInfo, qrSvg, isName, introPage, domainName };
