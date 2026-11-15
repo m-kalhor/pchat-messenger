@@ -387,6 +387,7 @@ function usageTab(box){
     ['traffic30','ترافیک ۳۰ روز',function(r){return fmtB(r.traffic30);}],
     ['calls','تماس',function(r){return 'گرفته '+fa(r.calls_out)+' · دریافتی '+fa(r.calls_in);},function(){return 'صوتی و تصویری با هم';}],
     ['call_secs','مدت تماس',function(r){return dur(r.call_secs);}],
+    ['turn','ترافیک رله تماس',function(r){return fmtB(r.turn);},function(r){return 'صدا و تصویر تماس‌هایی که از سرور (TURN) رد شده‌اند، نه مستقیم · ۳۰ روز اخیر '+fmtB(r.turn30);}],
     ['devices','دستگاه',function(r){return fa(r.devices);},function(r){return r.device_names.join('، ');}],
     ['requests','درخواست ارسالی',function(r){return fa(r.requests);},function(){return 'درخواست ارتباط با افراد ناآشنا';}],
     ['blocked_by','بلاک‌شده',function(r){return r.blocked_by?h('b',{style:'color:#ff8b8b'},fa(r.blocked_by)):'۰';},function(){return 'تعداد کسانی که این کاربر را بلاک کرده‌اند';}],
@@ -411,12 +412,12 @@ function usageTab(box){
     var sum=function(k){return list.reduce(function(a,r){return a+(r[k]||0);},0);};
     var t=h('tr',{class:'tot'},h('td',null,'جمع ('+fa(list.length)+' کاربر)'),h('td',{class:'n'},fa(sum('sent'))),h('td',{class:'n'},fa(sum('sent7'))),h('td',{class:'n'},fa(sum('sent30'))),h('td',{class:'n'},fa(sum('received'))),
       h('td',{class:'n'},fa(sum('files'))),h('td',{class:'n'},fmtB(sum('files_bytes'))),h('td',{class:'n'},fmtB(sum('storage'))),h('td',{class:'n'},fmtB(sum('traffic'))),h('td',{class:'n'},fmtB(sum('traffic30'))),
-      h('td',{class:'n'},fa(sum('calls_out'))),h('td',{class:'n'},dur(sum('call_secs'))),h('td',{class:'n'},fa(sum('devices'))),h('td',{class:'n'},fa(sum('requests'))),h('td',{class:'n'},fa(sum('blocked_by'))),h('td'),h('td'));
+      h('td',{class:'n'},fa(sum('calls_out'))),h('td',{class:'n'},dur(sum('call_secs'))),h('td',{class:'n'},fmtB(sum('turn'))),h('td',{class:'n'},fa(sum('devices'))),h('td',{class:'n'},fa(sum('requests'))),h('td',{class:'n'},fa(sum('blocked_by'))),h('td'),h('td'));
     tbl.replaceChildren.apply(tbl,[head].concat(trs.length?trs:[h('tr',null,h('td',{colspan:COLS.length,class:'mut'},'کاربری پیدا نشد'))],[t]));
   }
   function csv(){
     if(!D)return;
-    var cols=['username','display_name','phone','disabled','sent','sent_group','sent7','sent30','received','files','files_bytes','text_bytes','avatar_bytes','stickers_bytes','storage','up','down','traffic','traffic30','calls_out','calls_in','call_secs','devices','requests','blocked_by','last_seen','created'];
+    var cols=['username','display_name','phone','disabled','sent','sent_group','sent7','sent30','received','files','files_bytes','text_bytes','avatar_bytes','stickers_bytes','storage','up','down','traffic','traffic30','calls_out','calls_in','call_secs','turn','turn30','devices','requests','blocked_by','last_seen','created'];
     var esc=function(v){v=v==null?'':String(v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;};
     var iso=function(t){return t?new Date(t).toISOString().replace('T',' ').slice(0,16):'';};
     var lines=[cols.join(',')].concat(rows().map(function(r){return cols.map(function(k){return esc(k==='last_seen'||k==='created'?iso(r[k]):r[k]);}).join(',');}));
@@ -436,6 +437,7 @@ function usageTab(box){
       h('div',null,'دیسک سرور',h('b',null,fmtB(D.diskTotal-D.diskFree)+' / '+fmtB(D.diskTotal))),
       h('div',null,'ترافیک کاربران',h('b',null,fmtB(all('traffic')))),
       h('div',null,'تماس‌ها',h('b',null,fa(all('calls_out'))+' · '+dur(all('call_secs')/2))),
+      h('div',null,'ترافیک رله تماس',h('b',null,fmtB(all('turn')))),
       top&&top.storage?h('div',null,'بیشترین فضا',h('b',null,(top.display_name||top.username)+' · '+fmtB(top.storage))):null);
     note.replaceChildren(
       'پیام‌ها پس از ۹۰ روز و فایل‌ها پس از ۳۰ روز خودکار از سرور پاک می‌شوند؛ این جدول وضعیت فعلی سرور را نشان می‌دهد. ',

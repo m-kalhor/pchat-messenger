@@ -14,10 +14,12 @@ CREATE TABLE IF NOT EXISTS usage_daily (
   calls_out INTEGER NOT NULL DEFAULT 0, calls_in INTEGER NOT NULL DEFAULT 0, call_secs INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (username, day));
 `);
+// 1.19: bytes of call audio/video relayed through our TURN server (read from coturn's log, see turnlog.js)
+if (!db.prepare('PRAGMA table_info(usage_daily)').all().some((c) => c.name === 'turn')) db.exec('ALTER TABLE usage_daily ADD COLUMN turn INTEGER NOT NULL DEFAULT 0');
 
 const DAY = 86400e3;
 const KEEP_DAYS = 400;
-const FIELDS = ['up', 'down', 'calls_out', 'calls_in', 'call_secs'];
+const FIELDS = ['up', 'down', 'calls_out', 'calls_in', 'call_secs', 'turn'];
 const dayOf = (t) => new Date(t).toISOString().slice(0, 10);
 
 // counted in memory, written to the database every 30 s (and when the server stops)
@@ -26,12 +28,12 @@ function add(user, field, n) {
   if (!user || !n) return;
   const k = user + '\n' + dayOf(Date.now());
   let e = pending.get(k);
-  if (!e) pending.set(k, (e = { up: 0, down: 0, calls_out: 0, calls_in: 0, call_secs: 0 }));
+  if (!e) pending.set(k, (e = { up: 0, down: 0, calls_out: 0, calls_in: 0, call_secs: 0, turn: 0 }));
   e[field] += n;
 }
-const upsert = db.prepare(`INSERT INTO usage_daily(username,day,up,down,calls_out,calls_in,call_secs) VALUES(?,?,?,?,?,?,?)
+const upsert = db.prepare(`INSERT INTO usage_daily(username,day,up,down,calls_out,calls_in,call_secs,turn) VALUES(?,?,?,?,?,?,?,?)
   ON CONFLICT(username,day) DO UPDATE SET up=up+excluded.up, down=down+excluded.down, calls_out=calls_out+excluded.calls_out,
-  calls_in=calls_in+excluded.calls_in, call_secs=call_secs+excluded.call_secs`);
+  calls_in=calls_in+excluded.calls_in, call_secs=call_secs+excluded.call_secs, turn=turn+excluded.turn`);
 function flush() {
   if (!pending.size) return;
   const batch = pending; pending = new Map();
@@ -112,7 +114,8 @@ function report(ctx = {}) {
   const reqs = by('SELECT from_user AS u, COUNT(*) AS n FROM contact_requests GROUP BY from_user');
   const blocked = by('SELECT target AS u, COUNT(*) AS n FROM blocks GROUP BY target');
   const traffic = by(`SELECT username AS u, SUM(up) AS up, SUM(down) AS down, SUM(CASE WHEN day>=? THEN up+down ELSE 0 END) AS t30,
-    SUM(calls_out) AS calls_out, SUM(calls_in) AS calls_in, SUM(call_secs) AS call_secs FROM usage_daily GROUP BY username`, day30);
+    SUM(calls_out) AS calls_out, SUM(calls_in) AS calls_in, SUM(call_secs) AS call_secs,
+    SUM(turn) AS turn, SUM(CASE WHEN day>=? THEN turn ELSE 0 END) AS turn30 FROM usage_daily GROUP BY username`, day30, day30);
   const since = db.prepare('SELECT MIN(day) AS d FROM usage_daily').get().d;
 
   const users = db.prepare('SELECT username, display_name, phone, disabled, created, last_seen FROM users ORDER BY username').all();
@@ -133,6 +136,7 @@ function report(ctx = {}) {
       requests: Number((reqs.get(u.username) || {}).n || 0), blocked_by: Number((blocked.get(u.username) || {}).n || 0),
       up: Number(tr.up || 0), down: Number(tr.down || 0), traffic: Number(tr.up || 0) + Number(tr.down || 0), traffic30: Number(tr.t30 || 0),
       calls_out: Number(tr.calls_out || 0), calls_in: Number(tr.calls_in || 0), call_secs: Number(tr.call_secs || 0),
+      turn: Number(tr.turn || 0), turn30: Number(tr.turn30 || 0),
     };
   });
   return { rows, since, now: t };

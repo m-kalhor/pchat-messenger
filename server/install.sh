@@ -150,6 +150,21 @@ else
   echo "TURN over TLS: off (needs a domain with a Let's Encrypt certificate, see domain.sh)"
 fi
 
+# 1.19: coturn writes a "usage" line per relayed session here; the messenger server (group msg) reads it to show the
+# relayed call traffic per user in the admin panel. Kept small by logrotate.
+mkdir -p /var/log/sepan-turn
+chown turnserver:msg /var/log/sepan-turn; chmod 750 /var/log/sepan-turn
+cat > /etc/logrotate.d/sepan-turn <<'ROT'
+/var/log/sepan-turn/turn.log {
+  size 20M
+  rotate 2
+  copytruncate
+  missingok
+  notifempty
+  compress
+}
+ROT
+
 cat > /etc/turnserver.conf <<CONF
 listening-port=3478
 listening-ip=0.0.0.0
@@ -166,6 +181,8 @@ no-dtls
 no-cli
 no-multicast-peers
 no-software-attribute
+log-file=/var/log/sepan-turn/turn.log
+simple-log
 denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=100.64.0.0-100.127.255.255
@@ -220,6 +237,7 @@ mkdir -p /etc/systemd/system/messenger.service.d
 cat > /etc/systemd/system/messenger.service.d/turn.conf <<UNIT
 [Service]
 Environment=TURN_SECRET_FILE=/opt/messenger/certs/turn_secret PUBLIC_HOST=$IP$TURN_TLS_ENV
+Environment=TURN_LOG_FILE=/var/log/sepan-turn/turn.log
 UNIT
 
 # --- admin panel exposure ---

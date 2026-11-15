@@ -1230,6 +1230,7 @@ cleanup();
 
 stats.start();
 usage.start();
+require('./turnlog').start(process.env.TURN_LOG_FILE, usage.add); // 1.19: TURN relay traffic per user
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------
