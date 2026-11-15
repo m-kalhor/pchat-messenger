@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.19.1';
+const VERSION = '1.20.0';
 const S = E.S;
 const app = document.getElementById('app');
 
