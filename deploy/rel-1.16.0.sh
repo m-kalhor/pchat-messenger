@@ -1,6 +1,6 @@
 #!/bin/bash
 # Sepan 1.16.0 deploy (server only): sms.ir removed, SMS providers pluggable (src/sms/), Arta Payamak configured.
-# code.tgz = git archive of this branch with prefix pchat-messenger-<sha>/ (or a GitHub tarball renamed so); arta.json is never in git.
+# code.tgz = any tar.gz of this branch with one top folder (git archive or the GitHub tarball); arta.json is never in git.
 # $STAGE/arta.json (token, from, pattern, param) is written into the settings while the service is stopped,
 # then deleted. Replaces /opt/messenger/app with the new src, keeps data/certs/config. Backup first, verify,
 # roll back on failure.
@@ -12,8 +12,7 @@ IP=193.151.148.119
 
 echo "== pre-checks"
 cd $STAGE || { echo "ABORT: no $STAGE"; exit 1; }
-SHA=$(tar tzf code.tgz | head -1 | cut -d/ -f1 | sed "s/^pchat-messenger-//")
-rm -rf $STAGE/src && tar xzf code.tgz --strip-components=2 pchat-messenger-$SHA/server/src || { echo "ABORT: untar"; exit 1; }
+rm -rf $STAGE/src && tar xzf code.tgz --strip-components=2 --wildcards '*/server/src' || { echo "ABORT: untar"; exit 1; }
 printf '%s\n' "2ee57f31d0f191aa5c742fdcebadd05e  src/sms/index.js" "6910f252b5c10313fd9cede4ba85a8fa  src/sms/artapayamak.js" "28cd7956e053ec7db3ef3f91519ec292  src/admin.html" "e5fa670c21565c967e024591eecba196  src/auth.js" | md5sum -c - || { echo "ABORT: checksum"; exit 1; }
 grep -q "const VERSION = '1.16.0';" src/web/app.mjs || { echo "ABORT: not the 1.16.0 source"; exit 1; }
 for f in src/sms/index.js src/sms/artapayamak.js src/auth.js src/server.js src/adminpanel.js; do node --check $f || { echo "ABORT: syntax $f"; exit 1; }; done
