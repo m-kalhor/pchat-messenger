@@ -3,10 +3,8 @@ package com.pchat.app
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.net.Uri
-import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -37,7 +35,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.content.FileProvider
 import androidx.media3.common.MediaItem
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
@@ -57,7 +54,7 @@ private fun Context.activity(): Activity? {
  */
 @OptIn(UnstableApi::class)
 @Composable
-fun VideoPlayerDialog(path: String, name: String?, mime: String?, onClose: () -> Unit) {
+fun VideoPlayerDialog(path: String, name: String?, ref: MediaRef, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val activity = remember { ctx.activity() }
     val player = remember(path) {
@@ -101,16 +98,8 @@ fun VideoPlayerDialog(path: String, name: String?, mime: String?, onClose: () ->
                     landscape = !landscape
                     activity?.requestedOrientation = if (landscape) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                 }) { Text("⟳", color = Color.White) }
-                TextButton(onClick = {
-                    try {
-                        val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", File(path))
-                        val send = Intent(Intent.ACTION_SEND).setType(mime ?: "video/*").putExtra(Intent.EXTRA_STREAM, uri)
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        ctx.startActivity(Intent.createChooser(send, "ذخیره یا اشتراک ویدیو"))
-                    } catch (e: Exception) {
-                        Toast.makeText(ctx, "اشتراک ممکن نشد", Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text("اشتراک", color = Color.White) }
+                // 1.12: ⋮ = save to gallery, save to…, share
+                MediaMoreMenu(ref)
             }
         }
     }

@@ -1,5 +1,6 @@
 package com.pchat.app
 
+import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
 import android.content.Context
@@ -43,6 +44,7 @@ class MessengerService : Service() {
         val n = NotificationCompat.Builder(this, Engine.CH_SVC)
             .setSmallIcon(android.R.drawable.stat_notify_chat)
             .setContentTitle("سپن فعال است")
+            .setContentIntent(openApp())
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .build()
@@ -58,6 +60,16 @@ class MessengerService : Service() {
             }
         }
         return START_STICKY
+    }
+
+    /** Tapping the "Sepan is running" notification opens the app (brings the existing screen to front). */
+    private fun openApp(): PendingIntent {
+        val i = Intent(this, MainActivity::class.java).apply {
+            action = Intent.ACTION_MAIN
+            addCategory(Intent.CATEGORY_LAUNCHER)
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+        }
+        return PendingIntent.getActivity(this, 7700, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
     override fun onDestroy() {

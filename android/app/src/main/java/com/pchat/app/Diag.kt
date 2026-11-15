@@ -134,7 +134,7 @@ fun DiagOverlay(peer: String, modifier: Modifier = Modifier) {
         while (true) {
             val pc = CallManager.peerConnection
             val rep = if (pc != null) try { statsOf(pc) } catch (e: Exception) { null } else null
-            if (rep != null) { val (l, p) = describe(rep, prev); lines = l; prev = p }
+            if (rep != null) { val (l, p) = describe(rep, prev); lines = l + AudioRouter.debug(); prev = p }
             delay(1000)
         }
     }

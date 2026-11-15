@@ -51,6 +51,9 @@ const val SIGNUP = "\u0000signup"
 const val SMS_DOWN = "پیامک در دسترس نیست. کد را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید و «کد را دارم» را بزنید."
 const val LOCKED_TEXT = "🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)"
 
+/** Messages that travel as text: a location and a sticker are text with an extra field. */
+val TEXTISH = setOf("text", "location", "sticker")
+
 object Engine {
     const val CH_MSG = "msgs"
     const val CH_SVC = "svc"
@@ -76,6 +79,8 @@ object Engine {
     val requestsOn = MutableStateFlow(true)
     /** Call diagnostics (ping, route) for the admins listed in the panel — a test feature, see Diag.kt. */
     val diag = MutableStateFlow(false)
+    /** 1.15: the admin lets this user pick the call path (Settings «مسیر پیش‌فرض تماس», 🔀 in calls). */
+    val callRoute = MutableStateFlow(false)
     /** conversation key -> pinned message id */
     val pins = MutableStateFlow<Map<String, Long>>(emptyMap())
     val typing = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -149,6 +154,7 @@ object Engine {
         receipts.value = parseReceipts(prefs.getString("receipts_raw", null))
         hideSeen.value = prefs.getBoolean("hide_seen", false)
         hideLastSeen.value = prefs.getBoolean("hide_last_seen", false)
+        Stickers.load()
         CallManager.init(app)
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = app.getSystemService(NotificationManager::class.java)
@@ -201,6 +207,7 @@ object Engine {
         declinedRequests.value = emptyList()
         blockedRequests.value = emptyList()
         diag.value = false
+        callRoute.value = false
         pins.value = emptyMap()
         progress.value = emptyMap()
         waitingDownloads.value = emptyMap()
@@ -212,9 +219,18 @@ object Engine {
         tick.value++
     }
 
+    fun errorText(e: Exception): String = errText(e)
+
     private fun errText(e: Exception): String = when (e) {
         is UserError -> e.message ?: "خطا"
         is Api.HttpError -> when (e.error) {
+            "stickers_disabled" -> "مدیر ساختن استیکر را خاموش کرده است"
+            "pack_limit" -> "به حداکثر تعداد پک‌های شخصی رسیده‌اید"
+            "pack_full" -> "این پک پر است"
+            "sticker_too_large" -> "حجم استیکر بیش از حد مجاز است"
+            "bad_sticker" -> "این عکس به‌عنوان استیکر پذیرفته نشد"
+            "no_such_pack" -> "این پک دیگر وجود ندارد"
+            "bad_title" -> "نام پک را بنویسید"
             "request_limit" -> "تا وقتی درخواست شما را نپذیرد، بیش از ۳ پیام نمی‌شود فرستاد"
             "request_text_only" -> "تا پذیرفته شدن درخواست فقط پیام متنی می‌شود فرستاد"
             "not_connected" -> "تماس بعد از پذیرفتن درخواست ممکن است؛ تماس شما به او خبر داده شد"
@@ -684,6 +700,7 @@ object Engine {
                 try { refreshGroups() } catch (e: Api.HttpError) { if (e.code == 401) throw e }
                 try { refreshRequests() } catch (e: Exception) { }
                 try { refreshMe() } catch (e: Exception) { }
+                Stickers.refresh()
                 Api.stream(
                     prefs.getLong("last_id", 0), prefs.getLong("cseq", -1), prefs.getLong("rseq", -1), deviceId, appVisible,
                     onOpen = {
@@ -693,6 +710,7 @@ object Engine {
                         flushAll()
                         synchronized(acks) { acked.clear() }
                         scope.launch { delay(2500); syncReceipts() }
+                        scope.launch { delay(4000); Updater.checkAndNotify(app, appVisible) }
                     },
                     onEvent = { ev, data -> try { handleEvent(ev, data) } catch (e: Exception) { } }
                 )
@@ -753,6 +771,8 @@ object Engine {
             }
             "contacts" -> try { refreshRequests() } catch (e: Exception) { }
             "login_alert" -> postLoginAlert(o)
+            "stickers" -> scope.launch { Stickers.refresh() }
+            "app_update" -> scope.launch { Updater.checkAndNotify(app, appVisible) }
             "pin" -> {
                 val convo = o.getString("convo")
                 if (o.isNull("messageId")) pins.value = pins.value - convo
@@ -793,10 +813,11 @@ object Engine {
             // a voice message travels as a file with v:1, a location as text with "loc" (older apps show a file / a map link)
             val voice = t == "file" && plain.optInt("v", 0) == 1
             val loc = locOf(plain)
+            val stk = stkOf(plain)
             val wf = plain.optJSONArray("wf")
             Msg(
                 id, convo, from, mine, ts,
-                if (voice) "voice" else if (loc != null) "location" else t, plain.optString("x", ""),
+                if (voice) "voice" else if (loc != null) "location" else if (stk != null) "sticker" else t, plain.optString("x", ""),
                 fileId, if (plain.has("n")) plain.getString("n") else null, if (plain.has("m")) plain.getString("m") else null,
                 plain.optLong("s", 0), if (plain.has("fk")) plain.getString("fk") else null,
                 plain.optInt("w", 0), plain.optInt("h", 0),
@@ -806,7 +827,7 @@ object Engine {
                 fwFrom = f?.optString("u")?.ifEmpty { null }, fwName = f?.optString("n")?.ifEmpty { null },
                 dur = if (voice) plain.optLong("d", 0).coerceAtLeast(0) else 0,
                 wave = if (voice && wf != null) (0 until minOf(wf.length(), 100)).map { wf.optInt(it).coerceIn(0, 31) } else emptyList(),
-                loc = loc, reactions = reactionMap(o.optJSONObject("reactions"))
+                loc = loc, reactions = reactionMap(o.optJSONObject("reactions")), stk = stk
             )
         } catch (e: Exception) {
             Msg(id, convo, from, mine, ts, "text", LOCKED_TEXT,
@@ -1179,6 +1200,7 @@ object Engine {
         if (o.has("allow_requests")) allowRequests.value = o.optBoolean("allow_requests", true)
         if (o.has("requests_on")) requestsOn.value = o.optBoolean("requests_on", true)
         if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
+        if (o.has("username")) callRoute.value = o.optBoolean("call_route", false)
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 
@@ -1304,7 +1326,9 @@ object Engine {
     private fun plainOf(m: Msg, text: String = m.text): JSONObject {
         val l = m.loc
         val p = when {
-            m.type == "text" || (m.type == "location" && l == null) -> JSONObject().put("t", "text").put("x", text)
+            m.type == "sticker" && m.stk != null -> JSONObject().put("t", "text").put("x", stickerText(m.stk))
+                .put("stk", JSONObject().put("id", m.stk.id).put("p", m.stk.p).put("e", m.stk.e))
+            m.type == "text" || m.type == "sticker" || (m.type == "location" && l == null) -> JSONObject().put("t", "text").put("x", text)
             m.type == "location" && l != null -> JSONObject().put("t", "text").put("x", locText(l))
                 .put("loc", JSONObject().put("lat", l.lat).put("lon", l.lon).put("acc", l.acc))
             else -> JSONObject().put("t", if (m.type == "voice") "file" else m.type).put("n", m.fileName ?: "file")
@@ -1339,6 +1363,29 @@ object Engine {
         db.insert(
             Msg(-System.nanoTime(), convo, me, true, System.currentTimeMillis(), "location", locText(loc), null, null, null, 0, null, 0, 0,
                 reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1, loc = loc)
+        )
+        tick.value++
+        scope.launch { flushTexts() }
+    }
+
+    // ---------------- stickers (1.10) ----------------
+
+    /** A sticker is a text message with an extra "stk" field, so apps before 1.10 show its emoji and «استیکر». */
+    private fun stkOf(plain: JSONObject): Stk? {
+        if (plain.optString("t", "text") != "text") return null
+        val k = plain.optJSONObject("stk") ?: return null
+        val id = k.optString("id"); val p = k.optString("p")
+        if (!Regex("^[a-f0-9]{32}$").matches(id) || !Regex("^[a-f0-9]{16}$").matches(p)) return null
+        return Stk(id, p, k.optString("e").take(16))
+    }
+
+    fun stickerText(k: Stk) = (k.e.ifEmpty { "🎭" }) + " استیکر"
+
+    fun sendSticker(convo: String, k: Stk, reply: Msg?) {
+        Stickers.addRecent(k)
+        db.insert(
+            Msg(-System.nanoTime(), convo, me, true, System.currentTimeMillis(), "sticker", stickerText(k), null, null, null, 0, null, 0, 0,
+                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1, stk = k)
         )
         tick.value++
         scope.launch { flushTexts() }
@@ -1420,9 +1467,9 @@ object Engine {
                 -System.nanoTime(), t, me, true, now + n++, m.type, m.text, null, m.fileName, m.mime, m.size, m.fkey, m.w, m.h,
                 0L, null, null, m.localPath?.takeIf { File(it).exists() }, true, status = 1,
                 uploadId = m.fileId?.let { "f:$it" }, fwFrom = fw, fwName = if (fw != null) originName else null,
-                dur = m.dur, wave = m.wave, loc = m.loc
+                dur = m.dur, wave = m.wave, loc = m.loc, stk = m.stk
             )
-            if (m.type != "text" && m.type != "location" && m.fileId == null) continue
+            if (m.type !in TEXTISH && m.fileId == null) continue
             db.insert(copy)
         }
         tick.value++
@@ -1478,9 +1525,30 @@ object Engine {
     }
 
     /** Copies the picked file into app storage, then queues it for chunked/resumable encrypted upload. */
-    suspend fun sendUri(convo: String, uri: Uri, asImage: Boolean, reply: Msg?): String? = withContext(Dispatchers.IO) {
+    suspend fun sendUri(convo: String, uri: Uri, asImage: Boolean, reply: Msg?, compress: Boolean = false): String? = withContext(Dispatchers.IO) {
         var staged: File? = null
         try {
+            if (asImage && compress && app.contentResolver.getType(uri) != "image/gif") {
+                val localId = -System.nanoTime()
+                val f = File(mediaDir(), "out_${-localId}")
+                staged = f
+                if (compressPhoto(app, uri, f)) {
+                    val dim = imageSizeOf(f.absolutePath)
+                    if (dim != null) {
+                        val base = U.fileName(app, uri).substringBeforeLast('.').ifBlank { "photo" }
+                        val fm = Msg(localId, convo, me, true, System.currentTimeMillis(), "image", "", null, "$base.jpg", "image/jpeg", f.length(),
+                                Crypto.newFileKey(), dim.first, dim.second,
+                                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) },
+                                f.absolutePath, true, status = 1)
+                        db.insert(fm)
+                        Lan.offer(fm)
+                        tick.value++
+                        scope.launch { flushFiles() }
+                        return@withContext null
+                    }
+                }
+                f.delete(); staged = null // could not compress: fall back to sending the original
+            }
             val declared = U.fileSize(app, uri)
             if (declared > Config.MAX_FILE_BYTES) return@withContext "حجم فایل بیشتر از ۲ گیگابایت است"
             if (declared > 0 && mediaDir().usableSpace < declared + 64L * 1024 * 1024) return@withContext "فضای کافی روی گوشی نیست"
@@ -1544,7 +1612,7 @@ object Engine {
         if (Api.token == null) return
         textLock.withLock {
             for (m in db.outbox()) {
-                if ((m.type != "text" && m.type != "location") || Api.token == null) continue
+                if (m.type !in TEXTISH || Api.token == null) continue
                 try {
                     sendQueuedText(m)
                 } catch (e: Exception) {
@@ -1566,7 +1634,7 @@ object Engine {
         if (Api.token == null) return
         fileLock.withLock {
             for (m in db.outbox()) {
-                if (m.type == "text" || m.type == "location" || Api.token == null) continue
+                if (m.type in TEXTISH || Api.token == null) continue
                 try {
                     sendQueuedFile(m)
                 } catch (e: Exception) {

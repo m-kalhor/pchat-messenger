@@ -1,7 +1,11 @@
 package com.pchat.app
 
+import android.Manifest
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.net.Uri
 import android.provider.Settings
 import android.widget.Toast
@@ -30,6 +34,9 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +56,47 @@ data class AppUpdate(val code: Long, val name: String, val size: Long)
 object Updater {
     /** download progress 0..1 while downloading, else null */
     val progress = MutableStateFlow<Float?>(null)
+
+    /** 1.10.2: the update the app offers on screen; «بعداً» hides that version until the app is started again. */
+    val offer = MutableStateFlow<AppUpdate?>(null)
+    @Volatile var dismissed = 0L
+
+    /**
+     * 1.10.2: checks the server (on every (re)connection, so also right after a server upgrade, and when the
+     * admin uploads a new APK). A newer version is offered on screen when the app is open; otherwise one
+     * notification «نسخهٔ تازهٔ سپن آمده است» is shown, once per version.
+     */
+    suspend fun checkAndNotify(ctx: Context, visible: Boolean) {
+        val u = check(ctx) ?: return
+        offer.value = u
+        if (visible) return
+        val prefs = Engine.prefs
+        if (prefs.getLong("update_notified", 0L) >= u.code) return
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val i = Intent(ctx, MainActivity::class.java).putExtra("update", true)
+            .apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+        val pi = PendingIntent.getActivity(ctx, 7704, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val body = "نسخهٔ ${u.name} آماده است. برای به‌روزرسانی بزنید. پیام‌ها و تنظیمات پاک نمی‌شوند."
+        val n = NotificationCompat.Builder(ctx, Prefs.messageChannel(ctx))
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle("⬆️ نسخهٔ تازهٔ سپن آمده است")
+            .setContentText(body)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        try { NotificationManagerCompat.from(ctx).notify(7704, n) } catch (e: SecurityException) { return }
+        prefs.edit().putLong("update_notified", u.code).apply()
+    }
+
+    /** The app was opened from the update notification: show the offer again even if «بعداً» was pressed. */
+    fun showAgain() {
+        dismissed = 0L
+        try { NotificationManagerCompat.from(Engine.app).cancel(7704) } catch (e: Exception) { }
+        Engine.scope.launch { check(Engine.app)?.let { offer.value = it } }
+    }
 
     fun installedCode(ctx: Context): Long = try {
         PackageInfoCompat.getLongVersionCode(ctx.packageManager.getPackageInfo(ctx.packageName, 0))

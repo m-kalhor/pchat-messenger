@@ -110,6 +110,46 @@ SECRET_FILE=/opt/messenger/certs/turn_secret
 chown msg:msg "$SECRET_FILE"; chmod 600 "$SECRET_FILE"
 SECRET="$(cat "$SECRET_FILE")"
 
+# 1.10.1: TURN over TLS (TCP 5349) for operators that slow down or block plain 3478. It needs a real
+# certificate that phones and browsers check normally, so it is set up only when the server has a
+# Let's Encrypt domain (domain.sh). The certificate is copied for coturn now and after every renewal.
+# Without a domain, or switched off in the admin panel, no app is offered TURN over TLS.
+TURN_TLS_HOST=""
+TC=/etc/coturn/sepan-turn
+for d in /opt/messenger/certs/le/*/; do
+  [ -f "$d/cert.pem" ] && [ -f "$d/key.pem" ] || continue
+  TURN_TLS_HOST=$(basename "$d"); break
+done
+TURN_HOOK=/etc/letsencrypt/renewal-hooks/deploy/sepan-turn.sh
+if [ -n "$TURN_TLS_HOST" ]; then
+  mkdir -p /etc/coturn "$(dirname $TURN_HOOK)"
+  cat > $TURN_HOOK <<'HOOKEOF'
+#!/bin/bash
+# installed by Sepan install.sh (1.10.1): give coturn the renewed certificate for TURN over TLS
+set -e
+N=$(basename "$RENEWED_LINEAGE")
+grep -q "^cert=/etc/coturn/sepan-turn.pem" /etc/turnserver.conf 2>/dev/null || exit 0
+grep -q "TURN_TLS_HOST=$N" /etc/systemd/system/messenger.service.d/turn.conf 2>/dev/null || exit 0
+install -o root -g turnserver -m 644 "$RENEWED_LINEAGE/fullchain.pem" /etc/coturn/sepan-turn.pem
+install -o root -g turnserver -m 640 "$RENEWED_LINEAGE/privkey.pem" /etc/coturn/sepan-turn.key
+systemctl restart coturn || true
+HOOKEOF
+  chmod 755 $TURN_HOOK
+  install -o root -g turnserver -m 644 "/opt/messenger/certs/le/$TURN_TLS_HOST/cert.pem" $TC.pem
+  install -o root -g turnserver -m 640 "/opt/messenger/certs/le/$TURN_TLS_HOST/key.pem" $TC.key
+  TURN_TLS_CONF="tls-listening-port=5349
+cert=$TC.pem
+pkey=$TC.key
+no-tlsv1
+no-tlsv1_1"
+  TURN_TLS_ENV=" TURN_TLS_HOST=$TURN_TLS_HOST TURN_TLS_PORT=5349"
+  echo "TURN over TLS: turns:$TURN_TLS_HOST:5349"
+else
+  TURN_TLS_CONF="no-tls"
+  TURN_TLS_ENV=""
+  echo "TURN over TLS: off (needs a domain with a Let's Encrypt certificate, see domain.sh)"
+fi
+
 cat > /etc/turnserver.conf <<CONF
 listening-port=3478
 listening-ip=0.0.0.0
@@ -121,7 +161,7 @@ use-auth-secret
 static-auth-secret=$SECRET
 realm=messenger
 total-quota=100
-no-tls
+$TURN_TLS_CONF
 no-dtls
 no-cli
 no-multicast-peers
@@ -139,6 +179,7 @@ echo 'TURNSERVER_ENABLED=1' > /etc/default/coturn
 
 ufw allow 3478/udp
 ufw allow 3478/tcp
+ufw allow 5349/tcp   # TURN over TLS (1.10.1)
 ufw allow 49152:49352/udp
 ufw allow 443/tcp   # web version (iPhone)
 ufw allow 80/tcp    # web setup page (CA profile) + redirect to https
@@ -178,7 +219,7 @@ UNIT
 mkdir -p /etc/systemd/system/messenger.service.d
 cat > /etc/systemd/system/messenger.service.d/turn.conf <<UNIT
 [Service]
-Environment=TURN_SECRET_FILE=/opt/messenger/certs/turn_secret PUBLIC_HOST=$IP
+Environment=TURN_SECRET_FILE=/opt/messenger/certs/turn_secret PUBLIC_HOST=$IP$TURN_TLS_ENV
 UNIT
 
 # --- admin panel exposure ---
@@ -220,7 +261,8 @@ echo -n "web version:       "; curl -s --cacert /opt/messenger/ca/ca.pem --resol
 echo "listening:"; ss -ltn | grep -E ':8443|:8444|:443 |:80 ' || echo "NOT LISTENING"
 echo "TURN listening sockets:"
 ss -lunpt | grep 3478 || echo "NOT LISTENING on 3478"
-ufw status | grep -E "3478|49152" || true
+ss -ltnp | grep 5349 || echo "NOT LISTENING on 5349 (TURN over TLS)"
+ufw status | grep -E "3478|5349|49152" || true
 echo -n "users in database: "; msgadmin list | wc -l
 echo
 echo "Certificate fingerprint (SHA-256) - needed for the Android app:"

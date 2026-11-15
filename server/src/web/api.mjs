@@ -119,3 +119,21 @@ export async function stream(since, csince, rsince, dev, active, abort, onOpen, 
     }
   }
 }
+
+// ---- 1.10 sticker packs ----
+export const stickers = () => call('GET', '/api/stickers');
+export const stickerPack = (id) => call('GET', '/api/stickers/pack/' + id);
+export const createStickerPack = (title) => call('POST', '/api/stickers/packs', { title });
+export const addStickerPack = (id) => call('POST', '/api/stickers/pack/' + id + '/add', {});
+export const removeStickerPack = (id) => call('POST', '/api/stickers/pack/' + id + '/remove', {});
+export const renameStickerPack = (id, title) => call('POST', '/api/stickers/pack/' + id + '/rename', { title });
+export const deleteStickerPack = (id) => call('DELETE', '/api/stickers/pack/' + id);
+export const orderStickerPacks = (packs) => call('POST', '/api/stickers/order', { packs });
+export const addSticker = (packId, blob, emoji) => call('POST', '/api/stickers/pack/' + packId + '/sticker' + (emoji ? '?emoji=' + encodeURIComponent(emoji) : ''), blob, { 'content-type': blob.type || 'application/octet-stream' });
+export const deleteSticker = (id) => call('DELETE', '/api/stickers/sticker/' + id);
+/** The sticker image as a Blob; HttpError 404 when its pack was deleted. */
+export async function stickerImage(id) {
+  const r = await fetch('/api/sticker/' + id, { headers: { authorization: 'Bearer ' + token } });
+  if (!r.ok) throw new HttpError(r.status);
+  return r.blob();
+}

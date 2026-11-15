@@ -319,6 +319,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     var showRequests by remember { mutableStateOf(false) }
     val incoming by Engine.incomingRequests.collectAsState()
 
+    SystemBars.HeaderShown()
     Scaffold(
         topBar = {
             TopAppBar(

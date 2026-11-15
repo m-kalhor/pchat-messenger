@@ -35,6 +35,8 @@ object Prefs {
         textSize.value = p.getInt("text_size", 16)
         wallpaper.value = p.getBoolean("wallpaper", true)
         diagText.value = p.getBoolean("diag_text", true)
+        callRoute.value = p.getString("call_route", "auto") ?: "auto"
+        routePanel.value = p.getBoolean("route_panel", true)
     }
 
     fun setTheme(v: Int) { p.edit().putInt("theme", v).apply(); theme.value = v }
@@ -51,6 +53,12 @@ object Prefs {
     /** the admins' ping / route text over the call (1.7 diagnostics) is shown */
     val diagText = MutableStateFlow(true)
     fun setDiagText(v: Boolean) { p.edit().putBoolean("diag_text", v).apply(); diagText.value = v }
+    /** 1.15: the call path every call switches to once connected (auto = none); see CallManager.ROUTE_NAMES */
+    val callRoute = MutableStateFlow("auto")
+    fun setCallRoute(v: String) { p.edit().putString("call_route", v).apply(); callRoute.value = v }
+    /** 1.15: the 🔀 path panel in calls is shown (the button toggles it, like the ping eye) */
+    val routePanel = MutableStateFlow(true)
+    fun setRoutePanel(v: Boolean) { p.edit().putBoolean("route_panel", v).apply(); routePanel.value = v }
 
     // ---- notifications ----
     var notifyPrivate: Boolean

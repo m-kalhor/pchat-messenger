@@ -1,0 +1,3 @@
+Starter pack art made from Noto Color Emoji (Google, SIL Open Font License 1.1)
+and the Vazirmatn font (Saber Rastikerdar, SIL Open Font License 1.1).
+Rendered by docs/stickers/make-starter-pack.mjs.
