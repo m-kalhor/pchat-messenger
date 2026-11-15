@@ -144,4 +144,4 @@ function start() {
   process.on('exit', flush);
 }
 
-module.exports = { start, track, signal, report, flush, deleteUser, cleanup, _calls: calls };
+module.exports = { add, start, track, signal, report, flush, deleteUser, cleanup, _calls: calls };
