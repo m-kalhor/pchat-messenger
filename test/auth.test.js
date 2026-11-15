@@ -1,5 +1,5 @@
 'use strict';
-// Sign-in by mobile number: SMS codes (a fake sms.ir), codes from another device and from the admin.
+// Sign-in by mobile number: SMS codes (a fake Arta Payamak / IPPanel Edge API), codes from another device and from the admin.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const http = require('node:http');
@@ -7,23 +7,26 @@ const C = require('./helpers/pchat-crypto');
 const { startServer } = require('./helpers/server');
 
 let S, sms, smsUp = true;
-const sent = []; // { mobile, templateId, code }
+const sent = []; // { mobile, pattern, from, code, name }
 const post = (p, body, token) => S.api(token || null, 'POST', p, body);
 const lastCode = () => sent[sent.length - 1].code;
 const setSetting = (k, v) => S.db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(k, String(v));
+const smsCfg = (c) => setSetting('sms_cfg_artapayamak', JSON.stringify(c));
 
 test.before(async () => {
   sms = http.createServer((req, res) => {
     let b = '';
     req.on('data', (c) => { b += c; });
     req.on('end', () => {
-      if (!smsUp) { res.writeHead(500); return res.end('{"status":0,"message":"down"}'); }
-      if (req.headers['x-api-key'] !== 'test-key') { res.writeHead(401, { 'Content-Type': 'application/json' }); return res.end('{"status":0,"message":"bad key"}'); }
-      if (req.url === '/v1/credit') { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"status":1,"message":"ok","data":4200}'); }
+      const out = (code, o) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(o)); };
+      if (!smsUp) { res.writeHead(500); return res.end('down'); }
+      if (req.headers.authorization !== 'test-token') return out(401, { data: null, meta: { status: false, message: 'اطلاعات وارد شده صحیح نمی باشد', message_code: '400-1', errors: {} } });
+      if (req.url === '/v1/api/payment/credit/mine' && req.method === 'GET') return out(200, { data: { credit: 4200, gift: 0 }, meta: { status: true, message: 'انجام شد', message_code: '200-1' } });
       const j = JSON.parse(b);
-      sent.push({ mobile: j.mobile, templateId: j.templateId, code: j.parameters[0].value, name: j.parameters[0].name });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('{"status":1,"message":"ok","data":{"messageId":1,"cost":1}}');
+      if (req.url !== '/v1/api/send' || j.sending_type !== 'pattern') return out(422, { data: null, meta: { status: false, message: 'bad', message_code: '400-2', errors: {} } });
+      const [name] = Object.keys(j.params);
+      sent.push({ mobile: j.recipients[0], n: j.recipients.length, pattern: j.code, from: j.from_number, code: j.params[name], name });
+      out(200, { data: { message_outbox_ids: [1] }, meta: { status: true, message: 'انجام شد', message_code: '200-1' } });
     });
   });
   await new Promise((r) => sms.listen(0, '127.0.0.1', r));
@@ -37,7 +40,7 @@ test.before(async () => {
 });
 test.after(async () => { if (S) await S.stop(); if (sms) sms.close(); });
 
-test('without sms.ir settings the login screen offers no SMS and sending says so', async () => {
+test('without SMS provider settings the login screen offers no SMS and sending says so', async () => {
   const c = (await S.api(null, 'GET', '/api/auth/config')).data;
   assert.deepEqual(c, { sms: false, password: true, apk: false, signup: false });
   const r = await post('/api/auth/sms', { phone: '09121112233' });
@@ -46,13 +49,15 @@ test('without sms.ir settings the login screen offers no SMS and sending says so
 });
 
 test('SMS code signs in once; every spelling of the number works', async () => {
-  setSetting('sms_api_key', 'test-key'); setSetting('sms_template_id', '123456');
+  smsCfg({ token: 'test-token', from: '3000505', pattern: 'qka6e0fb86auvc4' });
   assert.equal((await S.api(null, 'GET', '/api/auth/config')).data.sms, true);
   const r = await post('/api/auth/sms', { phone: '۰۹۱۲ ۱۱۱ ۲۲۳۳' });
   assert.equal(r.status, 200);
-  assert.deepEqual(sent.at(-1).mobile, '09121112233');
-  assert.equal(sent.at(-1).templateId, 123456);
-  assert.equal(sent.at(-1).name, 'CODE');
+  assert.equal(sent.at(-1).mobile, '+989121112233');
+  assert.equal(sent.at(-1).n, 1);
+  assert.equal(sent.at(-1).pattern, 'qka6e0fb86auvc4');
+  assert.equal(sent.at(-1).from, '+983000505', 'the line is sent in the +98 form');
+  assert.equal(sent.at(-1).name, 'code');
   assert.match(lastCode(), /^\d{5}$/);
   const id = C.newIdentity();
   const ok = await post('/api/auth/code', { phone: '+989121112233', code: lastCode(), pubkey: id.pubB64, device: 'Android' });
@@ -111,7 +116,7 @@ test('a signed-in device makes a code for a new one, and gets a login alert', as
   assert.equal((await post('/api/auth/code', { username: 'omid', code: d2.data.code })).status, 200);
 });
 
-test('when sms.ir is down the error says so and the state is recorded', async () => {
+test('when the SMS provider is down the error says so and the state is recorded', async () => {
   smsUp = false;
   const r = await post('/api/auth/sms', { phone: '09127778899' });
   assert.equal(r.status, 503);

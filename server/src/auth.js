@@ -3,7 +3,7 @@
  * Sign-in by mobile number (1.5.0). A user is found by the mobile number on the account (entered by the admin, or confirmed by SMS at open sign-up);
  * one-time codes come from three places, so a dead SMS service never locks
  * anybody out:
- *   'sms'    5 digits by SMS (sms.ir), 2 minutes;
+ *   'sms'    5 digits by SMS (provider chosen in the panel, see sms/), 2 minutes;
  *   'device' 6 digits shown on one of the user's devices that is already signed in, 5 minutes;
  *   'admin'  6 digits made by the admin in the panel and passed on in person or by phone, 10 minutes;
  *   'reauth' 5 digits by SMS to confirm the account before the key backup changes (no login password);
@@ -13,12 +13,12 @@
  */
 const crypto = require('node:crypto');
 const { db, getSetting, setSetting } = require('./db');
+const sms = require('./sms');
 
 const MIN = 60e3;
 const TTL = { sms: 2 * MIN, device: 5 * MIN, admin: 10 * MIN, reauth: 5 * MIN, signup: 2 * MIN };
 const DIGITS = { sms: 5, device: 6, admin: 6, reauth: 5, signup: 5 };
 const MAX_TRIES = 3;
-const SMS_URL = process.env.SMS_API_URL || 'https://api.sms.ir/v1';
 
 const q = {
   add: db.prepare('INSERT INTO login_codes(username,kind,code,expires,tries,created) VALUES(?,?,?,?,0,?)'),
@@ -58,10 +58,8 @@ function normPhone(s) {
   if (/^989\d{9}$/.test(p)) return '+' + p;
   return null;
 }
-/** An Iranian number: the only ones sms.ir can text (and the only ones open sign-up takes). */
+/** An Iranian number: the only ones the SMS login texts (and the only ones open sign-up takes). */
 const isIran = (p) => typeof p === 'string' && p.startsWith('+98');
-/** The national spelling sms.ir expects: 09xxxxxxxxx. */
-const smsMobile = (p) => (isIran(p) ? '0' + p.slice(3) : p);
 
 /** The active user with this mobile number (or this username, for a device / admin code). */
 function findUser(ident) {
@@ -114,14 +112,8 @@ if (getSetting('migrated_v17_phone') !== '1') {
   setSetting('migrated_v17_phone', '1');
 }
 
-// ---------------- sms.ir ----------------
-const smsConfig = () => ({
-  api_key: getSetting('sms_api_key', ''),
-  template_id: getSetting('sms_template_id', ''),
-  param: getSetting('sms_param', 'CODE'),
-  enabled: getSetting('sms_enabled', '1') === '1',
-});
-const smsReady = () => { const c = smsConfig(); return c.enabled && !!c.api_key && /^\d+$/.test(c.template_id); };
+// ---------------- SMS (provider in sms/) ----------------
+const smsReady = sms.ready;
 const passwordLogin = () => getSetting('password_login', '1') === '1';
 /** Open sign-up: anybody with a mobile number confirmed by SMS gets an account (off unless the admin turns it on). */
 const openSignup = () => getSetting('open_signup', '0') === '1' && smsReady();
@@ -133,53 +125,16 @@ function phoneMap() {
   return m;
 }
 
-function smsState(ok, error) {
-  if (ok) setSetting('sms_last_ok', Date.now());
-  else setSetting('sms_last_error', JSON.stringify({ t: Date.now(), error: String(error).slice(0, 200) }));
-}
-/** { last_ok, last_error: {t, error} } and down = the newest attempt failed. */
-function smsStatus() {
-  const ok = Number(getSetting('sms_last_ok', 0)) || null;
-  let err = null;
-  try { err = JSON.parse(getSetting('sms_last_error', 'null')); } catch { }
-  return { last_ok: ok, last_error: err, down: !!err && err.t > (ok || 0) };
-}
-
-async function smsCall(path, method, body, apiKey) {
-  const r = await fetch(SMS_URL + path, {
-    method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-API-KEY': apiKey },
-    body: body && JSON.stringify(body),
-    signal: AbortSignal.timeout(10000),
-  });
-  let data = null;
-  try { data = await r.json(); } catch { }
-  // sms.ir answers { status: 1, message, data } on success
-  if (!r.ok || !data || data.status !== 1) throw new Error((data && data.message) || 'http_' + r.status);
-  return data.data;
-}
-
-/** Sends the code with the verify ("fast send") template. Throws when the SMS did not go out. */
+/** Sends the code by SMS (Iranian numbers only). Throws when the SMS did not go out. */
 async function sendSms(phone, code) {
-  const c = smsConfig();
-  if (!smsReady()) throw new Error('sms_not_configured');
-  if (!isIran(normPhone(phone))) throw new Error('sms_foreign_number');
-  try {
-    await smsCall('/send/verify', 'POST', { mobile: smsMobile(phone), templateId: Number(c.template_id), parameters: [{ name: c.param || 'CODE', value: code }] }, c.api_key);
-    smsState(true);
-  } catch (e) {
-    smsState(false, e.name === 'TimeoutError' ? 'timeout' : e.message);
-    throw e;
-  }
-}
-/** Account credit; a good answer also proves the key, so it clears an old 'SMS down' warning. */
-async function smsCredit() {
-  try { const d = await smsCall('/credit', 'GET', undefined, smsConfig().api_key); smsState(true); return d; } catch (e) { smsState(false, e.name === 'TimeoutError' ? 'timeout' : e.message); throw e; }
+  const p = normPhone(phone);
+  if (!isIran(p)) throw new Error('sms_foreign_number');
+  return sms.send(p, code);
 }
 
 function cleanup() { q.dead.run(Date.now(), MAX_TRIES); }
 
 module.exports = {
-  TTL, normPhone, isIran, smsMobile, findUser, phoneOf, phoneMap, issue, consume, smsConfig, smsReady, passwordLogin, openSignup, signupCategory, smsStatus,
-  sendSms, smsCredit, cleanup,
+  TTL, normPhone, isIran, findUser, phoneOf, phoneMap, issue, consume, smsReady, passwordLogin, openSignup, signupCategory,
+  smsStatus: sms.status, sendSms, smsCredit: sms.credit, cleanup,
 };

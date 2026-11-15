@@ -10,6 +10,7 @@ const core = require('./core');
 const stats = require('./stats');
 const backup = require('./backup');
 const auth = require('./auth');
+const sms = require('./sms');
 const diag = require('./diag');
 const callcfg = require('./callcfg');
 const stickers = require('./stickers');
@@ -67,12 +68,11 @@ function stateDump(ctx) {
 }
 
 function authInfo(ctx) {
-  const c = auth.smsConfig();
   let apk = ctx.apkInfo ? ctx.apkInfo() : null;
   if (apk && ctx.apkPath) { const v = apkVersion(ctx.apkPath); apk = { ...apk, version: v ? v.name : null, version_code: v ? v.code : null }; }
   return {
-    api_key_set: !!c.api_key, api_key_hint: c.api_key ? '…' + c.api_key.slice(-4) : '', template_id: c.template_id, param: c.param,
-    enabled: c.enabled, ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
+    ...sms.publicInfo(),
+    enabled: sms.enabled(), ready: auth.smsReady(), password_login: auth.passwordLogin(), status: auth.smsStatus(), apk,
     open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
     msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '), route_users: callcfg.routeUsers().join(', '),
     calls: callcfg.get(),
@@ -261,27 +261,12 @@ async function route(ctx, req, res, secure) {
     return json(res, 200, { ok: true });
   }
 
-  // ---- sign-in: sms.ir settings, password login on/off, SMS state ----
+  // ---- sign-in: SMS provider settings, password login on/off, SMS state ----
   if (sub === '/auth' && req.method === 'GET') return json(res, 200, authInfo(ctx));
   if (sub === '/auth' && req.method === 'POST') {
     const b = await readJson(req, 4096);
-    if (typeof b.api_key === 'string' && b.api_key.trim()) {
-      const k = b.api_key.trim();
-      if (k.length > 200 || /[^\x21-\x7e]/.test(k)) return json(res, 400, { error: 'bad_api_key' });
-      setSetting('sms_api_key', k);
-      setSetting('sms_last_error', 'null'); // a new key: the old failure no longer says anything
-    }
-    if (b.api_key === null) setSetting('sms_api_key', '');
-    if (b.template_id !== undefined) {
-      const t = String(b.template_id).trim();
-      if (t && !/^\d{1,12}$/.test(t)) return json(res, 400, { error: 'bad_template_id' });
-      setSetting('sms_template_id', t);
-    }
-    if (typeof b.param === 'string') {
-      const pn = b.param.trim() || 'CODE';
-      if (!/^[A-Za-z0-9_]{1,40}$/.test(pn)) return json(res, 400, { error: 'bad_param' });
-      setSetting('sms_param', pn);
-    }
+    // 1.16.0: the SMS provider and its fields ({ provider: 'artapayamak', sms: { token, from, pattern, param } })
+    if (typeof b.provider === 'string') { try { sms.update(b.provider, b.sms && typeof b.sms === 'object' ? b.sms : {}); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (typeof b.enabled === 'boolean') setSetting('sms_enabled', b.enabled ? '1' : '0');
     if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
     if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
@@ -296,17 +281,17 @@ async function route(ctx, req, res, secure) {
     }
     return json(res, 200, authInfo(ctx));
   }
-  // sends one real SMS with a test code, to check the key, the template and that the server reaches sms.ir
+  // sends one real SMS with a test code, to check the key, the template and that the server reaches the SMS provider
   if (sub === '/auth/test' && req.method === 'POST') {
     const b = await readJson(req, 1024);
     const phone = auth.normPhone(b.phone);
     if (!phone) return json(res, 400, { error: 'bad_phone' });
     try { await auth.sendSms(phone, String(crypto.randomInt(10000, 100000))); return json(res, 200, { ok: true, ...authInfo(ctx) }); }
-    catch (e) { return json(res, 200, { ok: false, error: e.name === 'TimeoutError' ? 'timeout' : e.message, ...authInfo(ctx) }); }
+    catch (e) { return json(res, 200, { ok: false, error: e.message, ...authInfo(ctx) }); }
   }
   if (sub === '/auth/credit' && req.method === 'GET') {
     try { return json(res, 200, { credit: await auth.smsCredit() }); }
-    catch (e) { return json(res, 200, { error: e.name === 'TimeoutError' ? 'timeout' : e.message }); }
+    catch (e) { return json(res, 200, { error: e.message }); }
   }
 
   // ---- the Android app offered for download on the web login page (raw APK as the request body) ----
