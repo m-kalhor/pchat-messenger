@@ -149,6 +149,10 @@ object CallManager {
             main.post { Toast.makeText(app, "این کاربر هنوز وارد سپن نشده؛ بعد از اولین ورودش می‌توانید با او تماس بگیرید", Toast.LENGTH_LONG).show() }
             return
         }
+        if (GroupCall.active()) {
+            main.post { Toast.makeText(app, "اول تماس فعلی را تمام کنید", Toast.LENGTH_SHORT).show() }
+            return
+        }
         synchronized(lock) {
             if (state.value.phase != CallPhase.IDLE) return
             state.value = CallState(CallPhase.OUTGOING, peer, video, id, incoming = false, speaker = video, note = "در حال برقراری تماس…")
@@ -207,6 +211,26 @@ object CallManager {
         }
     }
 
+    /**
+     * 1.19: «افزودن نفر» turns this call into a group call: the server starts a room with both of us and the
+     * chosen people, the other side gets sig_upgrade and moves over by itself.
+     */
+    fun upgradeToGroup(users: List<String>) {
+        val s = state.value
+        if (s.phase != CallPhase.ACTIVE) return
+        Engine.scope.launch {
+            val room = try {
+                parseRoom(Api.gcall("start", JSONObject().put("users", org.json.JSONArray(listOf(s.peer) + users))).getJSONObject("room"))
+            } catch (e: Exception) {
+                main.post { Toast.makeText(app, GroupCall.errText(e), Toast.LENGTH_LONG).show() }
+                return@launch
+            }
+            try { sendSignal(s.peer, "sig_upgrade", JSONObject().put("callId", s.callId).put("room", room.id)) } catch (e: Exception) { }
+            endCall("", false, silent = true)
+            GroupCall.adopt(room)
+        }
+    }
+
     fun decline() { endCall("", true) }
     fun hangup() { endCall("", true) }
 
@@ -253,6 +277,11 @@ object CallManager {
                 endCall(if (j.optString("reason") == "busy") "طرف مقابل در تماس دیگری است" else "تماس رد شد", false, CallTones.Tone.BUSY)
             }
             "sig_hangup" -> if (matches(from, callId)) endCall("تماس پایان یافت", false)
+            // 1.19: the other side added people: this call moves into their group call
+            "sig_upgrade" -> if (matches(from, callId) && j.optString("room").isNotEmpty()) {
+                endCall("", false, silent = true)
+                GroupCall.join(j.optString("room"))
+            }
         }
     }
 
@@ -264,7 +293,7 @@ object CallManager {
     private fun onInvite(from: String, callId: String, video: Boolean, sdp: String, relay: Boolean, route: Boolean) {
         if (callId.isEmpty() || sdp.isEmpty()) return
         val busy = synchronized(lock) {
-            if (state.value.phase != CallPhase.IDLE) true
+            if (state.value.phase != CallPhase.IDLE || GroupCall.active()) true
             else {
                 offerSdp = sdp
                 peerRelay = relay
@@ -804,7 +833,7 @@ object CallManager {
      * [tone]: 1.13 tone to play as the call ends (busy, unreachable…). Left null, a call that was connected
      * ends with the short end tone and one that never connected ends silently.
      */
-    fun endCall(note: String, sendHangup: Boolean, tone: CallTones.Tone? = null) {
+    fun endCall(note: String, sendHangup: Boolean, tone: CallTones.Tone? = null, silent: Boolean = false) {
         val snap = synchronized(lock) {
             val cur = state.value
             if (cur.phase == CallPhase.IDLE) return
@@ -844,13 +873,13 @@ object CallManager {
         } else if (cur.incoming) "📞 تماس $kindText بی‌پاسخ" else "📞 تماس $kindText لغو شد / بی‌پاسخ"
         Engine.addCallLog(cur.peer, text, !cur.incoming)
 
-        val endTone = tone ?: if (cur.startedAt > 0L) CallTones.Tone.END else null
+        val endTone = if (silent) null else tone ?: if (cur.startedAt > 0L) CallTones.Tone.END else null
         if (endTone != null) {
             // keep the call audio route until the tone has played, unless a new call took it over meanwhile
             CallTones.play(endTone)
-            main.postDelayed({ if (state.value.phase == CallPhase.IDLE) AudioRouter.stop() }, CallTones.durationMs(endTone) + 300L)
-        } else AudioRouter.stop()
-        stopCallService()
+            main.postDelayed({ if (state.value.phase == CallPhase.IDLE && !GroupCall.active()) AudioRouter.stop() }, CallTones.durationMs(endTone) + 300L)
+        } else if (!silent) AudioRouter.stop()
+        if (!silent) stopCallService()
         if (note.isNotEmpty()) main.post { Toast.makeText(app, note, Toast.LENGTH_SHORT).show() }
 
         Engine.scope.launch(Dispatchers.Default) {
@@ -876,7 +905,7 @@ object CallManager {
         }
     }
 
-    private fun startCallService(video: Boolean) {
+    internal fun startCallService(video: Boolean) {
         try {
             ContextCompat.startForegroundService(app, Intent(app, CallService::class.java).putExtra("video", video))
         } catch (e: Exception) { }
@@ -887,7 +916,7 @@ object CallManager {
      * makes Android kill the app. If it is not in the foreground yet, leave it alone: CallService
      * notices the call is already over right after startForeground() and stops itself.
      */
-    private fun stopCallService() {
+    internal fun stopCallService() {
         if (!CallService.foreground) return
         try { app.stopService(Intent(app, CallService::class.java)) } catch (e: Exception) { }
     }
@@ -909,7 +938,7 @@ object CallManager {
      * normal: ringtone + vibration). Plays the phone's own chosen ringtone; only a phone without one gets
      * the built-in Sepan ring.
      */
-    private fun startRing() {
+    internal fun startRing() {
         stopRing()
         val am = try { app.getSystemService(AudioManager::class.java) } catch (e: Exception) { null }
         val mode = try { am?.ringerMode ?: AudioManager.RINGER_MODE_NORMAL } catch (e: Exception) { AudioManager.RINGER_MODE_NORMAL }
@@ -942,7 +971,7 @@ object CallManager {
         } catch (e: Exception) { }
     }
 
-    private fun stopRing() {
+    internal fun stopRing() {
         try { ringtone?.stop() } catch (e: Exception) { }
         ringtone = null
         try { vibrator?.cancel() } catch (e: Exception) { }

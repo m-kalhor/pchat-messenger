@@ -36,7 +36,8 @@ data class ContactRequest(
 )
 /** incoming (new), declined (can still be accepted), blocked, outgoing (mine, always shown as waiting) */
 data class RequestLists(val incoming: List<ContactRequest>, val declined: List<ContactRequest>, val blocked: List<ContactRequest>, val outgoing: List<ContactRequest>)
-data class GroupInfo(val key: String, val name: String, val members: List<String>)
+/** [call]: group calls are allowed in this group (1.19, admin panel card «تماس گروهی»). */
+data class GroupInfo(val key: String, val name: String, val members: List<String>, val call: Boolean = false)
 /**
  * TURN credentials plus (1.10.1) the call path settings from the admin panel: [policy] auto / relay / direct,
  * the limits for switching a bad direct call to the relay, and the video bitrate cap (0 = none).
@@ -68,7 +69,7 @@ fun parseGroups(raw: String): List<GroupInfo> {
     return (0 until arr.length()).map {
         val o = arr.getJSONObject(it)
         val m = o.getJSONArray("members")
-        GroupInfo(o.getString("key"), o.getString("name"), (0 until m.length()).map { i -> m.getString(i) })
+        GroupInfo(o.getString("key"), o.getString("name"), (0 until m.length()).map { i -> m.getString(i) }, o.optBoolean("call", false))
     }
 }
 
@@ -356,6 +357,13 @@ object Api {
         val b = JSONObject().put("target", target).put("kind", kind).put("payload", payload)
         return JSONObject(exec(req("/api/send").post(b.toString().toRequestBody(JSON)).build())).optBoolean("delivered", false)
     }
+
+    /** 1.19 group calls: op = start, join, leave, decline, invite, sig, act, host (see server/src/gcall.js). */
+    fun gcall(op: String, body: JSONObject): JSONObject =
+        JSONObject(exec(req("/api/gcall/$op").post(body.toString().toRequestBody(JSON)).build()))
+
+    /** {cfg, rooms}: the admin's group call settings and the calls I may join right now. */
+    fun gcallList(): JSONObject = JSONObject(exec(req("/api/gcall").get().build()))
 
     fun turn(): TurnInfo {
         val o = JSONObject(exec(req("/api/turn").get().build()))

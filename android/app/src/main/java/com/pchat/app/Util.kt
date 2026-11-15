@@ -23,6 +23,8 @@ object U {
     fun asciiDigits(s: String): String = buildString(s.length) {
         for (ch in s) append(when (ch) { in '۰'..'۹' -> '0' + (ch - '۰'); in '٠'..'٩' -> '0' + (ch - '٠'); else -> ch })
     }
+    /** A number in Persian digits («۸»). */
+    fun fa(n: Int): String = n.toString().map { if (it in '0'..'9') '۰' + (it - '0') else it }.joinToString("")
     fun time(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
     /** Full Persian (Solar Hijri) date and time, e.g. «۲ آبان ۱۴۰۵، ۱۴:۲۲». */
     fun fullDate(ts: Long): String =
