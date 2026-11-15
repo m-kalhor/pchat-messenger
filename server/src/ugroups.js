@@ -366,6 +366,8 @@ function chanKeys(user, id) {
   const held = keys.map((k) => k.kv);
   const pending = new Map();
   const members = ck.members.all(g.id);
+  // making a new version: everybody it must be sealed for
+  if (out.claim) out.members = members.map((m) => ({ u: m.username, pub: m.pubkey }));
   for (const kv of held) {
     const done = new Map(ck.sealed.all(g.id, kv).map((r) => [r.username, r.for_pub]));
     for (const m of members) {

@@ -83,6 +83,8 @@ test('the owner claims key version 1 and seals it; members fetch their copy; pen
   assert.equal(k0.kv, 1);
   assert.equal(k0.claim, true);
   assert.deepEqual(k0.keys, []);
+  assert.deepEqual(k0.members.map((m) => m.u).sort(), ['adm', 'mia', 'own']);
+  assert.equal(k0.members.find((m) => m.u === 'mia').pub, PUB(3));
   // a claim must include the maker's own copy, and the maker's current public key
   assert.equal((await ug('own', `/${C.id}/keys`, { kv: 1, by_pub: PUB(1), wraps: [{ u: 'mia', w: W(1), for_pub: PUB(3) }] })).data.error, 'bad_keys');
   assert.equal((await ug('own', `/${C.id}/keys`, { kv: 1, by_pub: PUB(9), wraps: [{ u: 'own', w: W(1), for_pub: PUB(1) }] })).data.error, 'key_changed');
