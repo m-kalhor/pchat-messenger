@@ -311,3 +311,35 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .phrow { display: flex; align-items: stretch; direction: ltr; gap: 6px; }
 .phrow .dial { display: flex; align-items: center; padding: 0 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg2); font-size: 16px; color: var(--fg2); white-space: nowrap; }
 .phrow input { flex: 1; min-width: 0; }
+/* 1.19: group calls, Calls tab */
+.av.xs { width: 26px; height: 26px; font-size: 11px; }
+.tabs { display: flex; border-bottom: 1px solid var(--line, rgba(0,0,0,.08)); background: var(--bar, var(--bg)); }
+.tabs button { flex: 1; background: none; border: 0; padding: 10px 0; font: inherit; color: var(--fg2); border-bottom: 2px solid transparent; cursor: pointer; }
+.tabs button.on { color: #3390ec; border-bottom-color: #3390ec; font-weight: bold; }
+.gcbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; background: #43a047; color: #fff; }
+.gcbar.hidden, .gcbtn.hidden { display: none; }
+.gcbar .avs { display: flex; }
+.gcbar .avs .av { margin-left: -8px; border: 2px solid #43a047; }
+.gcbar .btn { background: #fff; color: #2e7d32; }
+.gcmark { font-size: 13px; margin: 0 4px; }
+.row .name.missed { color: #e53935; }
+.volrow { display: flex; align-items: center; gap: 10px; padding: 10px 16px; }
+.volrow input { flex: 1; }
+.call.gcall { justify-content: flex-start; }
+.call.gcall .gtop { width: 100%; display: flex; align-items: center; justify-content: space-between; padding: calc(env(safe-area-inset-top) + 12px) 16px 8px; box-sizing: border-box; }
+.call.gcall .gtop .mut { font-size: 13px; opacity: .75; margin-top: 2px; }
+.call.gcall .gtop .icon { color: #fff; font-size: 18px; background: rgba(255,255,255,.15); border-radius: 50%; width: 44px; height: 44px; border: 0; }
+.call.gcall .info .avs { display: flex; justify-content: center; gap: 6px; margin-top: 14px; }
+.call.gcall .tiles { flex: 1; width: 100%; display: grid; gap: 10px; padding: 8px 12px 170px; box-sizing: border-box; grid-template-columns: repeat(2, 1fr); align-content: center; overflow: auto; }
+.call.gcall .tiles.n1 { grid-template-columns: 1fr; }
+.call.gcall .tiles.n5, .call.gcall .tiles.n6, .call.gcall .tiles.n7, .call.gcall .tiles.n8, .call.gcall .tiles.n9 { grid-template-columns: repeat(3, 1fr); }
+.call.gcall .tile { position: relative; background: rgba(255,255,255,.08); border-radius: 16px; padding: 14px 6px; text-align: center; border: 3px solid transparent; transition: border-color .15s; cursor: pointer; }
+.call.gcall .tile.speak { border-color: #43a047; }
+.call.gcall .tile .av.lg { width: 72px; height: 72px; font-size: 28px; }
+.call.gcall .tiles.n5 .av.lg, .call.gcall .tiles.n6 .av.lg, .call.gcall .tiles.n7 .av.lg, .call.gcall .tiles.n8 .av.lg { width: 54px; height: 54px; font-size: 22px; }
+.call.gcall .tile .tn { margin-top: 8px; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.call.gcall .tile .ti { position: absolute; top: 6px; left: 8px; font-size: 16px; }
+.call.gcall .tile .treact { position: absolute; top: 4px; right: 8px; font-size: 30px; animation: gcpop .3s ease-out; }
+@keyframes gcpop { from { transform: scale(.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+.call.gcall .gtop .icon, .bar .icon.newcall { white-space: nowrap; font-size: 16px; }
+.bar .icon.newcall { width: auto; padding: 0 10px; }

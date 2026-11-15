@@ -17,6 +17,7 @@ const callcfg = require('./callcfg');
 const { apkVersion } = require('./apkinfo');
 const stickers = require('./stickers');
 const usage = require('./usage');
+const gcall = require('./gcall');
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -210,12 +211,18 @@ function profileChanged(username) {
   broadcastTo(audienceOf(username), 'profile', { username, display_name: u.display_name, avatar_ver: u.avatar_ver, bio: u.bio || null });
 }
 function kick(username) {
+  gcalls.dropUser(username); // 1.19: out of any group call
   const was = isOnline(username);
   const set = clients.get(username);
   if (set) for (const r of [...set]) { try { r.end(); } catch { } }
   clients.delete(username);
   if (was) presenceChanged(username, false);
 }
+
+// ---------- 1.19: group calls (rooms in memory, see gcall.js) ----------
+const gcalls = gcall.create({ core, emit, isConnected, usage, okEmoji: (e) => okEmoji(e) });
+setInterval(() => gcalls.sweep(), 10000);
+const gcallCfgFor = () => { const c = gcall.cfg(); return { on: c.on, video: c.video, max_voice: c.max_voice, max_video: c.max_video }; };
 
 // ---------- permissions ----------
 function resolveTarget(user, target) {
@@ -557,6 +564,7 @@ async function route(req, res) {
       hide_seen: !!u.hide_seen, hide_last_seen: !!u.hide_last_seen, findable: !!u.findable, phone: u.phone ? auth.normPhone(u.phone) : null,
       allow_requests: u.allow_requests !== 0, requests_on: contacts.requestsOn(), ...diag.meInfo(user),
       call_route: callcfg.routeAllowed(user), // 1.15: may pick the call path in a call (admin panel, users tab)
+      gcall: gcallCfgFor(), // 1.19: group calls (admin panel, card «تماس گروهی»)
     });
   }
 
@@ -651,7 +659,29 @@ async function route(req, res) {
   }
 
   if (p === '/api/groups' && req.method === 'GET') {
-    return send(res, 200, core.groupsOf(user).map((g) => ({ id: g.id, key: g.gkey, name: g.name, members: core.membersOf(g.id) })));
+    const gc = gcall.cfg();
+    return send(res, 200, core.groupsOf(user).map((g) => ({ id: g.id, key: g.gkey, name: g.name, members: core.membersOf(g.id), call: gcall.groupAllowed(g.gkey, gc) })));
+  }
+
+  // ---- 1.19: group calls ----
+  if (p === '/api/gcall' && req.method === 'GET') return send(res, 200, { cfg: gcallCfgFor(), rooms: gcalls.list(user) });
+  if (p.startsWith('/api/gcall/') && req.method === 'POST') {
+    const b = await readJson(req, 70000);
+    const op = p.slice('/api/gcall/'.length);
+    try {
+      if (op === 'start') return send(res, 200, { room: gcalls.start(user, b) });
+      if (op === 'join') return send(res, 200, { room: gcalls.join(user, b.id) });
+      if (op === 'leave') { gcalls.leave(user, b.id); return send(res, 200, { ok: true }); }
+      if (op === 'decline') { gcalls.decline(user, b.id); return send(res, 200, { ok: true }); }
+      if (op === 'invite') return send(res, 200, { room: gcalls.invite(user, b.id, b.users) });
+      if (op === 'sig') return send(res, 200, { delivered: gcalls.sig(user, b.id, b.to, String(b.kind || ''), b.payload) });
+      if (op === 'act') return send(res, 200, { room: gcalls.act(user, b.id, b) });
+      if (op === 'host') return send(res, 200, { room: gcalls.host(user, b.id, b.user, String(b.action || '')) });
+    } catch (e) {
+      if (!e.code) throw e;
+      return send(res, e.code, { error: e.message, ...(e.room ? { room: e.room } : {}) });
+    }
+    return send(res, 404, { error: 'not_found' });
   }
 
   if (p === '/api/pubkey' && req.method === 'POST') {
@@ -1200,6 +1230,7 @@ cleanup();
 
 stats.start();
 usage.start();
+require('./turnlog').start(process.env.TURN_LOG_FILE, usage.add); // 1.19: TURN relay traffic per user
 backup.startScheduler();
 
 // ---------- admin panel (separate listener, localhost by default) ----------

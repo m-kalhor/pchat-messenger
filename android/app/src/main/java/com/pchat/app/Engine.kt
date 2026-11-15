@@ -480,6 +480,7 @@ object Engine {
 
     fun logout() {
         CallManager.endCall("", true)
+        GroupCall.leave()
         val t = Api.token
         Api.cancelStream()
         Api.token = null
@@ -711,6 +712,7 @@ object Engine {
                         backoff = 1000L
                         pins.value = emptyMap() // the server re-sends every current pin right after connecting
                         flushAll()
+                        GroupCall.refresh() // 1.19: running group calls (missed while offline?)
                         synchronized(acks) { acked.clear() }
                         scope.launch { delay(2500); syncReceipts() }
                         scope.launch { delay(4000); Updater.checkAndNotify(app, appVisible) }
@@ -771,8 +773,11 @@ object Engine {
             "refresh" -> {
                 try { refreshUsers() } catch (e: Exception) { }
                 try { refreshGroups() } catch (e: Exception) { }
+                GroupCall.refresh()
             }
             "contacts" -> try { refreshRequests() } catch (e: Exception) { }
+            // 1.19: group calls
+            "gcall", "gcall_end", "gsig", "gcall_react", "gcall_host" -> GroupCall.onEvent(ev, o)
             "login_alert" -> postLoginAlert(o)
             "stickers" -> scope.launch { Stickers.refresh() }
             "app_update" -> scope.launch { Updater.checkAndNotify(app, appVisible) }
@@ -960,6 +965,16 @@ object Engine {
         String(Crypto.decryptFrom(identity!!, me, from, me, pubOf(from), payload), Charsets.UTF_8)
     } catch (e: Exception) { null }
 
+    /** 1.19 group calls: encrypted for one person with the key the call's room gives for them. */
+    fun encryptTo(peer: String, pub: String, plain: ByteArray): String {
+        val id = identity!!
+        return Crypto.encryptFor(id, me, peer, linkedMapOf(peer to pub), plain)
+    }
+
+    fun decryptWith(from: String, pub: String?, payload: String): String? = try {
+        String(Crypto.decryptFrom(identity!!, me, from, me, pub ?: pubOf(from), payload), Charsets.UTF_8)
+    } catch (e: Exception) { null }
+
     fun addCallLog(peer: String, text: String, mine: Boolean) {
         db.insert(
             Msg(-System.nanoTime(), peer, if (mine) me else peer, mine, System.currentTimeMillis(), "call", text,
@@ -978,6 +993,26 @@ object Engine {
             .setSmallIcon(android.R.drawable.sym_call_incoming)
             .setContentTitle(if (video) "تماس تصویری ورودی" else "تماس صوتی ورودی")
             .setContentText(nameOf(peer))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_CALL)
+            .setOngoing(true)
+            .setContentIntent(pi)
+            .setFullScreenIntent(pi, true)
+            .build()
+        NotificationManagerCompat.from(app).notify(CALL_NOTIF_ID, n)
+    }
+
+    /** 1.19: a group call rings (same channel and full-screen behaviour as a 1:1 call). */
+    fun postGroupCallNotification(title: String, by: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val i = Intent(app, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+        val pi = PendingIntent.getActivity(app, 7701, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(app, CH_CALL)
+            .setSmallIcon(android.R.drawable.sym_call_incoming)
+            .setContentTitle("تماس صوتی گروهی")
+            .setContentText(title + " — " + nameOf(by))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_CALL)
             .setOngoing(true)
@@ -1204,6 +1239,7 @@ object Engine {
         if (o.has("requests_on")) requestsOn.value = o.optBoolean("requests_on", true)
         if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
         if (o.has("username")) callRoute.value = o.optBoolean("call_route", false)
+        if (o.has("gcall")) GroupCall.cfg.value = parseGCfg(o.optJSONObject("gcall"))
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 

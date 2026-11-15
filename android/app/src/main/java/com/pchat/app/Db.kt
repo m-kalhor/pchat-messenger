@@ -190,6 +190,13 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 5) {
     }
 
 
+    /** 1.19 Calls tab: the latest call entries of every chat. */
+    fun callLogs(limit: Int = 200): List<Msg> {
+        val out = ArrayList<Msg>()
+        readableDatabase.rawQuery("SELECT $COLS FROM messages WHERE type='call' ORDER BY ts DESC, id DESC LIMIT $limit", null).use { c -> while (c.moveToNext()) out.add(c.toMsg()) }
+        return out
+    }
+
     fun convos(): List<String> {
         val out = ArrayList<String>()
         readableDatabase.rawQuery("SELECT DISTINCT convo FROM messages", null).use { c -> while (c.moveToNext()) out.add(c.getString(0)) }

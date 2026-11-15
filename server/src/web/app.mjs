@@ -1,6 +1,7 @@
 // Sepan web app: screens and interaction. State and logic live in engine.mjs, calls in call.mjs.
 import * as E from './engine.mjs';
 import * as Call from './call.mjs';
+import * as GC from './groupcall.mjs';
 import * as api from './api.mjs';
 import { fingerprint } from './crypto.mjs';
 import { encodeWebp } from './webp.mjs';
@@ -10,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.18.0';
+const VERSION = '1.19.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -428,6 +429,7 @@ function route() {
   else if (hash.startsWith('/p/')) view = ProfileScreen(hash.slice(3));
   else if (hash === '/new') view = ContactsScreen();
   else if (hash === '/requests') view = RequestsScreen();
+  else if (hash === '/calls') view = CallsScreen();
   else if (/^@[A-Za-z0-9_]{2,20}$/.test(hash)) { const n = hash.slice(1); view = ListScreen(); setTimeout(() => { history.replaceState(null, '', '#/'); openUser(n); }, 0); }
   else if (hash === '/settings') view = SettingsScreen();
   else if (hash === '/stickers') view = StickersScreen();
@@ -729,7 +731,7 @@ function ListScreen() {
       h('button', { class: 'icon', title: 'درخواست‌های ارتباط', onclick: () => go('#/requests') }, '👥', reqBadge),
       h('button', { class: 'icon', title: 'گفتگوی تازه', onclick: () => go('#/new') }, '✏️'),
       h('button', { class: 'icon', title: 'تنظیمات', onclick: () => go('#/settings') }, '⚙️')),
-    list);
+    tabsRow('chats'), list);
   const render = batched(() => {
     conn.textContent = connText();
     const n = S.requests.incoming.length;
@@ -753,7 +755,7 @@ function ListScreen() {
       const row = h('button', { class: 'row' },
         avatarWithDot(s.convo),
         h('div', { class: 'mid' },
-          h('div', { class: 'top' }, h('div', { class: 'name' }, E.titleOf(s.convo)), tick ? tickEl(tick) : null, h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
+          h('div', { class: 'top' }, h('div', { class: 'name' }, E.titleOf(s.convo)), group && GC.roomOf(s.convo) ? h('span', { class: 'gcmark', title: 'تماس گروهی در جریان' }, '📞') : null, tick ? tickEl(tick) : null, h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
           h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, '📌') : null)));
       const wasLong = onLongPress(row, () => {
         const pinned = pinnedChats().includes(s.convo);
@@ -875,9 +877,22 @@ function ChatScreen(convo) {
   let reply = null, editing = null, selected = null, limit = 120, search = '', forceBottom = true;
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
-  const callBtns = group ? [] : [
+  const callBtns = group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, '📞')] : [
     h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => call(false) }, '📞'),
     h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => call(true) }, '🎥')];
+  // 1.19: the green «پیوستن» bar of a group call that is running in this group (like Telegram)
+  const gcBar = h('div', { class: 'gcbar hidden' });
+  function renderGcBar() {
+    const r = group ? GC.roomOf(convo) : null;
+    const g = group && S.groups.find((x) => x.key === convo);
+    for (const b of el.querySelectorAll('.gcbtn')) b.classList.toggle('hidden', !(GC.cfg().on && g && g.call !== false));
+    const mine = r && GC.G.room && GC.G.room.id === r.id && GC.G.phase === 'active';
+    gcBar.classList.toggle('hidden', !r || mine);
+    if (!r || mine) return;
+    fill(gcBar, h('div', { class: 'avs' }, r.parts.slice(0, 4).map((p) => avatar(p.u, 'xs'))),
+      h('div', { class: 'grow' }, h('b', null, 'تماس گروهی'), ' · ', faNum(r.parts.length) + ' نفر'),
+      h('button', { class: 'btn sm', onclick: () => GC.join(r.id) }, 'پیوستن'));
+  }
   // a message request (no connection yet): calls are only noted on the request, they do not ring
   function call(video) {
     const r = E.reqOf(convo);
@@ -933,7 +948,7 @@ function ChatScreen(convo) {
       h('div', { class: 'grow', style: { display: 'flex', gap: '10px', alignItems: 'center' }, onclick: () => go('#/p/' + encodeURIComponent(convo)) }, av, h('div', { style: { minWidth: '0' } }, title, sub)),
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
-    searchBar, pinBar, reqBar, msgs, jump,
+    searchBar, gcBar, pinBar, reqBar, msgs, jump,
     h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
 
   function renderHeader() {
@@ -1368,7 +1383,7 @@ function ChatScreen(convo) {
   const tick = setInterval(renderHeader, 2000);
   ta.value = draftOf(convo);
   showMic();
-  renderHeader(); renderPin(); renderReq();
+  renderHeader(); renderPin(); renderReq(); renderGcBar();
   return {
     el,
     mounted: () => { renderList(); autosize(); },
@@ -1385,6 +1400,7 @@ function ChatScreen(convo) {
       } else if (kind === 'progress' || kind === 'media' || kind === 'receipts' || kind === 'privacy' || (kind === 'react' && data && data.convo === convo)) renderListB();
       else if (kind === 'pins') { renderPin(); renderListB(); }
       else if (kind === 'requests') renderReq();
+      else if (kind === 'gcall' || kind === 'groups') { renderGcBar(); if (kind === 'groups') renderAll(); }
       else if (kind === 'stickers') { if (renderStk) renderStk(); renderListB(); }
       else if (kind === 'users' || kind === 'typing' || kind === 'conn' || kind === 'groups' || kind === 'avatar') renderAll();
     },
@@ -1922,6 +1938,175 @@ function StickerPackScreen(id) {
 }
 
 // ---------------- call screen (overlay above everything) ----------------
+// ---------------- 1.19: group calls ----------------
+function tabsRow(cur) {
+  return h('div', { class: 'tabs' },
+    h('button', { class: cur === 'chats' ? 'on' : '', onclick: () => go('#/') }, 'گفتگوها'),
+    h('button', { class: cur === 'calls' ? 'on' : '', onclick: () => go('#/calls') }, 'تماس‌ها'));
+}
+
+/** Picks people from a list (checkboxes); resolves to the chosen usernames, or null. */
+function pickPeople(title, names, okLabel, max, pre = []) {
+  return new Promise((resolve) => {
+    const picked = new Set(pre);
+    const list = h('div', { class: 'picklist' });
+    const q = h('input', { type: 'text', placeholder: 'جستجو…', oninput: () => render() });
+    const ok = h('button', { class: 'btn', onclick: () => close([...picked]) }, okLabel);
+    const close = (r) => { v.remove(); resolve(r); };
+    function render() {
+      const t = q.value.trim().toLowerCase();
+      ok.disabled = !picked.size;
+      fill(list, names.filter((u) => !t || E.nameOf(u).toLowerCase().includes(t) || u.includes(t)).map((u) => {
+        const cb = h('input', { type: 'checkbox', checked: picked.has(u), onchange: () => {
+          if (cb.checked) { if (max && picked.size >= max) { cb.checked = false; toast('حداکثر ' + faNum(max) + ' نفر'); return; } picked.add(u); } else picked.delete(u);
+          ok.disabled = !picked.size;
+        } });
+        return h('label', { class: 'pick' }, cb, avatar(u, 'sm'), h('span', null, E.nameOf(u)));
+      }));
+    }
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(null); } },
+      h('div', { class: 'dialog' }, h('h3', null, title), q, list,
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(null) }, 'انصراف'), ok)));
+    render();
+    document.body.append(v);
+  });
+}
+const callable = () => S.users.filter((u) => u.dm && u.username !== S.me && u.pubkey && !u.req).map((u) => u.username);
+const maxVoice = () => (GC.cfg().max_voice || 8);
+
+/** Group chat 📞: join the running call, or start one (a group of over 8 people: pick who rings, like WhatsApp). */
+async function groupCall(convo) {
+  const r = GC.roomOf(convo);
+  if (r) return GC.join(r.id);
+  const g = S.groups.find((x) => x.key === convo);
+  if (!g) return;
+  const others = g.members.filter((u) => u !== S.me);
+  if (others.length + 1 <= 8) {
+    if (!await confirmBox('تماس صوتی گروهی', 'گوشی ' + faNum(others.length) + ' عضو «' + g.name + '» زنگ می‌خورد.', 'تماس')) return;
+    return GC.start({ group: convo });
+  }
+  const ring = await pickPeople('گوشی چه کسانی زنگ بخورد؟', others, 'تماس', maxVoice() - 1);
+  if (ring) GC.start({ group: convo, ring });
+}
+
+/** «تماس جدید» in the Calls tab: one person = a normal call, more = a group call. */
+async function newCall() {
+  const users = await pickPeople('تماس جدید', callable(), 'تماس صوتی', maxVoice() - 1);
+  if (!users) return;
+  if (users.length === 1) return Call.startCall(users[0], false);
+  if (!GC.cfg().on) return toast('تماس گروهی در این سرور خاموش است');
+  GC.start({ users });
+}
+
+function CallsScreen() {
+  const list = h('div', { class: 'scroll' });
+  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
+    h('div', { class: 'bar' }, h('h1', null, 'تماس‌ها'),
+      h('button', { class: 'icon newcall', title: 'تماس جدید', onclick: newCall }, '📞+')),
+    tabsRow('calls'), list);
+  const render = batched(() => {
+    const logs = [];
+    for (const [convo, msgs] of S.convos) for (const m of msgs) if (m.type === 'call') logs.push(m);
+    logs.sort((a, b) => b.ts - a.ts);
+    const live = [...GC.G.rooms.values()].filter((r) => !(GC.G.room && GC.G.room.id === r.id && GC.G.phase === 'active'));
+    fill(list,
+      live.length ? h('div', { class: 'section' }, 'تماس‌های در جریان') : null,
+      live.map((r) => h('div', { class: 'row' }, avatar(r.group || r.host),
+        h('div', { class: 'mid' }, h('div', { class: 'name' }, r.title || E.nameOf(r.host)), h('div', { class: 'prev' }, 'تماس گروهی · ' + faNum(r.parts.length) + ' نفر')),
+        h('button', { class: 'btn sm', onclick: () => GC.join(r.id) }, 'پیوستن'))),
+      logs.length ? h('div', { class: 'section' }, 'اخیر') : null,
+      logs.slice(0, 200).map((m) => {
+        const missed = /از دست رفته|بی‌پاسخ/.test(m.text || '');
+        const group = E.isGroup(m.convo);
+        return h('div', { class: 'row' }, avatar(m.convo, 'sm'),
+          h('div', { class: 'mid', onclick: () => go('#/c/' + encodeURIComponent(m.convo)) },
+            h('div', { class: 'name' + (missed ? ' missed' : '') }, E.titleOf(m.convo)),
+            h('div', { class: 'prev' }, (m.mine ? '↗ ' : '↙ ') + (m.text || '') + ' · ' + fmtListTime(m.ts))),
+          group ? h('button', { class: 'icon', title: 'تماس گروهی', onclick: () => groupCall(m.convo) }, '📞')
+            : h('button', { class: 'icon', title: 'تماس', onclick: () => Call.startCall(m.convo, false) }, '📞'));
+      }),
+      !logs.length && !live.length ? h('div', { class: 'empty' }, 'هنوز تماسی ندارید. با دکمهٔ 📞+ با یک یا چند نفر تماس بگیرید.') : null);
+  });
+  render();
+  return { el, update: (k) => { if (k === 'msg' || k === 'gcall' || k === 'users') render(); } };
+}
+
+let gcEl = null, gcTick = null, gcSheet = false;
+function renderGcall(g) {
+  if (view && view.update) view.update('gcall');
+  if (g.phase === 'idle') {
+    if (gcEl) { gcEl.remove(); gcEl = null; clearInterval(gcTick); }
+    return;
+  }
+  if (!gcEl) {
+    gcEl = h('div', { class: 'call gcall' });
+    document.body.append(gcEl);
+    clearInterval(gcTick);
+    gcTick = setInterval(() => renderGcall(GC.G), 1000);
+  }
+  const r = g.room;
+  if (!r) { fill(gcEl, h('div', { class: 'info' }, h('h2', null, 'تماس گروهی'), h('div', null, g.note || 'در حال پیوستن…'))); return; }
+  const title = r.title || (r.host === S.me ? 'تماس گروهی' : E.nameOf(r.host));
+  const btn = (label, cls, fn, t) => h('button', { class: 'cb ' + cls, title: t, onclick: fn }, label);
+  if (g.phase === 'incoming') {
+    fill(gcEl, h('div', { class: 'info' }, avatar(r.group || r.host, 'lg'), h('h2', null, title), h('div', null, 'تماس صوتی گروهی از ' + E.nameOf(g.by)),
+      h('div', { class: 'avs' }, r.parts.map((p) => avatar(p.u, 'sm')))),
+      h('div', { class: 'ctrls' }, btn('✕', 'red', GC.decline, 'رد'), btn('📞', 'green', GC.accept, 'پیوستن')));
+    return;
+  }
+  const s = Math.floor((Date.now() - g.joinedAt) / 1000);
+  const host = r.host === S.me;
+  const tiles = r.parts.map((p) => {
+    const lv = g.levels[p.u] || 0;
+    const reacts = g.reacts.filter((x) => x.from === p.u).slice(-1);
+    const tile = h('div', { class: 'tile' + (lv > 0.03 && !p.muted ? ' speak' : '') },
+      avatar(p.u, 'lg'), h('div', { class: 'tn' }, (p.u === S.me ? 'شما' : E.nameOf(p.u)) + (p.u === r.host ? ' ★' : '')),
+      h('div', { class: 'ti' }, p.muted ? '🔇' : '', p.hand ? '✋' : ''),
+      reacts.length ? h('div', { class: 'treact' }, reacts[0].emoji) : null);
+    if (p.u !== S.me) tile.onclick = () => personSheet(p.u, host);
+    return tile;
+  });
+  const ringing = r.ringing.filter((u) => !r.parts.some((p) => p.u === u));
+  fill(gcEl,
+    h('div', { class: 'gtop' }, h('div', null, h('b', null, title), h('div', { class: 'mut' }, Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + ' · ' + faNum(r.parts.length) + ' نفر' + (ringing.length ? ' · در حال زنگ: ' + ringing.map(E.nameOf).join('، ') : ''))),
+      h('button', { class: 'icon', title: 'افزودن نفر', onclick: addPeople }, '👤+')),
+    h('div', { class: 'tiles n' + Math.min(r.parts.length, 9) }, tiles),
+    h('div', { class: 'ctrls' },
+      btn(g.muted ? '🔇' : '🎙', g.muted ? 'on' : '', GC.toggleMute, 'میکروفون'),
+      btn('✋', g.hand ? 'on' : '', GC.toggleHand, 'بالا بردن دست'),
+      btn('😀', '', () => sheet('واکنش', ['👍', '❤️', '😂', '😮', '👏'].map((e) => ({ label: e, run: () => GC.react(e) }))), 'واکنش'),
+      btn('✕', 'red', () => GC.leave(), 'خروج')));
+}
+function personSheet(u, host) {
+  const vol = h('input', { type: 'range', min: 0, max: 100, value: Math.round((GC.G.volume[u] != null ? GC.G.volume[u] : 1) * 100), oninput: () => GC.setVolume(u, vol.value / 100) });
+  sheet(E.nameOf(u), [
+    E.user(u) && E.user(u).dm ? { label: '💬 پیام خصوصی', run: () => go('#/c/' + encodeURIComponent(u)) } : null,
+    host ? { label: '🔇 بستن صدای او برای همه', run: () => GC.host(u, 'mute') } : null,
+    host ? { label: '⛔ بیرون کردن از تماس', danger: true, run: async () => { if (await confirmBox('بیرون کردن', E.nameOf(u) + ' از تماس بیرون برود؟', 'بیرون کردن', true)) GC.host(u, 'remove'); } } : null,
+  ], () => h('div', { class: 'volrow' }, '🔈 بلندی صدا', vol));
+}
+async function addPeople() {
+  const r = GC.G.room;
+  if (!r) return;
+  const inCall = new Set([...r.parts.map((p) => p.u), ...r.ringing]);
+  const g = r.group && S.groups.find((x) => x.key === r.group);
+  const names = [...new Set([...(g ? g.members : []), ...callable()])].filter((u) => u !== S.me && !inCall.has(u));
+  const room = maxVoice() - r.parts.length;
+  if (room <= 0) return toast('تماس پر است');
+  const users = await pickPeople('افزودن به تماس', names, 'زنگ بزن', room);
+  if (users) GC.invite(users);
+}
+GC.onGcall(renderGcall);
+GC.setToast((t) => toast(t));
+
+/** 1.19: «افزودن نفر» in a 1:1 call turns it into a group call; the other side moves over by itself. */
+async function upgradeCall() {
+  const c = Call.C;
+  const users = await pickPeople('افزودن به تماس', callable().filter((u) => u !== c.peer), 'زنگ بزن', maxVoice() - 2);
+  if (!users || Call.C.phase !== 'active') return;
+  Call.upgradeToGroup(users);
+}
+
 let callEl = null, callTick = null, callSwap = false, routeLevel = 'top'; // routeLevel (1.15): 'top' | 'server'
 // 1.15: the 🔀 path panel is shown; the button toggles it like the ping eye and the choice is remembered
 const routePanelOn = () => { try { return localStorage.getItem('sepan_route_panel') !== '0'; } catch { return true; } };
@@ -1973,6 +2158,7 @@ function renderCall(c) {
       btn(c.muted ? '🔇' : '🎙', c.muted ? 'on' : '', Call.toggleMute, 'قطع صدا'),
       localVideo ? btn(c.camOff ? '🚫' : '📷', c.camOff ? 'on' : '', Call.toggleCamera, 'دوربین') : null,
       localVideo ? btn('🔄', '', Call.switchCamera, 'چرخش دوربین') : null,
+      c.phase === 'active' && !c.video && GC.cfg().on ? btn('👤+', '', upgradeCall, 'افزودن نفر (تماس گروهی)') : null,
       btn('✕', 'red', Call.hangup, 'پایان تماس'));
   // 1.15: 🔀 button + small see-through panel (at most a third of the screen wide):
   // خودکار / مستقیم / سرور › UDP, TCP, TLS. The button shows / hides the panel, remembered.

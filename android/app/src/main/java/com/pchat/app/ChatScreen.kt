@@ -192,6 +192,9 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val listState = rememberLazyListState()
     val isGroup = Engine.isGroup(convo)
     val startCall0 = rememberCallStarter()
+    val gcalls = rememberGroupCallActions() // 1.19
+    val gcfg by GroupCall.cfg.collectAsState()
+    val gmic = rememberMic()
     // 1.7: a message request I have not accepted yet: no calls from here (and theirs do not ring)
     val startCall: (String, Boolean) -> Unit = { c, v ->
         val r = Engine.reqOf(c)
@@ -419,6 +422,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         IconButton(onClick = { searching = false; query = "" }) { Icon(Icons.Default.Close, contentDescription = "بستن جستجو") }
                     } else {
                         IconButton(onClick = { searching = true }) { Icon(Icons.Default.Search, contentDescription = "جستجو") }
+                        // 1.19: group voice call (the admin turns it on per group in the panel)
+                        if (isGroup && gcfg.on && groups.firstOrNull { it.key == convo }?.call == true) {
+                            IconButton(onClick = { gcalls.groupCall(convo) }) { Icon(Icons.Default.Call, contentDescription = "تماس گروهی") }
+                        }
                         if (!isGroup) {
                             IconButton(onClick = { startCall(convo, false) }) { Icon(Icons.Default.Call, contentDescription = "تماس صوتی") }
                             IconButton(onClick = { startCall(convo, true) }) { Text("📹", fontSize = 20.sp) }
@@ -440,6 +447,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         }
     ) { pad ->
         Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize().then(Look.chatBackground())) {
+            if (isGroup) GroupCallBar(convo) { id -> gmic { GroupCall.join(id) } }
             if (keyWarn) {
                 Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {

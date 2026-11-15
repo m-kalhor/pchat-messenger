@@ -13,6 +13,7 @@ const auth = require('./auth');
 const sms = require('./sms');
 const diag = require('./diag');
 const callcfg = require('./callcfg');
+const gcall = require('./gcall');
 const stickers = require('./stickers');
 const usage = require('./usage');
 const totp = require('./totp');
@@ -105,6 +106,7 @@ function authInfo(ctx) {
     open_signup: getSetting('open_signup', '0') === '1', signup_category: auth.signupCategory(),
     msg_requests: getSetting('msg_requests', '1') === '1', diag_users: diag.users().join(', '), route_users: callcfg.routeUsers().join(', '),
     calls: callcfg.get(),
+    gcall: gcall.cfg(), // 1.19: group calls
   };
 }
 
@@ -337,6 +339,7 @@ async function route(ctx, req, res, secure) {
     if (typeof b.diag_users === 'string') { try { diag.setUsers(b.diag_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (typeof b.route_users === 'string') { try { callcfg.setRouteUsers(b.route_users); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.calls && typeof b.calls === 'object') { try { callcfg.set(b.calls); } catch (e) { return json(res, 400, { error: e.message }); } }
+    if (b.gcall && typeof b.gcall === 'object') { try { gcall.setCfg(b.gcall); } catch (e) { return json(res, 400, { error: e.message }); } }
     if (b.signup_category !== undefined) {
       const c = b.signup_category === null || b.signup_category === '' ? '' : String(b.signup_category);
       if (c && !db.prepare('SELECT 1 FROM categories WHERE id=?').get(Number(c))) return json(res, 400, { error: 'bad_category' });

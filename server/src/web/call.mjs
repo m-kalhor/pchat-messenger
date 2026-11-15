@@ -126,12 +126,32 @@ E.setSignalHandler(async (from, kind, enc) => {
   else if (kind === 'sig_ice') onIce(callId, { candidate: j.cand, sdpMid: j.mid, sdpMLineIndex: j.idx });
   else if (kind === 'sig_reject') { if (matches(from, callId)) end(j.reason === 'busy' ? 'طرف مقابل در تماس دیگری است' : 'تماس رد شد', false, 'busy'); }
   else if (kind === 'sig_hangup') { if (matches(from, callId)) end('تماس پایان یافت', false); }
+  // 1.19: the other side added people: this call moves into their group call
+  else if (kind === 'sig_upgrade') { if (matches(from, callId) && j.room && upgradeHook) { end('', false, 'none'); upgradeHook.join(String(j.room)); } }
 });
 
 const matches = (from, callId) => C.phase !== 'idle' && C.peer === from && C.callId === callId;
 
+// 1.19: «افزودن نفر» turns this call into a group call (groupcall.mjs sets the hook)
+let upgradeHook = null;
+export const setUpgradeHook = (fn) => { upgradeHook = fn; };
+export async function upgradeToGroup(users) {
+  if (C.phase !== 'active' || !upgradeHook) return;
+  const { peer, callId } = C;
+  let room;
+  try { room = (await api.gcall('start', { users: [peer, ...users] })).room; } catch (e) { set({ note: 'تماس گروهی شروع نشد' }); return; }
+  await signal('sig_upgrade', { callId, room: room.id });
+  end('', false, 'none');
+  upgradeHook.adopt(room);
+}
+
+// 1.19: a running group call makes this browser busy for 1:1 calls too
+let busyHook = () => false;
+export const setBusyHook = (fn) => { busyHook = fn; };
+
 function onInvite(from, callId, video, sdp, relay, route) {
   if (!callId || !sdp) return;
+  if (C.phase === 'idle' && busyHook()) { sendTo(from, 'sig_reject', { callId, reason: 'busy' }); return; }
   if (C.phase !== 'idle') {
     if (!(C.peer === from && C.callId === callId)) sendTo(from, 'sig_reject', { callId, reason: 'busy' });
     return;
@@ -446,7 +466,7 @@ function end(note, sendHangup, tone) {
   stopRing(); disarm(); clearTimeout(discTimer); stopWatch();
   clearInterval(guard); guard = null; guardUntil = 0; clearInterval(pathTimer); pathTimer = null; peerPref = 'auto';
   stopTone();
-  const endTone = tone || (phase === 'active' ? 'end' : null);
+  const endTone = tone === 'none' ? null : tone || (phase === 'active' ? 'end' : null);
   if (endTone) playTone(endTone);
   iceHold = false; heldIce = []; switching = false; relayed = false; peerRelay = false;
   if (pc) { try { pc.close(); } catch { } pc = null; }
@@ -494,7 +514,7 @@ const TONES = {
   ring: { loop: true, segs: [[400, 784, 1568], [400, 659, 1318], [400, 784, 1568], [400, 659, 1318], [2000]] },
 };
 let toneTimer = null, toneNodes = new Set();
-function playTone(name) {
+export function playTone(name) {
   stopTone();
   const p = TONES[name];
   if (!p || !actx) return;
@@ -517,11 +537,11 @@ function playTone(name) {
   once();
   if (p.loop) toneTimer = setInterval(once, len);
 }
-function stopTone() {
+export function stopTone() {
   clearInterval(toneTimer); toneTimer = null;
   for (const o of toneNodes) { try { o.stop(); } catch { } }
   toneNodes.clear();
 }
-function startRing() { stopRing(); playTone('ring'); ring = setInterval(() => { if (navigator.vibrate) navigator.vibrate([800, 1200]); }, 2000); if (navigator.vibrate) navigator.vibrate([800, 1200]); }
-function stopRing() { if (ring) { clearInterval(ring); ring = null; stopTone(); if (navigator.vibrate) navigator.vibrate(0); } }
+export function startRing() { stopRing(); playTone('ring'); ring = setInterval(() => { if (navigator.vibrate) navigator.vibrate([800, 1200]); }, 2000); if (navigator.vibrate) navigator.vibrate([800, 1200]); }
+export function stopRing() { if (ring) { clearInterval(ring); ring = null; stopTone(); if (navigator.vibrate) navigator.vibrate(0); } }
 export function notifySound() { beep(880, 990); }
