@@ -16,11 +16,40 @@ const callcfg = require('./callcfg');
 const gcall = require('./gcall');
 const stickers = require('./stickers');
 const usage = require('./usage');
+const totp = require('./totp');
+const { qrSvg } = require('./web');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
 const sessions = new Map(); // token -> { csrf, ts }
-const fails = new Map();
-let gfail = { n: 0, t: 0 }; // global failed-login counter (all IPs)
+// 1.18: wrong sign-ins lock out only where they come from: one address after IP_MAX misses, its network
+// (IPv4 /24, IPv6 /64) after NET_MAX, each for LOCK_MS after the last miss. There is no lock for everybody,
+// so somebody guessing from elsewhere can never keep the real admin out.
+const fails = new Map(); // key -> { n, t }
+const LOCK_MS = 15 * 60e3;
+const IP_MAX = 5;
+const NET_MAX = 20;
+const cleanIp = (ip) => String(ip || '').replace(/^::ffff:/, '');
+function netOf(ip) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return ip.split('.').slice(0, 3).join('.') + '.0/24';
+  const parts = ip.split(':');
+  return parts.slice(0, 4).join(':') + '::/64';
+}
+const failKeys = (ip) => [['ip:' + ip, IP_MAX], ['net:' + netOf(ip), NET_MAX]];
+/** Seconds this address still has to wait, 0 when it may try. */
+function lockedFor(ip) {
+  let wait = 0;
+  for (const [k, max] of failKeys(ip)) {
+    const f = fails.get(k);
+    if (f && f.n >= max) wait = Math.max(wait, f.t + LOCK_MS - Date.now());
+  }
+  return wait > 0 ? Math.ceil(wait / 1000) : 0;
+}
+function addFail(ip) {
+  for (const [k] of failKeys(ip)) {
+    const f = fails.get(k);
+    fails.set(k, { n: f && Date.now() - f.t < LOCK_MS ? f.n + 1 : 1, t: Date.now() });
+  }
+}
 const SESSION_MS = 12 * 3600 * 1000;
 const NAME = /^[a-z0-9_]{2,20}$/;
 /** Mobile number for the SMS login: optional +, 7 to 15 digits (spaces, dashes and brackets are dropped). */
@@ -128,22 +157,26 @@ async function route(ctx, req, res, secure) {
   if (!p.startsWith('/admin/api/')) return json(res, 404, { error: 'not_found' });
   const sub = p.slice('/admin/api'.length);
 
+  // what the sign-in form must ask for (the code field only when the second factor is on)
+  if (sub === '/login-info' && req.method === 'GET') return json(res, 200, { totp: totp.enabled() });
+
   if (sub === '/login' && req.method === 'POST') {
     const b = await readJson(req, 2048);
-    const ip = req.socket.remoteAddress;
-    const f = fails.get(ip);
-    if ((f && f.n >= 5 && Date.now() - f.t < 600000) || (gfail.n >= 30 && Date.now() - gfail.t < 3600000)) return json(res, 429, { error: 'rate_limited' });
+    const ip = cleanIp(req.socket.remoteAddress);
+    const wait = lockedFor(ip);
+    if (wait) return json(res, 429, { error: 'rate_limited', wait });
     const stored = getSetting('admin_pass');
     if (!stored) return json(res, 503, { error: 'admin_password_not_set' });
     const userOk = typeof b.username === 'string' && b.username.trim().toLowerCase() === adminUser();
     const passOk = typeof b.password === 'string' && checkPassword(b.password, stored);
-    if (!userOk || !passOk) {
-      fails.set(ip, { n: (f && Date.now() - f.t < 600000 ? f.n : 0) + 1, t: Date.now() });
-      gfail = { n: (Date.now() - gfail.t < 3600000 ? gfail.n : 0) + 1, t: Date.now() };
+    // the same answer for a wrong password and a wrong code: a guess never learns which part was right
+    const codeOk = userOk && passOk && (!totp.enabled() || totp.verify(b.code));
+    if (!codeOk) {
+      addFail(ip);
       await new Promise((r) => setTimeout(r, 800)); // slow down guessing
       return json(res, 401, { error: 'bad_login' });
     }
-    fails.delete(ip);
+    for (const [k] of failKeys(ip)) fails.delete(k);
     const token = crypto.randomBytes(32).toString('hex');
     const csrf = crypto.randomBytes(16).toString('hex');
     sessions.set(token, { csrf, ts: Date.now() });
@@ -153,10 +186,40 @@ async function route(ctx, req, res, secure) {
 
   const ses = session(req);
   if (!ses) return json(res, 401, { error: 'unauthorized' });
-  if (sub === '/session') return json(res, 200, { csrf: ses.s.csrf, username: adminUser() });
+  if (sub === '/session') return json(res, 200, { csrf: ses.s.csrf, username: adminUser(), totp: totp.enabled() });
   if (req.method !== 'GET' && req.headers['x-csrf'] !== ses.s.csrf) return json(res, 403, { error: 'bad_csrf' });
 
   if (sub === '/logout' && req.method === 'POST') { sessions.delete(ses.t); return json(res, 200, { ok: true }); }
+
+  // ---- 1.18 second factor (authenticator app) for the panel: start with the password, confirm with a code ----
+  if (sub === '/totp/start' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    if (typeof b.current !== 'string' || !checkPassword(b.current, getSetting('admin_pass'))) {
+      await new Promise((r) => setTimeout(r, 800));
+      return json(res, 403, { error: 'bad_current_password' });
+    }
+    const secret = totp.newSecret();
+    ses.s.pendingTotp = secret;
+    const link = totp.uri(secret, adminUser() + '@' + (process.env.PUBLIC_HOST || 'sepan'));
+    return json(res, 200, { secret, uri: link, qr: 'data:image/svg+xml;base64,' + qrSvg(link).toString('base64') });
+  }
+  if (sub === '/totp/confirm' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    if (!ses.s.pendingTotp) return json(res, 400, { error: 'totp_not_started' });
+    if (!totp.enable(ses.s.pendingTotp, b.code)) return json(res, 400, { error: 'bad_code' });
+    delete ses.s.pendingTotp;
+    for (const k of [...sessions.keys()]) if (k !== ses.t) sessions.delete(k); // every other browser signs in again, with a code
+    return json(res, 200, { ok: true, totp: true });
+  }
+  if (sub === '/totp/disable' && req.method === 'POST') {
+    const b = await readJson(req, 4096);
+    if (typeof b.current !== 'string' || !checkPassword(b.current, getSetting('admin_pass')) || !totp.verify(b.code)) {
+      await new Promise((r) => setTimeout(r, 800));
+      return json(res, 403, { error: 'bad_password_or_code' });
+    }
+    totp.disable();
+    return json(res, 200, { ok: true, totp: false });
+  }
   if (sub === '/state' && req.method === 'GET') return json(res, 200, stateDump(ctx));
 
   // change the panel's own username and/or password (the current password is always required)
@@ -495,7 +558,11 @@ function start(ctx, tlsOptions) {
   };
   const srv = secure ? https.createServer(tlsOptions, handler) : http.createServer(handler);
   srv.listen(port, bind, () => console.log(`admin panel on ${bind}:${port}`));
-  setInterval(() => { const t = Date.now(); for (const [k, v] of sessions) if (t - v.ts > SESSION_MS) sessions.delete(k); }, 600000).unref();
+  setInterval(() => {
+    const t = Date.now();
+    for (const [k, v] of sessions) if (t - v.ts > SESSION_MS) sessions.delete(k);
+    for (const [k, v] of fails) if (t - v.t > LOCK_MS) fails.delete(k);
+  }, 600000).unref();
   return srv;
 }
 

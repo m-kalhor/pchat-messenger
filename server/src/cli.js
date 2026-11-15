@@ -34,10 +34,14 @@ if (cmd === 'add') {
   setSetting('admin_pass', hashPassword(pw));
   const user = getSetting('admin_user', 'admin');
   console.log(`Admin panel password: ${pw}\nAdmin panel username: ${user}\n(Shown once. Run "msgadmin adminpw" again to reset it.)`);
+} else if (cmd === 'totp-off') {
+  // 1.18: the authenticator phone is lost: sign in to the panel with the password alone, then turn it on again
+  require('./totp').disable();
+  console.log('Admin panel second factor (authenticator code) is OFF. Turn it on again in the panel: «حساب مدیر».');
 } else if (cmd === 'adminuser') {
   if (!name || !/^[a-z0-9_.\-]{3,32}$/.test(name)) { console.error('Admin username: 3-32 chars of a-z, 0-9, _ . -'); process.exit(1); }
   setSetting('admin_user', name);
   console.log(`Admin panel username: ${name}`);
 } else {
-  console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw  |  msgadmin adminuser <name>');
+  console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw  |  msgadmin adminuser <name>  |  msgadmin totp-off');
 }
