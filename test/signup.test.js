@@ -17,14 +17,14 @@ test.before(async () => {
     req.on('data', (c) => { b += c; });
     req.on('end', () => {
       const j = JSON.parse(b || '{}');
-      if (j.parameters) sent.push({ mobile: j.mobile, code: j.parameters[0].value });
+      if (j.params) sent.push({ mobile: j.recipients[0], code: j.params.code });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('{"status":1,"message":"ok","data":{}}');
+      res.end('{"data":{"message_outbox_ids":[1]},"meta":{"status":true,"message":"ok","message_code":"200-1"}}');
     });
   });
   await new Promise((r) => sms.listen(0, '127.0.0.1', r));
   S = await startServer({ SMS_API_URL: `http://127.0.0.1:${sms.address().port}/v1`, SIGNUPS_PER_IP: '3' });
-  setSetting('sms_api_key', 'k'); setSetting('sms_template_id', '1');
+  setSetting('sms_cfg_artapayamak', JSON.stringify({ token: 'k-token-1', from: '+983000505', pattern: 'p1' }));
   S.core.createUser('omid', 'Omid', []);
   S.db.prepare("UPDATE users SET phone='09124445566' WHERE username='omid'").run();
 });

@@ -462,7 +462,7 @@ async function route(req, res) {
     const b = await readJson(req, 1024);
     const phone = auth.normPhone(b.phone);
     if (!phone) return send(res, 400, { error: 'bad_phone' });
-    // sms.ir only reaches Iranian numbers; a foreign number signs in with a code from another device or the admin
+    // the SMS login only texts Iranian numbers; a foreign number signs in with a code from another device or the admin
     if (!auth.isIran(phone)) return send(res, 400, { error: 'sms_foreign' });
     const ip = req.socket.remoteAddress;
     if (limited('smsip:' + ip, 10) || limited('sms:' + phone, 3)) return send(res, 429, { error: 'rate_limited' });

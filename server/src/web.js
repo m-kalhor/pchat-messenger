@@ -51,7 +51,7 @@ ${hasApk ? '<nav><a class="btn" href="/download/sepan.apk">دانلود اپ ا�
 <section><h2>ورود و پیامک</h2>
 <p>ورود به حساب با شمارهٔ موبایل است. پیامک فقط برای فرستادن کد یک‌بارمصرف ورود و تأیید شمارهٔ موبایل استفاده می‌شود و هیچ پیامک تبلیغاتی فرستاده نمی‌شود.</p></section>
 <section><h2>حریم خصوصی</h2>
-<p>متن پیام‌ها فقط روی گوشی فرستنده و گیرنده باز می‌شود و سرور هم آن را نمی‌تواند بخواند. شمارهٔ موبایل هر کاربر به کاربران دیگر نشان داده نمی‌شود و فقط برای فرستادن کد ورود به سامانهٔ پیامکی (sms.ir) فرستاده می‌شود.</p></section>
+<p>متن پیام‌ها فقط روی گوشی فرستنده و گیرنده باز می‌شود و سرور هم آن را نمی‌تواند بخواند. شمارهٔ موبایل هر کاربر به کاربران دیگر نشان داده نمی‌شود و فقط برای فرستادن کد ورود به سامانهٔ پیامکی فرستاده می‌شود.</p></section>
 ${site.contact ? `<section><h2>تماس با ما</h2>${para(site.contact)}</section>` : ''}
 <footer>${esc(title)}</footer>
 </main></body></html>`;
@@ -294,7 +294,7 @@ function start(apiHandler, { plain = false, certDir, publicHost = '', serveApk, 
       }
       if (setupRoute(req, res, p, files, certDir)) return;
       if (serveApk && apkRoute(req, res, p, apk)) return;
-      // a visitor who typed a domain name stays on it (sms.ir and browsers want the name, not the IP)
+      // a visitor who typed a domain name stays on it (SMS providers and browsers want the name, not the IP)
       const typed = reqHost(req);
       const host = isName(typed) ? typed : (publicHost || typed);
       if (!host) { res.writeHead(400); return res.end(); }

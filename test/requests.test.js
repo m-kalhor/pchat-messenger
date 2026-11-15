@@ -108,7 +108,6 @@ test('phone numbers are kept in the international form', async () => {
   assert.equal(auth.normPhone('+44 7700 900123'), '+447700900123');
   assert.equal(auth.normPhone('0044 7700 900123'), '+447700900123');
   assert.equal(auth.normPhone('02188776655'), null, 'a landline without a country code is not guessed');
-  assert.equal(auth.smsMobile('+989365751198'), '09365751198');
   const r = await S.api(null, 'POST', '/api/auth/sms', { phone: '+447700900123' });
   assert.equal(r.data.error, 'sms_foreign');
 });

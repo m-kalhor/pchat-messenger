@@ -1,5 +1,5 @@
 'use strict';
-// Admin panel, sign-in tab: sms.ir settings, one-time login codes, unique mobile numbers, APK upload.
+// Admin panel, sign-in tab: SMS provider settings, one-time login codes, unique mobile numbers, APK upload.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const net = require('node:net');
@@ -30,22 +30,41 @@ test.before(async () => {
 });
 test.after(() => S && S.stop());
 
-test('sms settings are saved; the key is never sent back', async () => {
-  let r = await adm('POST', '/auth', { api_key: 'abcdef-secret-1234', template_id: '987654', param: 'CODE', enabled: true, password_login: false });
+test('SMS provider settings are saved; the token is never sent back', async () => {
+  let r = await adm('GET', '/auth');
+  assert.equal(r.data.provider, 'artapayamak');
+  assert.equal(r.data.ready, false);
+  const arta = () => r.data.providers.find((p) => p.id === 'artapayamak');
+  assert.deepEqual(arta().fields.map((f) => f.key), ['token', 'from', 'pattern', 'param']);
+  assert.equal(arta().fields.find((f) => f.key === 'param').value, 'code', 'the variable name defaults to code');
+  r = await adm('POST', '/auth', { provider: 'artapayamak', sms: { token: 'abcdef-secret-1234', from: '+983000505', pattern: 'qka6e0fb86auvc4', param: 'code' }, enabled: true, password_login: false });
   assert.equal(r.status, 200);
-  assert.equal(r.data.api_key_set, true);
-  assert.equal(r.data.api_key_hint, '…1234');
+  const tok = arta().fields.find((f) => f.key === 'token');
+  assert.equal(tok.set, true);
+  assert.equal(tok.hint, '…1234');
   assert.ok(!JSON.stringify(r.data).includes('abcdef-secret'));
+  assert.equal(arta().fields.find((f) => f.key === 'pattern').value, 'qka6e0fb86auvc4');
   assert.equal(r.data.ready, true);
   assert.equal(r.data.password_login, false);
-  // an empty key field keeps the stored key
-  r = await adm('POST', '/auth', { api_key: '', template_id: '987654', password_login: true });
-  assert.equal(r.data.api_key_set, true);
-  assert.equal((await adm('POST', '/auth', { template_id: 'x1' })).data.error, 'bad_template_id');
-  // sms.ir cannot be reached here: the test reports it and the panel shows SMS as down
+  // an empty token field keeps the stored token
+  r = await adm('POST', '/auth', { provider: 'artapayamak', sms: { token: '', from: '+983000505', pattern: 'qka6e0fb86auvc4' }, password_login: true });
+  assert.equal(arta().fields.find((f) => f.key === 'token').set, true);
+  assert.equal(r.data.ready, true);
+  assert.equal((await adm('POST', '/auth', { provider: 'artapayamak', sms: { pattern: 'bad pattern!' } })).data.error, 'bad_sms_pattern');
+  assert.equal((await adm('POST', '/auth', { provider: 'artapayamak', sms: { from: 'abc' } })).data.error, 'bad_sms_from');
+  assert.equal((await adm('POST', '/auth', { provider: 'smsir', sms: {} })).data.error, 'bad_sms_provider');
+  // the provider cannot be reached here: the test reports it and the panel shows SMS as down
   const t = await adm('POST', '/auth/test', { phone: '09120000000' });
   assert.equal(t.data.ok, false);
   assert.equal(t.data.status.down, true);
+  assert.ok((await adm('GET', '/auth/credit')).data.error);
+});
+
+test('1.16.0 upgrade: the old sms.ir settings are removed', async () => {
+  const { appDir } = S.app;
+  const { getSetting } = require(path.join(appDir, 'db.js'));
+  for (const k of ['sms_api_key', 'sms_template_id', 'sms_param']) assert.equal(getSetting(k), null, k);
+  assert.equal(getSetting('migrated_v116_sms'), '1');
 });
 
 test('one-time login code for a user', async () => {
