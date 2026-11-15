@@ -120,7 +120,7 @@ function avatar(convo, cls = '') {
   const group = E.isGroup(convo);
   const el = h('div', { class: 'av ' + cls });
   el.style.background = colorFor(convo);
-  const url = group ? null : E.avatarUrl(convo);
+  const url = group ? E.groupAvatarUrl(convo) : E.avatarUrl(convo);
   if (url) el.append(h('img', { src: url, alt: '' }));
   else el.textContent = group ? '👥' : initials(E.nameOf(convo));
   return el;
@@ -425,6 +425,7 @@ function route() {
   if (!S.me) view = LoginScreen();
   else if (S.keyStep) view = KeyScreen(S.keyStep);
   else if (hash === '/keypass') view = KeyScreen('change');
+  else if (/^join=[A-Za-z0-9_-]{12,32}$/.test(hash)) { try { sessionStorage.setItem('sepan_join', hash.slice(5)); } catch { } view = ListScreen(); setTimeout(() => { history.replaceState(null, '', '#/'); pendingJoin(); }, 0); }
   else if (hash.startsWith('/c/')) view = ChatScreen(hash.slice(3));
   else if (hash.startsWith('/p/')) view = ProfileScreen(hash.slice(3));
   else if (hash === '/new') view = ContactsScreen();
@@ -447,8 +448,15 @@ function updateTitle() {
 }
 
 let logoutReason = null;
+// 1.20: an invite link opened before signing in is kept and offered right after
+try { const j = /join=([A-Za-z0-9_-]{12,32})/.exec(location.hash); if (j) sessionStorage.setItem('sepan_join', j[1]); } catch { }
+function pendingJoin() {
+  let t = null;
+  try { t = sessionStorage.getItem('sepan_join'); sessionStorage.removeItem('sepan_join'); } catch { }
+  if (t) setTimeout(() => joinByLink(t), 300);
+}
 E.on((kind, data) => {
-  if (kind === 'login') { go('#/'); route(); return; }
+  if (kind === 'login') { go('#/'); route(); pendingJoin(); return; }
   if (kind === 'logout') { logoutReason = data; route(); return; }
   if (kind === 'key') { route(); return; }
   if (kind === 'login_alert') {
@@ -729,7 +737,7 @@ function ListScreen() {
     h('div', { class: 'bar' },
       h('h1', null, 'سپن ', conn),
       h('button', { class: 'icon', title: 'درخواست‌های ارتباط', onclick: () => go('#/requests') }, '👥', reqBadge),
-      h('button', { class: 'icon', title: 'گفتگوی تازه', onclick: () => go('#/new') }, '✏️'),
+      h('button', { class: 'icon', title: 'گفتگوی تازه', onclick: newMenu }, '✏️'),
       h('button', { class: 'icon', title: 'تنظیمات', onclick: () => go('#/settings') }, '⚙️')),
     tabsRow('chats'), list);
   const render = batched(() => {
@@ -941,6 +949,7 @@ function ChatScreen(convo) {
     setReply(null);
   }
   const emojiBtn = h('button', { class: 'icon', title: 'شکلک' }, '🙂');
+  const lockBar = h('div', { class: 'lockbar hidden' });
 
   const el = h('div', { class: 'chat', style: { display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' } },
     h('div', { class: 'bar' },
@@ -949,7 +958,15 @@ function ChatScreen(convo) {
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
     searchBar, gcBar, pinBar, reqBar, msgs, jump,
-    h('div', { class: 'composer' }, selBar, replyBar, recBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
+    h('div', { class: 'composer' }, selBar, replyBar, recBar, lockBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
+  // 1.20: a user group where only admins write, or one the server admin froze
+  function renderLock() {
+    const why = group ? E.writeBlock(convo) : '';
+    lockBar.textContent = why;
+    lockBar.classList.toggle('hidden', !why);
+    const line = el.querySelector('.composer .line');
+    if (line) line.classList.toggle('hidden', !!why);
+  }
 
   function renderHeader() {
     title.textContent = E.titleOf(convo);
@@ -1193,9 +1210,9 @@ function ChatScreen(convo) {
       m.type === 'sticker' && m.stk && E.stickerCached(m.stk.id) !== null && { label: '🎭 نمایش پک', run: () => packSheet(m.stk.p) },
       m.type === 'text' && { label: 'کپی', run: () => navigator.clipboard.writeText(m.text).then(() => toast('کپی شد'), () => toast('کپی نشد')) },
       ...(m.status === 0 && m.fileId && ['image', 'file', 'voice'].includes(m.type) ? mediaItems(m) : []),
-      m.id > 0 && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
+      m.id > 0 && (!E.isUserGroup(convo) || E.canManageGroup(convo)) && { label: pinned ? 'برداشتن سنجاق' : 'سنجاق کردن', run: async () => { const e = await E.pinMessage(convo, pinned ? null : m.id); if (e) toast(e); } },
       m.status === 2 && { label: 'تلاش دوباره', run: () => E.retry(m) },
-      m.mine && m.id > 0 && m.status === 0 && { label: 'حذف برای همه', danger: true, run: async () => {
+      (m.mine || (E.isUserGroup(convo) && E.canManageGroup(convo) && m.type !== 'call')) && m.id > 0 && m.status === 0 && { label: m.mine ? 'حذف برای همه' : 'حذف برای همه (مدیر گروه)', danger: true, run: async () => {
         if (!(await confirmBox('حذف برای همه', 'این پیام برای همهٔ اعضای گفتگو پاک می‌شود.', 'حذف', true))) return;
         const e = await E.deleteForAll(m); if (e) toast(e);
       } },
@@ -1378,12 +1395,12 @@ function ChatScreen(convo) {
   });
   ta.addEventListener('focus', () => emojiPanel.classList.add('hidden'));
 
-  const renderAll = batched(() => { renderHeader(); renderPin(); renderReq(); renderList(); });
+  const renderAll = batched(() => { renderHeader(); renderPin(); renderReq(); renderLock(); renderList(); });
   const renderListB = batched(() => renderList());
   const tick = setInterval(renderHeader, 2000);
   ta.value = draftOf(convo);
   showMic();
-  renderHeader(); renderPin(); renderReq(); renderGcBar();
+  renderHeader(); renderPin(); renderReq(); renderGcBar(); renderLock();
   return {
     el,
     mounted: () => { renderList(); autosize(); },
@@ -1416,6 +1433,7 @@ function ProfileScreen(convo) {
     h('div', { class: 'scroll' }, body));
   const fp = h('div', { class: 'mono' });
   const render = batched(() => {
+    if (group && E.isUserGroup(convo)) { renderUserGroup(); return; }
     if (group) {
       const g = S.groups.find((x) => x.key === convo);
       fill(body, h('div', { class: 'profile-head' }, avatar(convo, 'lg'), h('h2', null, E.groupName(convo)), h('div', { class: 'u' }, g ? faNum(g.members.length) + ' عضو' : '')),
@@ -1445,8 +1463,186 @@ function ProfileScreen(convo) {
       } }, 'حذف ارتباط')));
     if (u.pubkey) fingerprint(u.pubkey).then((t) => { fp.textContent = t; }); else fp.textContent = 'هنوز وارد برنامه نشده';
   });
+  // 1.20: a group a user made: description, members with roles, invite link, owner/admin actions
+  let details = null, loading = false;
+  async function loadDetails() {
+    const g = E.groupOf(convo);
+    if (!g || loading) return;
+    loading = true;
+    const d = await E.groupDetails(g.id);
+    loading = false;
+    if (!d.error) { details = d; render(); }
+  }
+  function renderUserGroup() {
+    const g = E.groupOf(convo);
+    if (!g) { fill(body, h('div', { class: 'empty' }, 'عضو این گروه نیستید')); return; }
+    if (!details || details.id !== g.id) loadDetails();
+    const manage = g.role === 'owner' || g.role === 'admin', own = g.role === 'owner';
+    const roles = new Map(((details && details.roles) || []).map((r) => [r.username, r.role]));
+    for (const a of g.admins || []) if (!roles.has(a)) roles.set(a, a === g.owner ? 'owner' : 'admin');
+    const RL = { owner: 'مالک', admin: 'مدیر' };
+    const order = (u) => (roles.get(u) === 'owner' ? 0 : roles.get(u) === 'admin' ? 1 : 2);
+    const members = [...g.members].sort((a, b) => order(a) - order(b) || E.nameOf(a).localeCompare(E.nameOf(b), 'fa'));
+    const act = async (fn, okText) => { const r = await E.groupAction(fn); if (r.error) toast(r.error); else { if (okText) toast(okText); details = null; render(); } return r; };
+    const av = avatar(convo, 'lg');
+    const url = E.groupAvatarUrl(convo);
+    if (url) av.addEventListener('click', () => viewer(url));
+    const photoIn = h('input', { type: 'file', accept: 'image/*', class: 'hidden', onchange: async () => {
+      const f = photoIn.files[0]; photoIn.value = '';
+      if (!f) return;
+      try { const webp = await toAvatar(f); await act((a) => a.uploadGroupAvatar(g.id, webp)); } catch { toast('این عکس خوانده نشد'); }
+    } });
+    const memberRow = (u) => h('button', { class: 'row', onclick: () => memberSheet(u) },
+      avatarWithDot(u, 'sm'), h('div', { class: 'mid' }, h('div', { class: 'top' }, h('div', { class: 'name' }, u === S.me ? 'شما' : E.nameOf(u)), roles.get(u) ? h('span', { class: 'role' }, RL[roles.get(u)]) : null), h('div', { class: 'prev' }, '@' + u)));
+    function memberSheet(u) {
+      const r = roles.get(u) || 'member';
+      const items = [
+        u !== S.me && { label: '💬 پیام / پروفایل', run: () => go('#/p/' + encodeURIComponent(u)) },
+        own && u !== S.me && r === 'member' && { label: '⭐ مدیر گروه شود', run: () => act((a) => a.ugroupOp('/' + g.id + '/role', { user: u, role: 'admin' })) },
+        own && u !== S.me && r === 'admin' && { label: 'برداشتن مدیری', run: () => act((a) => a.ugroupOp('/' + g.id + '/role', { user: u, role: 'member' })) },
+        own && u !== S.me && { label: '👑 مالکیت گروه به او برسد', run: async () => {
+          if (await confirmBox('انتقال مالکیت', 'مالکیت «' + g.name + '» به ' + E.nameOf(u) + ' برسد؟ شما مدیر گروه می‌مانید.', 'انتقال')) act((a) => a.ugroupOp('/' + g.id + '/transfer', { user: u }), 'مالکیت منتقل شد');
+        } },
+        manage && u !== S.me && r !== 'owner' && (own || r === 'member') && { label: 'بیرون کردن از گروه', danger: true, run: async () => {
+          if (await confirmBox('بیرون کردن', E.nameOf(u) + ' از گروه بیرون شود؟ با لینک دعوت برنمی‌گردد؛ فقط مدیران می‌توانند دوباره اضافه‌اش کنند.', 'بیرون کردن', true)) act((a) => a.ugroupOp('/' + g.id + '/remove', { user: u }));
+        } },
+      ];
+      if (items.some(Boolean)) sheet(E.nameOf(u) + ' · @' + u, items);
+    }
+    const link = details && details.invite_link;
+    fill(body,
+      h('div', { class: 'profile-head' }, av, h('h2', null, g.name), h('div', { class: 'u' }, faNum(g.members.length) + ' عضو' + (g.frozen ? ' · معلق' : ''))),
+      g.about ? h('div', { class: 'hint', dir: 'auto', style: { whiteSpace: 'pre-wrap' } }, g.about) : null,
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn', onclick: () => go('#/c/' + encodeURIComponent(convo)) }, '💬 گفتگو'),
+        g.call ? h('button', { class: 'btn flat', onclick: () => groupCall(convo) }, '📞 تماس گروهی') : null),
+      manage && !g.frozen ? [
+        h('div', { class: 'section' }, 'مدیریت گروه'),
+        h('button', { class: 'row', onclick: () => groupEditBox(g) }, h('div', { class: 'mid' }, h('div', { class: 'name' }, '✏️ نام و توضیح گروه'))),
+        h('button', { class: 'row', onclick: () => sheet('عکس گروه', [{ label: '🖼 انتخاب عکس', run: () => photoIn.click() }, g.avatar_ver > 0 && { label: 'حذف عکس', danger: true, run: () => act((a) => a.deleteGroupAvatar(g.id)) }]) }, h('div', { class: 'mid' }, h('div', { class: 'name' }, '🖼 عکس گروه'))),
+        h('button', { class: 'row', onclick: async () => {
+          const can = S.users.filter((u) => u.dm && !u.req && u.username !== S.me && !g.members.includes(u.username)).map((u) => u.username);
+          if (!can.length) { toast('مخاطب دیگری برای افزودن ندارید؛ لینک دعوت بفرستید'); return; }
+          const pick = await pickPeople('افزودن عضو', can, 'افزودن', 0);
+          if (pick && pick.length) act((a) => a.ugroupOp('/' + g.id + '/add', { users: pick }), 'اضافه شد');
+        } }, h('div', { class: 'mid' }, h('div', { class: 'name' }, '➕ افزودن عضو از مخاطبان'))),
+        h('div', { class: 'section' }, 'لینک دعوت'),
+        link ? h('div', { class: 'hint' }, h('div', { class: 'mono', style: { direction: 'ltr', wordBreak: 'break-all', userSelect: 'all' } }, link),
+          h('div', { class: 'actions', style: { justifyContent: 'flex-start' } },
+            h('button', { class: 'btn sm', onclick: async () => { try { await navigator.clipboard.writeText(link); toast('لینک کپی شد'); } catch { toast('لینک را انتخاب و کپی کنید'); } } }, 'کپی'),
+            navigator.share ? h('button', { class: 'btn sm flat', onclick: () => navigator.share({ title: g.name, text: 'دعوت به گروه «' + g.name + '» در سپن', url: link }).catch(() => { }) }, 'اشتراک') : null,
+            h('button', { class: 'btn sm flat', onclick: () => showQr(g) }, 'QR'),
+            h('button', { class: 'btn sm flat', onclick: () => act((a) => a.ugroupOp('/' + g.id + '/invite', {}), 'لینک تازه ساخته شد؛ لینک قبلی دیگر کار نمی‌کند') }, 'لینک تازه'),
+            h('button', { class: 'btn sm flat danger', onclick: () => act((a) => a.ugroupOp('/' + g.id + '/invite', { revoke: true }), 'لینک باطل شد') }, 'باطل کردن')))
+          : h('button', { class: 'row', onclick: () => act((a) => a.ugroupOp('/' + g.id + '/invite', {})) }, h('div', { class: 'mid' }, h('div', { class: 'name' }, '🔗 ساختن لینک دعوت'), h('div', { class: 'prev' }, 'هر کس لینک را داشته باشد می‌تواند عضو شود'))),
+      ] : null,
+      own && !g.frozen ? [
+        h('div', { class: 'section' }, 'تنظیمات مالک'),
+        h('label', { class: 'row toggle' }, h('div', { class: 'mid' }, h('div', { class: 'name' }, 'فقط مدیران پیام بفرستند')),
+          h('input', { type: 'checkbox', checked: !!g.admins_only, onchange: (e) => act((a) => a.ugroupOp('/' + g.id + '/edit', { admins_only: e.target.checked })) })),
+        h('label', { class: 'row toggle' }, h('div', { class: 'mid' }, h('div', { class: 'name' }, 'تماس گروهی در این گروه')),
+          h('input', { type: 'checkbox', checked: !!g.call_on, onchange: (e) => act((a) => a.ugroupOp('/' + g.id + '/edit', { call_on: e.target.checked })) })),
+      ] : null,
+      h('div', { class: 'section' }, 'اعضا (' + faNum(g.members.length) + ')'),
+      members.map(memberRow),
+      h('div', { class: 'actions' },
+        h('button', { class: 'btn danger', onclick: async () => {
+          const t = own ? 'شما مالک گروه هستید. اگر بروید، مالکیت به قدیمی‌ترین مدیر می‌رسد (اگر مدیری نباشد گروه معلق می‌شود).' : 'از «' + g.name + '» بیرون می‌روید.';
+          if (!(await confirmBox('ترک گروه', t, 'ترک گروه', true))) return;
+          const r = await act((a) => a.ugroupOp('/' + g.id + '/leave'));
+          if (!r.error) go('#/');
+        } }, 'ترک گروه'),
+        own ? h('button', { class: 'btn danger', onclick: async () => {
+          if (!(await confirmBox('حذف گروه', '«' + g.name + '» و همهٔ پیام‌هایش برای همهٔ اعضا پاک می‌شود. این کار برگشت ندارد.', 'حذف برای همیشه', true))) return;
+          const r = await act((a) => a.ugroupOp('/' + g.id + '/delete'));
+          if (!r.error) go('#/');
+        } }, 'حذف گروه') : null),
+      photoIn);
+  }
   render();
   return { el, update: (k) => { if (k === 'users' || k === 'groups' || k === 'avatar') render(); } };
+}
+
+// ---------------- 1.20: making and joining groups ----------------
+function newMenu() {
+  const u = (S.meInfo && S.meInfo.ugroups) || null;
+  sheet(null, [
+    { label: '💬 گفتگوی تازه', run: () => go('#/new') },
+    u && u.on && { label: '👥 گروه تازه' + (u.limit ? ' (' + faNum(u.owned) + ' از ' + faNum(u.limit) + ')' : ''), run: newGroupBox },
+    u && u.on && { label: '🔗 پیوستن با لینک دعوت', run: joinBox },
+  ]);
+}
+function groupEditBox(g) {
+  const name = h('input', { type: 'text', value: g ? g.name : '', placeholder: 'نام گروه', maxlength: 40 });
+  const about = h('textarea', { rows: 3, placeholder: 'توضیح (اختیاری)', maxlength: 255, dir: 'auto' });
+  about.value = g ? g.about || '' : '';
+  return new Promise((resolve) => {
+    const close = (r) => { v.remove(); resolve(r); };
+    const ok = h('button', { class: 'btn', onclick: async () => {
+      if (!name.value.trim()) { toast('نام گروه را بنویسید'); return; }
+      if (!g) { close({ name: name.value.trim(), about: about.value.trim() }); return; }
+      const r = await E.groupAction((a) => a.ugroupOp('/' + g.id + '/edit', { name: name.value.trim(), about: about.value.trim() }));
+      if (r.error) toast(r.error); else close(true);
+    } }, g ? 'ذخیره' : 'بعدی');
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(null); } },
+      h('div', { class: 'dialog' }, h('h3', null, g ? 'ویرایش گروه' : 'گروه تازه'), h('div', { class: 'form', style: { padding: 0 } }, name, about),
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(null) }, 'انصراف'), ok)));
+    document.body.append(v);
+    name.focus();
+  });
+}
+async function newGroupBox() {
+  const u = S.meInfo && S.meInfo.ugroups;
+  if (u && u.owned >= u.limit) { toast(u.limit ? 'به حداکثر ' + faNum(u.limit) + ' گروه و کانالی که می‌توانید بسازید رسیده‌اید' : 'مدیر سرور ساختن گروه را برای شما بسته است'); return; }
+  const info = await groupEditBox(null);
+  if (!info) return;
+  const can = S.users.filter((x) => x.dm && !x.req && x.username !== S.me).map((x) => x.username);
+  let members = [];
+  if (can.length) {
+    members = await pickPeople('اعضای «' + info.name + '»', can, 'ساختن گروه', (u && u.max_members ? u.max_members - 1 : 0), [], true);
+    if (members === null) return;
+  }
+  const r = await E.groupAction((a) => a.ugroupOp('/create', { ...info, members }));
+  if (r.error) { toast(r.error); return; }
+  await E.refreshGroups().catch(() => { });
+  go('#/c/' + encodeURIComponent(r.group.key));
+}
+function tokenOf(text) {
+  const t = String(text || '').trim();
+  const m = /join=([A-Za-z0-9_-]{12,32})/.exec(t) || /^([A-Za-z0-9_-]{12,32})$/.exec(t);
+  return m ? m[1] : null;
+}
+async function joinBox() {
+  const inp = h('input', { type: 'text', placeholder: 'لینک دعوت را اینجا بگذارید', style: { direction: 'ltr' } });
+  const t = await new Promise((resolve) => {
+    const close = (r) => { v.remove(); resolve(r); };
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(null); } },
+      h('div', { class: 'dialog' }, h('h3', null, 'پیوستن با لینک دعوت'), h('div', { class: 'form', style: { padding: 0 } }, inp),
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(null) }, 'انصراف'),
+          h('button', { class: 'btn', onclick: () => { const k = tokenOf(inp.value); if (!k) { toast('این لینک دعوت درست نیست'); return; } close(k); } }, 'ادامه'))));
+    document.body.append(v);
+    inp.focus();
+  });
+  if (t) joinByLink(t);
+}
+async function joinByLink(t) {
+  let p;
+  try { p = await E.groupAction((a) => a.joinPreview(t)); } catch (e) { p = { error: E.errText(e) }; }
+  if (p.error) { toast(p.error); return; }
+  if (p.member) { go('#/c/' + encodeURIComponent(p.key)); return; }
+  if (!(await confirmBox('پیوستن به گروه', '«' + p.name + '» · ' + faNum(p.count) + ' عضو' + (p.about ? ' — ' + p.about : ''), 'پیوستن'))) return;
+  const r = await E.groupAction((a) => a.joinGroup(t));
+  if (r.error) { toast(r.error); return; }
+  await E.refreshGroups().catch(() => { });
+  go('#/c/' + encodeURIComponent(r.group.key));
+}
+async function showQr(g) {
+  let url;
+  try { url = URL.createObjectURL(await api.groupQr(g.id)); } catch { toast('QR ساخته نشد'); return; }
+  const v = h('div', { class: 'veil', onclick: () => { v.remove(); URL.revokeObjectURL(url); } },
+    h('div', { class: 'dialog', style: { textAlign: 'center' } }, h('h3', null, g.name), h('img', { src: url, style: { width: '260px', maxWidth: '100%', background: '#fff', padding: '10px', borderRadius: '12px' } }),
+      h('p', null, 'با دوربین گوشی این را بخوانید تا لینک دعوت باز شود')));
+  document.body.append(v);
 }
 
 // ---------------- settings ----------------
@@ -1946,7 +2142,7 @@ function tabsRow(cur) {
 }
 
 /** Picks people from a list (checkboxes); resolves to the chosen usernames, or null. */
-function pickPeople(title, names, okLabel, max, pre = []) {
+function pickPeople(title, names, okLabel, max, pre = [], allowEmpty = false) {
   return new Promise((resolve) => {
     const picked = new Set(pre);
     const list = h('div', { class: 'picklist' });
@@ -1955,11 +2151,11 @@ function pickPeople(title, names, okLabel, max, pre = []) {
     const close = (r) => { v.remove(); resolve(r); };
     function render() {
       const t = q.value.trim().toLowerCase();
-      ok.disabled = !picked.size;
+      ok.disabled = !picked.size && !allowEmpty;
       fill(list, names.filter((u) => !t || E.nameOf(u).toLowerCase().includes(t) || u.includes(t)).map((u) => {
         const cb = h('input', { type: 'checkbox', checked: picked.has(u), onchange: () => {
           if (cb.checked) { if (max && picked.size >= max) { cb.checked = false; toast('حداکثر ' + faNum(max) + ' نفر'); return; } picked.add(u); } else picked.delete(u);
-          ok.disabled = !picked.size;
+          ok.disabled = !picked.size && !allowEmpty;
         } });
         return h('label', { class: 'pick' }, cb, avatar(u, 'sm'), h('span', null, E.nameOf(u)));
       }));
