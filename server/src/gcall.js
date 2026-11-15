@@ -70,6 +70,7 @@ function groupAllowed(gkey, c = cfg()) {
   if (c.off_groups.includes(gkey)) return false;
   // 1.20: a group a user made: the panel switch for user groups, and the owner's own switch
   const g = require('./core').groupByKey(gkey);
+  if (g && g.kind === 'chan') return false; // 1.21: no calls in channels
   if (g && g.kind === 'user') return getSetting('ugroups_calls', '1') === '1' && !!g.call_on && !g.frozen;
   return true;
 }

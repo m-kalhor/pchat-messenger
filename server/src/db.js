@@ -150,6 +150,18 @@ db.exec('CREATE INDEX IF NOT EXISTS idx_uc_cat ON user_categories(category_id)')
 db.exec('CREATE TABLE IF NOT EXISTS group_bans (category_id INTEGER NOT NULL, username TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (category_id, username))');
 if (!db.prepare('PRAGMA table_info(users)').all().some((r) => r.name === 'ugroup_limit')) db.exec('ALTER TABLE users ADD COLUMN ugroup_limit INTEGER');
 
+// 1.21: channels (kind='chan') are encrypted with a shared channel key. `ckv` is the key's current version
+// (it goes up when somebody is removed); chan_keys holds the key of each version sealed for each member by an
+// owner/admin device (by_pub = that device's public key, for_pub = the member's key it was sealed for).
+// The server never sees the key itself. `sign` = show the author's name under posts.
+const catCols21 = db.prepare('PRAGMA table_info(categories)').all().map((r) => r.name);
+if (!catCols21.includes('ckv')) db.exec('ALTER TABLE categories ADD COLUMN ckv INTEGER NOT NULL DEFAULT 0');
+if (!catCols21.includes('sign')) db.exec('ALTER TABLE categories ADD COLUMN sign INTEGER NOT NULL DEFAULT 0');
+db.exec(`CREATE TABLE IF NOT EXISTS chan_keys (
+  category_id INTEGER NOT NULL, kv INTEGER NOT NULL, username TEXT NOT NULL, wrapped TEXT NOT NULL,
+  by_user TEXT NOT NULL, by_pub TEXT NOT NULL, for_pub TEXT NOT NULL, ts INTEGER NOT NULL,
+  PRIMARY KEY (category_id, kv, username))`);
+
 function hashPassword(pw) {
   const salt = crypto.randomBytes(16);
   const h = crypto.scryptSync(pw, salt, 64);
