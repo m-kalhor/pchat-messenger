@@ -19,6 +19,10 @@ import java.util.Date
 import java.util.Locale
 
 object U {
+    /** Persian / Arabic-Indic digits to ASCII (a Persian keyboard types ۰۹۱۲…). */
+    fun asciiDigits(s: String): String = buildString(s.length) {
+        for (ch in s) append(when (ch) { in '۰'..'۹' -> '0' + (ch - '۰'); in '٠'..'٩' -> '0' + (ch - '٠'); else -> ch })
+    }
     fun time(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
     /** Full Persian (Solar Hijri) date and time, e.g. «۲ آبان ۱۴۰۵، ۱۴:۲۲». */
     fun fullDate(ts: Long): String =

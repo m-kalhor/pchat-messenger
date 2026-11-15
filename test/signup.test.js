@@ -106,5 +106,7 @@ test('lookups are capped per day', async () => {
   const t = (await post('/api/login', { username: 'omid', password: pw })).data.token;
   const many = Array.from({ length: 2000 }, (_, i) => '0912' + String(1000000 + i));
   assert.equal((await post('/api/contacts/lookup', { phones: many }, t)).status, 200);
-  assert.equal((await post('/api/contacts/lookup', { phones: many.map((x) => x.replace('0912', '0913')) }, t)).status, 429);
+  assert.equal((await post('/api/contacts/lookup', { phones: many.map((x) => x.replace('0912', '0913')) }, t)).status, 200);
+  // 1.17: 5000 a day (the app re-matches the contacts once a day by itself)
+  assert.equal((await post('/api/contacts/lookup', { phones: many.map((x) => x.replace('0912', '0914')) }, t)).status, 429);
 });

@@ -192,7 +192,9 @@ object Engine {
         avatarDir().listFiles()?.forEach { it.delete() }
         avatarMem.evictAll()
         prefs.edit().putLong("last_id", 0).putLong("cseq", -1).putLong("rseq", -1).remove("users_raw").remove("groups_raw")
-            .remove("receipts_raw").remove("hide_seen").remove("hide_last_seen").apply()
+            .remove("receipts_raw").remove("hide_seen").remove("hide_last_seen")
+            .remove("phone_matches").remove("contacts_sync_at").remove("contacts_sig").remove("contacts_asked").apply()
+        phoneMatches.value = emptyList()
         Prefs.clearChatPrefs()
         receipts.value = emptyMap()
         gtyping.value = emptyMap()
@@ -338,6 +340,7 @@ object Engine {
                 "wait" -> "کمی صبر کنید و دوباره بخواهید" to e.wait
                 "sms_unavailable" -> SMS_DOWN to 0
                 "bad_phone" -> "شمارهٔ موبایل درست نیست" to 0
+                "sms_foreign" -> "پیامک ورود فقط برای شماره‌های ایران فرستاده می‌شود؛ کد را از دستگاه دیگرتان یا از مدیر بگیرید" to 0
                 "rate_limited" -> "درخواست زیاد بود؛ چند دقیقه بعد دوباره امتحان کنید" to 0
                 else -> "خطای سرور (${e.code})" to 0
             }
@@ -1244,6 +1247,64 @@ object Engine {
             }
         }
         return out.entries.take(2000).map { it.key to it.value }
+    }
+
+    // ---------------- 1.17: members among the phone's contacts, kept up to date ----------------
+    // The numbers are matched on the server and forgotten there; only the answer (who is on Sepan, with
+    // the name from the phone's contacts) is kept here, so the chat list can show it without asking again.
+
+    /** Members found in the phone's contacts (from the last sync). */
+    val phoneMatches = MutableStateFlow<List<Found>>(emptyList())
+    private val syncLock = kotlinx.coroutines.sync.Mutex()
+
+    fun hasContactsPermission(): Boolean =
+        androidx.core.content.ContextCompat.checkSelfPermission(app, android.Manifest.permission.READ_CONTACTS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+
+    /** Whether the one-time "find your contacts" question was answered (yes or later). */
+    var contactsAsked: Boolean
+        get() = prefs.getBoolean("contacts_asked", false)
+        set(v) { prefs.edit().putBoolean("contacts_asked", v).apply() }
+
+    private fun loadPhoneMatches() {
+        if (phoneMatches.value.isNotEmpty()) return
+        val raw = prefs.getString("phone_matches", null) ?: return
+        try {
+            val a = JSONArray(raw)
+            phoneMatches.value = (0 until a.length()).map { i ->
+                val o = a.getJSONObject(i)
+                Found(o.getString("p"), o.optString("n").ifEmpty { null }, o.getString("u"), o.optString("d").ifEmpty { null }, o.optBoolean("c"))
+            }
+        } catch (e: Exception) { }
+    }
+
+    private fun savePhoneMatches(list: List<Found>) {
+        val a = JSONArray()
+        for (f in list) a.put(JSONObject().put("p", f.phone).put("n", f.name ?: "").put("u", f.username).put("d", f.displayName ?: "").put("c", f.connected))
+        prefs.edit().putString("phone_matches", a.toString()).apply()
+        phoneMatches.value = list
+    }
+
+    /**
+     * Matches the phone's contacts with the members: at most once a day, or at once when the contacts
+     * changed (or [force]). Without the contacts permission it only shows the last answer.
+     */
+    suspend fun syncContacts(force: Boolean = false) = withContext(Dispatchers.IO) {
+        loadPhoneMatches()
+        if (!hasContactsPermission() || Api.token == null) return@withContext
+        syncLock.withLock {
+            val nums = try { phoneContacts() } catch (e: Exception) { return@withLock }
+            val sig = nums.map { it.first + "|" + (it.second ?: "") }.sorted().joinToString("\n").hashCode()
+            val last = prefs.getLong("contacts_sync_at", 0)
+            val fresh = System.currentTimeMillis() - last < 24 * 3600_000L
+            if (!force && fresh && prefs.getInt("contacts_sig", 0) == sig) return@withLock
+            if (nums.isEmpty()) { savePhoneMatches(emptyList()) }
+            else {
+                val (found, _) = lookup(nums)
+                if (found == null) return@withLock // offline or over today's limit: keep the last answer, try again later
+                savePhoneMatches(found.sortedBy { (it.name ?: it.displayName ?: it.username).lowercase() })
+            }
+            prefs.edit().putLong("contacts_sync_at", System.currentTimeMillis()).putInt("contacts_sig", sig).apply()
+        }
     }
 
     suspend fun setPrivacy(hideSeen: Boolean, hideLastSeen: Boolean): String? = withContext(Dispatchers.IO) {
