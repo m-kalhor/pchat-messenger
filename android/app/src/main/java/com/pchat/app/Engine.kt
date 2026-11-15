@@ -50,6 +50,8 @@ enum class KeyStep { CHOOSE, SET_PASSWORD }
 const val SIGNUP = "\u0000signup"
 const val SMS_DOWN = "پیامک در دسترس نیست. کد را از دستگاه دیگرتان (تنظیمات › ورود دستگاه تازه) یا از مدیر بگیرید و «کد را دارم» را بزنید."
 const val LOCKED_TEXT = "🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)"
+/** 1.21: a channel post whose key has not reached this phone yet (kept and opened when it comes). */
+const val WAITKEY_TEXT = "🔑 در انتظار کلید کانال؛ وقتی مالک یا یکی از مدیران آنلاین شود باز می‌شود"
 
 /** Messages that travel as text: a location and a sticker are text with an extra field. */
 val TEXTISH = setOf("text", "location", "sticker")
@@ -193,7 +195,11 @@ object Engine {
         avatarMem.evictAll()
         prefs.edit().putLong("last_id", 0).putLong("cseq", -1).putLong("rseq", -1).remove("users_raw").remove("groups_raw")
             .remove("receipts_raw").remove("hide_seen").remove("hide_last_seen")
-            .remove("phone_matches").remove("contacts_sync_at").remove("contacts_sig").remove("contacts_asked").apply()
+            .remove("phone_matches").remove("contacts_sync_at").remove("contacts_sig").remove("contacts_asked")
+            .remove("chankeys").remove("chanwait").apply()
+        synchronized(chanKeys) { chanKeys.clear(); chanKeysLoaded = true }
+        synchronized(chanWait) { chanWait.clear() }
+        chanViews.value = emptyMap()
         phoneMatches.value = emptyList()
         Prefs.clearChatPrefs()
         receipts.value = emptyMap()
@@ -227,6 +233,9 @@ object Engine {
         is UserError -> e.message ?: "خطا"
         is Api.HttpError -> when (e.error) {
             "ugroups_off" -> "ساختن گروه را مدیر سرور خاموش کرده است"
+            "chans_off" -> "ساختن کانال را مدیر سرور خاموش کرده است"
+            "chan_key_old" -> "کلید کانال عوض شده؛ دوباره بفرستید"
+            "key_taken", "key_changed" -> "کلید کانال در حال به‌روزرسانی است؛ کمی بعد دوباره امتحان کنید"
             "group_limit" -> "به حداکثر تعداد گروه و کانالی که می‌توانید بسازید رسیده‌اید"
             "their_group_limit" -> "این عضو به حداکثر تعداد گروه‌هایش رسیده و نمی‌تواند مالک شود"
             "cannot_add" -> "فقط کسانی را می‌شود اضافه کرد که با شما در ارتباط‌اند؛ برای بقیه لینک دعوت بفرستید"
@@ -535,6 +544,8 @@ object Engine {
         prefs.edit().putString("groups_raw", raw).apply()
         groups.value = list
         tick.value++
+        // 1.21: channels: owner/admins seal the key for people waiting; members fetch a key they still lack
+        for (g in list) if (g.isChan && (g.manages || ckRaw(g.key, g.ckv) == null)) chanSync(g)
     }
 
     /** Re-reads contacts and groups in the background, so a group the admin added while a "refresh" event was missed still shows up. */
@@ -791,6 +802,7 @@ object Engine {
                 GroupCall.refresh()
             }
             "contacts" -> try { refreshRequests() } catch (e: Exception) { }
+            "chankey" -> groupOf(o.optString("convo"))?.let { chanSync(it) }
             // 1.19: group calls
             "gcall", "gcall_end", "gsig", "gcall_react", "gcall_host" -> GroupCall.onEvent(ev, o)
             "login_alert" -> postLoginAlert(o)
@@ -814,7 +826,7 @@ object Engine {
         }
     }
 
-    private fun handleMsg(o: JSONObject) {
+    private fun handleMsg(o: JSONObject, quiet: Boolean = false) {
         val id = o.getLong("id")
         val from = o.getString("from")
         val target = o.getString("target")
@@ -826,9 +838,12 @@ object Engine {
         val visible = appVisible && currentConvo == convo
 
         var lx: String? = null
+        val kv = if (isGroup(target)) Crypto.chanVersion(payload) else 0
         val msg: Msg = try {
-            val pub = if (mine) null else (pubOf(from) ?: run { refreshUsers(); pubOf(from) })
-            val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, target, pub, payload), Charsets.UTF_8))
+            val plain = if (kv > 0) chanOpen(from, target, payload) else {
+                val pub = if (mine) null else (pubOf(from) ?: run { refreshUsers(); pubOf(from) })
+                JSONObject(String(Crypto.decryptFrom(identity!!, me, from, target, pub, payload), Charsets.UTF_8))
+            }
             if (!mine) lx = plain.optString("lx").ifEmpty { null }
             val r = plain.optJSONObject("r")
             val f = plain.optJSONObject("f")
@@ -853,14 +868,19 @@ object Engine {
                 loc = loc, reactions = reactionMap(o.optJSONObject("reactions")), stk = stk
             )
         } catch (e: Exception) {
-            Msg(id, convo, from, mine, ts, "text", LOCKED_TEXT,
+            if (e is NoChanKey) {
+                // kept until the channel key arrives (chanSync opens it again)
+                synchronized(chanWait) { chanWait[id] = o.toString(); saveChanWait() }
+                groupOf(target)?.let { chanSyncSoon(it) }
+            }
+            Msg(id, convo, from, mine, ts, "text", if (e is NoChanKey) WAITKEY_TEXT else LOCKED_TEXT,
                 null, null, null, 0, null, 0, 0, 0L, null, null, null, true)
         }
         val isNew = db.insert(msg)
         if (isNew && lx != null && fileId != null) lanServerMessage(lx!!, msg)
         if (!isNew && msg.reactions.isNotEmpty()) db.setReactions(id, msg.reactions)
         if (!mine) ack(convo, id, if (msg.read) id else 0)
-        if (isNew && !msg.read) postNotification(msg)
+        if (isNew && !msg.read && !quiet) postNotification(msg)
         if (id > prefs.getLong("last_id", 0)) prefs.edit().putLong("last_id", id).apply()
         if (isNew) tick.value++
     }
@@ -874,7 +894,9 @@ object Engine {
                 val from = o.getString("from")
                 val pub = if (from == me) null else pubOf(from)
                 try {
-                    val plain = JSONObject(String(Crypto.decryptFrom(identity!!, me, from, o.getString("target"), pub, o.getString("payload")), Charsets.UTF_8))
+                    val tg = o.getString("target"); val pl = o.getString("payload")
+                    val plain = if (isGroup(tg) && Crypto.chanVersion(pl) > 0) chanOpen(from, tg, pl)
+                        else JSONObject(String(Crypto.decryptFrom(identity!!, me, from, tg, pub, pl), Charsets.UTF_8))
                     db.setEdited(id, plain.optString("x", ""), o.optLong("edited", System.currentTimeMillis()))
                 } catch (e: Exception) { }
             }
@@ -1074,7 +1096,7 @@ object Engine {
     }
 
     fun sendTyping(convo: String) {
-        if (reqOf(convo) == "out") return // no "typing…" to someone who has not accepted yet
+        if (reqOf(convo) == "out" || isChan(convo)) return // no "typing…" to someone who has not accepted yet, nor in a channel
         val t = System.currentTimeMillis()
         if (t - (lastTypingSent[convo] ?: 0L) < 3000) return
         lastTypingSent[convo] = t
@@ -1129,7 +1151,7 @@ object Engine {
 
     /** "sent" (grey ✓), "delivered" (blue ✓) or "seen" (blue ✓✓) for my message, null for others. In a group: every member. */
     fun tickOf(m: Msg, rc: Map<String, Map<String, Pair<Long, Long>>> = receipts.value): String? {
-        if (!m.mine || m.id <= 0 || m.status != 0 || m.type == "call") return null
+        if (!m.mine || m.id <= 0 || m.status != 0 || m.type == "call" || isChan(m.convo)) return null // a channel shows 👁
         val c = rc[m.convo] ?: emptyMap()
         fun d(u: String) = c[u]?.let { maxOf(it.first, it.second) } ?: 0L
         fun s(u: String) = c[u]?.second ?: 0L
@@ -1255,7 +1277,7 @@ object Engine {
         if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
         if (o.has("username")) callRoute.value = o.optBoolean("call_route", false)
         if (o.has("gcall")) GroupCall.cfg.value = parseGCfg(o.optJSONObject("gcall"))
-        o.optJSONObject("ugroups")?.let { u -> ugCfg.value = UgCfg(u.optBoolean("on", false), u.optInt("limit", 0), u.optInt("owned", 0), u.optInt("max_members", 200)) }
+        o.optJSONObject("ugroups")?.let { u -> ugCfg.value = UgCfg(u.optBoolean("on", false), u.optInt("limit", 0), u.optInt("owned", 0), u.optInt("max_members", 200), u.optBoolean("chan_on", false), u.optInt("chan_max", 1000)) }
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
 
@@ -1419,7 +1441,7 @@ object Engine {
     }
 
     // ---------------- 1.20: groups users make themselves ----------------
-    data class UgCfg(val on: Boolean = false, val limit: Int = 0, val owned: Int = 0, val maxMembers: Int = 200)
+    data class UgCfg(val on: Boolean = false, val limit: Int = 0, val owned: Int = 0, val maxMembers: Int = 200, val chanOn: Boolean = false, val chanMax: Int = 1000)
     val ugCfg = MutableStateFlow(UgCfg())
 
     fun groupOf(convo: String): GroupInfo? = groups.value.firstOrNull { it.key == convo }
@@ -1429,6 +1451,7 @@ object Engine {
     fun writeBlock(convo: String): String? {
         val g = groupOf(convo) ?: return null
         if (!g.isUser) return null
+        if (g.isChan) return if (g.frozen) "این کانال را مدیر سرور معلق کرده است" else if (!g.manages) "📢 کانال: فقط مالک و مدیران مطلب می‌گذارند" else null
         if (g.frozen) return "این گروه را مدیر سرور معلق کرده است"
         if (g.adminsOnly && !g.manages) return "فقط مدیران این گروه پیام می‌فرستند"
         return null
@@ -1465,6 +1488,164 @@ object Engine {
             decodeBytes(f.readBytes())?.also { avatarMem.put(key, it) }
         } catch (e: Exception) { null }
     }
+    // ---------------- 1.21: channels ----------------
+    // Posts are sealed with the channel's shared key (Crypto.chanEncrypt). Each phone keeps the versions it has;
+    // owner and admins make a new version when needed and seal the versions they hold for members still waiting.
+    private class NoChanKey : Exception("no channel key")
+    private val chanKeys = HashMap<String, HashMap<Int, ByteArray>>()
+    private var chanKeysLoaded = false
+    private val chanWait = HashMap<Long, String>() // message id -> the raw event, opened when the key arrives
+    private val chanMutex = Any()
+    val chanViews = MutableStateFlow<Map<String, List<Long>>>(emptyMap())
+
+    fun isChan(convo: String): Boolean = groupOf(convo)?.isChan == true
+
+    private fun loadChanKeys() {
+        if (chanKeysLoaded) return
+        chanKeysLoaded = true
+        try {
+            val o = JSONObject(prefs.getString("chankeys", "{}") ?: "{}")
+            for (g in o.keys()) {
+                val m = HashMap<Int, ByteArray>()
+                val k = o.getJSONObject(g)
+                for (v in k.keys()) m[v.toInt()] = Crypto.unb64(k.getString(v))
+                chanKeys[g] = m
+            }
+            val w = JSONObject(prefs.getString("chanwait", "{}") ?: "{}")
+            synchronized(chanWait) { for (id in w.keys()) chanWait[id.toLong()] = w.getString(id) }
+        } catch (e: Exception) { }
+    }
+    private fun saveChanKeys() {
+        val o = JSONObject()
+        synchronized(chanKeys) { for ((g, m) in chanKeys) o.put(g, JSONObject().also { j -> for ((v, raw) in m) j.put(v.toString(), Crypto.b64(raw)) }) }
+        prefs.edit().putString("chankeys", o.toString()).apply()
+    }
+    private fun saveChanWait() {
+        val o = JSONObject()
+        for ((id, raw) in chanWait) o.put(id.toString(), raw)
+        prefs.edit().putString("chanwait", o.toString()).apply()
+    }
+    fun ckRaw(gkey: String, kv: Int): ByteArray? = synchronized(chanKeys) { loadChanKeys(); chanKeys[gkey]?.get(kv) }
+
+    private fun chanOpen(from: String, target: String, payload: String): JSONObject {
+        val raw = ckRaw(target, Crypto.chanVersion(payload)) ?: throw NoChanKey()
+        return JSONObject(String(Crypto.chanDecrypt(raw, from, target, payload), Charsets.UTF_8))
+    }
+
+    fun chanSync(g: GroupInfo) { scope.launch { try { chanSyncNow(g) } catch (e: Exception) { } } }
+    /** From a post that cannot be opened yet: at most one key check per channel every few seconds. */
+    private val chanSyncAt = HashMap<String, Long>()
+    private fun chanSyncSoon(g: GroupInfo) {
+        val t = System.currentTimeMillis()
+        if (synchronized(chanSyncAt) { if (t - (chanSyncAt[g.key] ?: 0L) < 3000) true else { chanSyncAt[g.key] = t; false } }) return
+        chanSync(g)
+    }
+
+    fun chanSyncNow(g: GroupInfo) { if (g.isChan && identity != null) synchronized(chanMutex) { doChanSync(g, 0) } }
+
+    private fun doChanSync(g: GroupInfo, round: Int) {
+        val id = identity ?: return
+        val r = Api.chanKeys(g.id)
+        val mine = synchronized(chanKeys) { loadChanKeys(); chanKeys.getOrPut(g.key) { HashMap() } }
+        var got = false
+        val keys = r.optJSONArray("keys") ?: JSONArray()
+        for (i in 0 until keys.length()) {
+            val k = keys.getJSONObject(i)
+            val kv = k.getInt("kv")
+            if (synchronized(chanKeys) { mine.containsKey(kv) }) continue
+            try {
+                val raw = Crypto.openChanKey(id, me, k.getString("by_user"), k.getString("by_pub"), g.key, kv, k.getString("wrapped"))
+                synchronized(chanKeys) { mine[kv] = raw }
+                got = true
+            } catch (e: Exception) { }
+        }
+        val kvNow = r.optInt("kv", g.ckv)
+        val members = r.optJSONArray("members")
+        if (r.optBoolean("claim", false) && members != null) {
+            // nobody has made this version yet: make it and seal it for everybody (and myself)
+            val raw = Crypto.newChanKey()
+            val wraps = JSONArray()
+            var self = false
+            for (i in 0 until members.length()) {
+                val m = members.getJSONObject(i)
+                val u = m.getString("u"); val pub = m.getString("pub")
+                if (u == me) self = true
+                try { wraps.put(JSONObject().put("u", u).put("w", Crypto.sealChanKey(id, me, u, pub, g.key, kvNow, raw)).put("for_pub", if (u == me) id.pubB64 else pub)) } catch (e: Exception) { }
+            }
+            if (!self) wraps.put(JSONObject().put("u", me).put("w", Crypto.sealChanKey(id, me, me, null, g.key, kvNow, raw)).put("for_pub", id.pubB64))
+            try {
+                Api.putChanKeys(g.id, JSONObject().put("kv", kvNow).put("by_pub", id.pubB64).put("wraps", wraps))
+                synchronized(chanKeys) { mine[kvNow] = raw }
+                got = true
+            } catch (e: Api.HttpError) {
+                // another admin was first: take theirs
+                if (e.code == 409 && round < 2) { if (got) saveChanKeys(); return doChanSync(g, round + 1) }
+            }
+        }
+        val pend = r.optJSONArray("pending")
+        if (pend != null && pend.length() > 0) {
+            val byKv = HashMap<Int, JSONArray>()
+            for (i in 0 until pend.length()) {
+                val p = pend.getJSONObject(i)
+                val u = p.getString("u"); val pub = p.getString("pub")
+                val kvs = p.optJSONArray("kvs") ?: JSONArray()
+                for (j in 0 until kvs.length()) {
+                    val kv = kvs.getInt(j)
+                    val raw = synchronized(chanKeys) { mine[kv] } ?: continue
+                    try { byKv.getOrPut(kv) { JSONArray() }.put(JSONObject().put("u", u).put("w", Crypto.sealChanKey(id, me, u, pub, g.key, kv, raw)).put("for_pub", pub)) } catch (e: Exception) { }
+                }
+            }
+            for ((kv, wraps) in byKv) try { Api.putChanKeys(g.id, JSONObject().put("kv", kv).put("by_pub", id.pubB64).put("wraps", wraps)) } catch (e: Exception) { }
+        }
+        if (got) {
+            saveChanKeys()
+            // posts that came before the key: open them now
+            val waiting = synchronized(chanWait) { chanWait.entries.filter { (_, raw) -> try { JSONObject(raw).optString("target") == g.key } catch (e: Exception) { false } }.map { it.key to it.value } }
+            for ((mid, raw) in waiting) {
+                synchronized(chanWait) { chanWait.remove(mid); saveChanWait() }
+                db.delete(mid)
+                try { handleMsg(JSONObject(raw), quiet = true) } catch (e: Exception) { }
+            }
+            tick.value++
+        }
+    }
+
+    /** A channel on screen: fetch older posts once (a new member reads what came before, at most 500), then the 👁 counts. */
+    private val chanLoaded = HashSet<String>()
+    fun loadChannel(convo: String) {
+        val g = groupOf(convo) ?: return
+        if (!g.isChan) return
+        if (!synchronized(chanLoaded) { chanLoaded.add(convo) }) { refreshViews(convo); return }
+        scope.launch {
+            try {
+                for (page in 0 until 5) {
+                    val have = db.messages(convo, 2000).filter { it.id > 0 }
+                    val before = have.minOfOrNull { it.id } ?: 0L
+                    val posts = Api.chanPosts(g.id, before).optJSONArray("posts") ?: JSONArray()
+                    val ids = have.map { it.id }.toHashSet()
+                    for (i in 0 until posts.length()) {
+                        val o = posts.getJSONObject(i)
+                        if (o.getLong("id") !in ids) handleMsg(o, quiet = true)
+                    }
+                    if (posts.length() < 100) break
+                }
+                tick.value++
+            } catch (e: Exception) { synchronized(chanLoaded) { chanLoaded.remove(convo) } }
+            refreshViews(convo)
+        }
+    }
+    fun refreshViews(convo: String) {
+        val g = groupOf(convo) ?: return
+        if (!g.isChan) return
+        scope.launch {
+            try {
+                val a = Api.chanViews(g.id).optJSONArray("seen") ?: JSONArray()
+                chanViews.value = chanViews.value + (convo to (0 until a.length()).map { a.getLong(it) })
+            } catch (e: Exception) { }
+        }
+    }
+    fun viewsOf(m: Msg, v: Map<String, List<Long>> = chanViews.value): Int = if (m.id <= 0) 0 else v[m.convo]?.count { it >= m.id } ?: 0
+
     /** The invite token in a pasted link (…#join=TOKEN) or the bare token. */
     fun inviteToken(text: String): String? {
         val t = text.trim()
@@ -1647,6 +1828,13 @@ object Engine {
 
     fun encryptFor(convo: String, plain: ByteArray): String {
         val id = identity!!
+        val ch = groupOf(convo)
+        if (ch != null && ch.isChan) {
+            var raw = ckRaw(convo, ch.ckv)
+            if (raw == null) { try { chanSyncNow(ch) } catch (e: Exception) { }; raw = ckRaw(convo, ch.ckv) }
+            if (raw == null) throw UserError("کلید کانال هنوز آماده نیست؛ کمی بعد دوباره بفرستید")
+            return Crypto.chanEncrypt(raw, ch.ckv, me, convo, plain)
+        }
         val rec = LinkedHashMap<String, String>()
         rec[me] = id.pubB64
         if (isGroup(convo)) {
@@ -1790,8 +1978,18 @@ object Engine {
         }
     }
 
+    /** Sends; a channel that moved to a new key meanwhile (somebody was removed) gets the new key and one more try. */
+    private fun sendRekeyed(convo: String, plain: ByteArray, fileId: String?): Pair<Long, Long> = try {
+        Api.send(convo, encryptFor(convo, plain), fileId)
+    } catch (e: Api.HttpError) {
+        if (e.code != 409 || e.error != "chan_key_old") throw e
+        refreshGroups()
+        groupOf(convo)?.let { chanSyncNow(it) }
+        Api.send(convo, encryptFor(convo, plain), fileId)
+    }
+
     private fun sendQueuedText(m: Msg) {
-        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plainOf(m).toString().toByteArray()), null)
+        val (id, ts) = sendRekeyed(m.convo, plainOf(m).toString().toByteArray(), null)
         db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, read = true))
         db.delete(m.id)
         tick.value++
@@ -1876,7 +2074,7 @@ object Engine {
 
         // 1.8: the transfer id of the direct Wi-Fi copy, so the receiver can use that instead of downloading
         val plainFile = plainOf(m.copy(fkey = fkey)).also { p -> Lan.idOf(m.id)?.let { p.put("lx", it) } }
-        val (id, ts) = Api.send(m.convo, encryptFor(m.convo, plainFile.toString().toByteArray()), fileId)
+        val (id, ts) = sendRekeyed(m.convo, plainFile.toString().toByteArray(), fileId)
         Lan.forget(m.id)
         val dest = File(mediaDir(), fileId!!)
         if (f != null && f.exists() && f.absolutePath != dest.absolutePath) {

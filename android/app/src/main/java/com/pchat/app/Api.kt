@@ -42,9 +42,12 @@ data class GroupInfo(
     // 1.20: groups users make themselves (kind "user"); the admin's categories are kind "cat"
     val id: Int = 0, val kind: String = "cat", val role: String? = null, val owner: String? = null, val about: String = "",
     val avatarVer: Int = 0, val admins: List<String> = emptyList(), val adminsOnly: Boolean = false, val frozen: Boolean = false,
-    val callOn: Boolean = true, val invite: String? = null
+    val callOn: Boolean = true, val invite: String? = null,
+    // 1.21: channels (kind "chan"): shared key version, author signature, member count (members are hidden)
+    val ckv: Int = 0, val sign: Boolean = false, val count: Int = 0
 ) {
-    val isUser: Boolean get() = kind == "user"
+    val isUser: Boolean get() = kind == "user" || kind == "chan"
+    val isChan: Boolean get() = kind == "chan"
     val manages: Boolean get() = role == "owner" || role == "admin"
 }
 /**
@@ -90,7 +93,8 @@ fun parseGroup(o: JSONObject, m: JSONArray = o.optJSONArray("members") ?: JSONAr
         if (o.isNull("owner")) null else o.optString("owner").ifEmpty { null }, o.optString("about", ""), o.optInt("avatar_ver", 0),
         a?.let { (0 until it.length()).map { i -> it.getString(i) } } ?: emptyList(),
         o.optBoolean("admins_only", false), o.optBoolean("frozen", false), o.optBoolean("call_on", true),
-        if (o.isNull("invite")) null else o.optString("invite").ifEmpty { null }
+        if (o.isNull("invite")) null else o.optString("invite").ifEmpty { null },
+        o.optInt("ckv", 0), o.optBoolean("sign", false), o.optInt("count", m.length())
     )
 }
 
@@ -282,6 +286,12 @@ object Api {
     fun uploadGroupAvatar(id: Int, webp: ByteArray): JSONObject =
         JSONObject(exec(req("/api/ugroups/$id/avatar").post(webp.toRequestBody("image/webp".toMediaType())).build()))
     fun deleteGroupAvatar(id: Int): JSONObject = JSONObject(exec(req("/api/ugroups/$id/avatar").delete().build()))
+    // 1.21: channels
+    fun chanKeys(id: Int): JSONObject = JSONObject(exec(req("/api/ugroups/$id/keys").get().build()))
+    fun putChanKeys(id: Int, body: JSONObject): JSONObject =
+        JSONObject(exec(req("/api/ugroups/$id/keys").post(body.toString().toRequestBody(JSON)).build()))
+    fun chanViews(id: Int): JSONObject = JSONObject(exec(req("/api/ugroups/$id/views").get().build()))
+    fun chanPosts(id: Int, before: Long): JSONObject = JSONObject(exec(req("/api/ugroups/$id/posts?before=$before").get().build()))
     fun downloadGroupAvatar(id: Int): ByteArray {
         client.newCall(req("/api/gavatar/$id").get().build()).execute().use { resp ->
             if (!resp.isSuccessful) throw HttpError(resp.code, "avatar")

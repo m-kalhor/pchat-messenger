@@ -371,6 +371,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val subtitle = when {
         isGroup && groupTyping.isNotEmpty() ->
             (if (groupTyping.size == 1) Engine.nameOf(groupTyping[0]) else "${groupTyping.size} نفر") + " در حال نوشتن…"
+        group?.isChan == true -> "📢 کانال · ${maxOf(group.count, group.members.size)} عضو"
         isGroup -> {
             val members = group?.members ?: emptyList()
             "${members.size} عضو، ${members.count { m -> users.firstOrNull { it.username == m }?.online == true }} آنلاین"
@@ -385,8 +386,12 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val muted = remember(notifTick, convo) { Prefs.isMuted(convo) }
     val canSend = isGroup || peer == null || peer.dm || allMsgs.any { !it.mine }
     // 1.20: a user group where only admins write, or one the server admin froze
-    val writeBlock = group?.let { g ->
-        if (!g.isUser) null else if (g.frozen) "این گروه را مدیر سرور معلق کرده است" else if (g.adminsOnly && !g.manages) "فقط مدیران این گروه پیام می‌فرستند" else null
+    val writeBlock = remember(group) { Engine.writeBlock(convo) }
+    // 1.21: a channel on screen loads older posts once and refreshes its 👁 counts every 30 s
+    val chan = group?.isChan == true
+    val chanViews by Engine.chanViews.collectAsState()
+    LaunchedEffect(convo, chan) {
+        if (chan) { Engine.loadChannel(convo); while (true) { kotlinx.coroutines.delay(30_000); Engine.refreshViews(convo) } }
     }
     val modGroup = isGroup && group?.isUser == true
     val pinnedId = pins[convo]
@@ -526,8 +531,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 val newer = rowsList.getOrNull(i - 1)
                                 val tail = !(newer is Msg && newer.mine == it.mine && newer.sender == it.sender && newer.type != "call")
                                 Bubble(
-                                    m = it, group = isGroup, tail = tail, progress = progress[it.id], failure = failures[it.id],
-                                    pinned = pinnedId == it.id, tick = Engine.tickOf(it, receipts).also { hideSeen },
+                                    m = it, group = isGroup && !chan, tail = tail,
+                                    views = if (chan) Engine.viewsOf(it, chanViews) else -1,
+                                    signer = if (chan && group?.sign == true && it.type != "call") Engine.nameOf(it.sender) else null, progress = progress[it.id], failure = failures[it.id],
+                                    pinned = pinnedId == it.id, tick = if (chan) null else Engine.tickOf(it, receipts).also { hideSeen },
                                     onReact = { e -> react(it, e) }, onMoreReactions = { reactFor = it },
                                     onReactors = { reactorsOf = it }, onSeenBy = { seenBy = it },
                                     onImage = { p -> viewer = p to it },
@@ -800,7 +807,9 @@ fun Bubble(
     tick: String? = null, onReact: (String?) -> Unit = {}, onMoreReactions: () -> Unit = {},
     onReactors: () -> Unit = {}, onSeenBy: () -> Unit = {},
     /** 1.20: in a user group only its owner/admins pin, and they may delete other people's messages */
-    canPin: Boolean = true, modDelete: Boolean = false
+    canPin: Boolean = true, modDelete: Boolean = false,
+    /** 1.21: in a channel, how many members saw the post (-1 = not a channel) and the author's signature */
+    views: Int = -1, signer: String? = null
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -927,6 +936,8 @@ fun Bubble(
                     }
                     Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
                         if (pinned) Text("📌 ", fontSize = 11.sp)
+                        if (signer != null) Text("✍️ $signer · ", color = sub, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp))
+                        if (views >= 0 && m.id > 0) Text("👁 $views · ", color = sub, fontSize = 11.sp)
                         if (m.edited > 0) {
                             val sameDay = U.dayKey(m.edited) == U.dayKey(m.ts)
                             Text("ویرایش‌شده " + (if (sameDay) "" else U.day(m.edited) + " ") + U.time(m.edited) + " · ", color = sub, fontSize = 11.sp)
