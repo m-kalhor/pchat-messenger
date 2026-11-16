@@ -527,6 +527,12 @@ async function handleMsg(o, again) {
     if (e && e.noKey) chanSync(groupOf(o.target)).catch(() => { });
   }
   if (o.reactions) m.reactions = { ...o.reactions };
+  // 1.22: an effect sticker plays once, when first seen (not for old ones coming with a new login)
+  if (o.fx && m.type === 'sticker') {
+    m.fx = 1;
+    const old = (S.convos.get(convo) || []).find((x) => x.id === o.id);
+    m.fxPending = !mine && (old ? !!old.fxPending : Date.now() - o.ts < 86400000);
+  }
   if (lx && m.fileId) { if (lanFiles.has(lx)) lanTakeOver(lx, m); else lanReal.set(lx, m); }
   if (!mine) ack(convo, 'delivered', o.id);
   const isNew = addLocal(m);
@@ -615,13 +621,25 @@ export async function refreshStickers() {
   await store.kvSet('stickers', S.stickers);
   emit('stickers');
 }
-export async function sendSticker(convo, stk, reply) {
-  const m = { id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'sticker', text: stickerText(stk), stk: { id: stk.id, p: stk.p, e: stk.e || '' }, status: 1, ...replyOf(reply) };
+/** fx: 1.22 full-screen effect (the app has played it here already; the server allows one per 5 s). */
+export async function sendSticker(convo, stk, reply, fx) {
+  const m = { id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'sticker', text: stickerText(stk), stk: { id: stk.id, p: stk.p, e: stk.e || '' }, status: 1, ...(fx ? { fx: 1 } : {}), ...replyOf(reply) };
   addLocal(m);
   await store.putMsg(m);
   markRead(convo);
   emit('msg', m);
   flush();
+  return m;
+}
+
+/**
+ * 1.22: the newest effect sticker in convo not played on this device yet (null if none). All waiting ones are
+ * marked played, so opening a chat plays at most one, and scrolling back never plays it again.
+ */
+export function takeFx(convo) {
+  const list = (S.convos.get(convo) || []).filter((m) => m.fxPending);
+  for (const m of list) { m.fxPending = false; store.putMsg(m).catch(() => { }); }
+  return list.length ? list[list.length - 1] : null;
 }
 
 // images: memory -> this browser's IndexedDB (works offline) -> server. null = its pack was deleted.
@@ -997,8 +1015,8 @@ export async function flush() {
     for (const m of pending) {
       try {
         const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m), ...locJson(m), ...stkJson(m) });
-        const r = await api.send(m.convo, payload);
-        await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0 });
+        const r = await api.send(m.convo, payload, undefined, m.type === 'sticker' && m.fx);
+        await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0, fx: r.fx ? 1 : 0 });
       } catch (e) {
         if (e instanceof api.HttpError && e.status === 409 && e.body && e.body.error === 'chan_key_old' && !m._rekeyed) {
           // the channel moved to a new key (somebody was removed): get it and send again

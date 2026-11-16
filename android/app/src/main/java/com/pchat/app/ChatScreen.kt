@@ -101,6 +101,9 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.runtime.staticCompositionLocalOf
@@ -221,6 +224,20 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         onDispose { Engine.currentConvo = null }
     }
     LaunchedEffect(tick) { Engine.markReadSilently(convo) }
+    // 1.22: an effect sticker that came in plays once, when the chat is on screen
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var resumed by remember { mutableStateOf(lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)) }
+    DisposableEffect(lifecycle) {
+        val obs = LifecycleEventObserver { _, _ -> resumed = lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED) }
+        lifecycle.addObserver(obs)
+        onDispose { lifecycle.removeObserver(obs) }
+    }
+    LaunchedEffect(tick, resumed, convo) {
+        if (!resumed) return@LaunchedEffect
+        val m = withContext(Dispatchers.IO) { Engine.takeFx(convo) } ?: return@LaunchedEffect
+        val k = m.stk ?: return@LaunchedEffect
+        if (Prefs.stickerFx) StickerFx.start(k.id, m.id, mine = false)
+    }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
     // the unsent text stays as a draft («پیش‌نویس» in the chat list)
     val draftNow by rememberUpdatedState(if (editing == null) text else null)
@@ -398,6 +415,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val pinnedMsg = remember(pinnedId, tick) { pinnedId?.let { Engine.db.get(it) } }
 
     SystemBars.HeaderShown()
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         topBar = {
             TopAppBar(
@@ -734,15 +752,19 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     val b = maxOf(cur.selection.start, cur.selection.end).coerceIn(0, text.length)
                     val t = text.substring(0, a) + e + text.substring(b)
                     if (t.length <= 4000) { text = t; field = TextFieldValue(t, TextRange(a + e.length)) }
-                }, onSticker = { k ->
+                }, onSticker = { k, fx ->
                     // 1.10: a sticker goes out at once (like Telegram); a reply in progress goes with it
                     val r = replyTo
                     replyTo = null
-                    Engine.sendSticker(convo, k, r)
+                    Engine.sendSticker(convo, k, r, fx)
+                    // 1.22: held = full-screen effect, played here at once (the other side plays it when they see it)
+                    if (fx) { emojiOpen = false; if (Prefs.stickerFx) StickerFx.start(k.id, 0L, mine = true) }
                 })
               }
             }
         }
+    }
+    StickerFxOverlay() // 1.22: the full-screen sticker effect, above everything in the chat
     }
 
     viewer?.let { (p, vm) -> ImageViewer(p, MediaSave.refOf(vm, p)) { viewer = null } }

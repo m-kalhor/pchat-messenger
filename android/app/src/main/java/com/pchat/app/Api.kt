@@ -338,9 +338,11 @@ object Api {
         exec(req("/api/pin").post(b.toString().toRequestBody(JSON)).build())
     }
 
-    fun send(target: String, payload: String, fileId: String?): Pair<Long, Long> {
+    /** fx: 1.22 full-screen sticker effect (the server allows one per 5 s per user; a sooner one goes plain). */
+    fun send(target: String, payload: String, fileId: String?, fx: Boolean = false): Pair<Long, Long> {
         val b = JSONObject().put("target", target).put("kind", "msg").put("payload", payload)
         if (fileId != null) b.put("fileId", fileId)
+        if (fx) b.put("fx", 1)
         val o = JSONObject(exec(req("/api/send").post(b.toString().toRequestBody(JSON)).build()))
         return Pair(o.getLong("id"), o.getLong("ts"))
     }

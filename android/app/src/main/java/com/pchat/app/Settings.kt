@@ -164,6 +164,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             // ---- stickers (1.10) ----
             SectionTitle("استیکر")
             SettingRow("استیکرهای من", "ساختن پک از عکس‌ها، افزودن فایل یا zip، مرتب‌کردن") { showStickers = true }
+            SwitchRow("نمایش افکت استیکر", "استیکری که با نگه‌داشتن فرستاده شود، تمام‌صفحه می‌آید", Prefs.stickerFx.also { notifTick }) { Prefs.stickerFx = it }
 
             // ---- notifications ----
             SectionTitle("اعلان‌ها")

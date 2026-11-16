@@ -54,7 +54,7 @@ const q = {
   delSess: db.prepare('DELETE FROM sessions WHERE th=?'),
   setKey: db.prepare('UPDATE users SET pubkey=? WHERE username=?'),
   setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
-  addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts) VALUES(?,?,?,?,?,?)'),
+  addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts,fx) VALUES(?,?,?,?,?,?,?)'),
   msg: db.prepare('SELECT * FROM messages WHERE id=?'),
   editMsg: db.prepare('UPDATE messages SET payload=?, edited=? WHERE id=?'),
   delMsg: db.prepare("UPDATE messages SET deleted=1, payload='', file_id=NULL WHERE id=?"),
@@ -180,8 +180,11 @@ function isOnline(u) {
   if (set) for (const r of set) if (r.active) return true;
   return false;
 }
+/** 1.22: last full-screen sticker effect per user (ms); one per FX_GAP. */
+const FX_GAP = 5000;
+const fxLast = new Map();
 const msgJson = (m, reactions, namer) => ({
-  id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null,
+  id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null, ...(m.fx ? { fx: 1 } : {}),
   ...(reactions && reactions.length ? { reactions: Object.fromEntries(reactions.map((r) => [namer ? namer(m.id, r.username) : r.username, r.emoji])) } : {}),
 });
 /** An edit or delete-for-everyone of message m, as clients receive it (seq orders all changes). */
@@ -1059,8 +1062,13 @@ async function route(req, res) {
       fileId = b.fileId;
     }
     const ts = now();
-    const r = q.addMsg.run(user, target, kind, b.payload, fileId, ts);
-    const m = { id: Number(r.lastInsertRowid), sender: user, target, kind, payload: b.payload, file_id: fileId, ts };
+    // 1.22: the full-screen sticker effect, at most once per FX_GAP per user (a sooner one goes as a plain sticker)
+    let fx = 0;
+    if (b.fx === 1 && !fileId && !request) {
+      if (ts - (fxLast.get(user) || 0) >= FX_GAP) { fx = 1; fxLast.set(user, ts); }
+    }
+    const r = q.addMsg.run(user, target, kind, b.payload, fileId, ts, fx);
+    const m = { id: Number(r.lastInsertRowid), sender: user, target, kind, payload: b.payload, file_id: fileId, ts, fx };
     // a declined request still takes the message (the sender is not told) but nothing pops up for the receiver
     const quiet = request && request.status !== 'pending';
     const recipients = tr.type === 'group' ? core.membersOf(tr.cat.id) : quiet ? [user] : [target, user];
@@ -1068,7 +1076,7 @@ async function route(req, res) {
     // nobody has the app on screen: wake their closed web apps (iPhone) with a notification (a request: its first message only)
     const ping = !request || request.first;
     for (const u of recipients) if (ping && u !== user && !isOnline(u) && push.hasSubs(u)) push.notify(u, pushData(m, tr, !!request)).catch(() => { });
-    return send(res, 200, request ? { id: m.id, ts, request: true, left: contacts.REQ_MSGS - (contacts.lists(user).outgoing.find((r) => r.username === target) || { msgs: contacts.REQ_MSGS }).msgs } : { id: m.id, ts });
+    return send(res, 200, request ? { id: m.id, ts, fx, request: true, left: contacts.REQ_MSGS - (contacts.lists(user).outgoing.find((r) => r.username === target) || { msgs: contacts.REQ_MSGS }).msgs } : { id: m.id, ts, fx });
   }
 
   // ---- edit / delete for everyone / edit history (sender only) ----

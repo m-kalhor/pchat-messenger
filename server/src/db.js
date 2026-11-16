@@ -84,6 +84,8 @@ if (!sessCols.includes('device')) db.exec('ALTER TABLE sessions ADD COLUMN devic
 const msgCols = db.prepare('PRAGMA table_info(messages)').all().map((r) => r.name);
 if (!msgCols.includes('edited')) db.exec('ALTER TABLE messages ADD COLUMN edited INTEGER');
 if (!msgCols.includes('deleted')) db.exec('ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
+// 1.22: a sticker sent with the full-screen effect (outside the E2E payload so the server can rate-limit it)
+if (!msgCols.includes('fx')) db.exec('ALTER TABLE messages ADD COLUMN fx INTEGER NOT NULL DEFAULT 0');
 db.exec('CREATE INDEX IF NOT EXISTS idx_msg_file ON messages(file_id)');
 
 function getSetting(key, def = null) {

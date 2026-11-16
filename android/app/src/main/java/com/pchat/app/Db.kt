@@ -25,7 +25,9 @@ data class Msg(
     /** emoji reactions: username -> emoji */
     val reactions: Map<String, String> = emptyMap(),
     /** 1.10 sticker (type "sticker") */
-    val stk: Stk? = null
+    val stk: Stk? = null,
+    /** 1.22 full-screen sticker effect: 0 none, 1 sent with it (played here), 2 waiting to play when first seen */
+    val fx: Int = 0
 )
 
 /** A sticker: its image id, its pack and the emoji it stands for. */
@@ -50,7 +52,7 @@ fun parseReactions(s: String?): Map<String, String> = try {
 
 data class ConvoSummary(val convo: String, val last: Msg?, val unread: Int)
 
-private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name,dur,wave,loc,reactions,stk"
+private const val COLS = "id,convo,sender,mine,ts,type,text,file_id,file_name,mime,size,fkey,w,h,reply_id,reply_user,reply_text,local_path,read,status,upload_id,edited,fw_from,fw_name,dur,wave,loc,reactions,stk,fx"
 
 private fun Cursor.toMsg() = Msg(
     id = getLong(0), convo = getString(1), sender = getString(2), mine = getInt(3) == 1, ts = getLong(4),
@@ -60,10 +62,10 @@ private fun Cursor.toMsg() = Msg(
     localPath = getString(17), read = getInt(18) == 1,
     status = getInt(19), uploadId = getString(20),
     edited = getLong(21), fwFrom = getString(22), fwName = getString(23),
-    dur = getLong(24), wave = parseWave(getString(25)), loc = parseLoc(getString(26)), reactions = parseReactions(getString(27)), stk = parseStk(getString(28))
+    dur = getLong(24), wave = parseWave(getString(25)), loc = parseLoc(getString(26)), reactions = parseReactions(getString(27)), stk = parseStk(getString(28)), fx = getInt(29)
 )
 
-class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 5) {
+class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 6) {
     override fun onCreate(db: SQLiteDatabase) {
         db.execSQL(
             "CREATE TABLE messages(id INTEGER PRIMARY KEY, convo TEXT NOT NULL, sender TEXT NOT NULL, " +
@@ -71,7 +73,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 5) {
                 "file_name TEXT, mime TEXT, size INTEGER, fkey TEXT, w INTEGER, h INTEGER, reply_id INTEGER, " +
                 "reply_user TEXT, reply_text TEXT, local_path TEXT, read INTEGER NOT NULL DEFAULT 0, " +
                 "status INTEGER NOT NULL DEFAULT 0, upload_id TEXT, edited INTEGER NOT NULL DEFAULT 0, fw_from TEXT, fw_name TEXT, " +
-                "dur INTEGER NOT NULL DEFAULT 0, wave TEXT, loc TEXT, reactions TEXT, stk TEXT)"
+                "dur INTEGER NOT NULL DEFAULT 0, wave TEXT, loc TEXT, reactions TEXT, stk TEXT, fx INTEGER NOT NULL DEFAULT 0)"
         )
         db.execSQL("CREATE INDEX idx_convo ON messages(convo, id)")
         db.execSQL("CREATE TABLE contacts(username TEXT PRIMARY KEY, pubkey TEXT, key_changed INTEGER NOT NULL DEFAULT 0)")
@@ -94,6 +96,19 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 5) {
             db.execSQL("ALTER TABLE messages ADD COLUMN reactions TEXT")
         }
         if (oldVersion < 5) db.execSQL("ALTER TABLE messages ADD COLUMN stk TEXT")
+        if (oldVersion < 6) db.execSQL("ALTER TABLE messages ADD COLUMN fx INTEGER NOT NULL DEFAULT 0")
+    }
+
+    /**
+     * 1.22: the newest effect sticker in convo still waiting to play here (null if none). All waiting ones are
+     * marked played, so opening a chat plays at most one, and scrolling back never plays it again.
+     */
+    fun takeFx(convo: String): Msg? {
+        var m: Msg? = null
+        readableDatabase.rawQuery("SELECT $COLS FROM messages WHERE convo=? AND fx=2 ORDER BY ts DESC, id DESC LIMIT 1", arrayOf(convo))
+            .use { c -> if (c.moveToFirst()) m = c.toMsg() }
+        if (m != null) writableDatabase.execSQL("UPDATE messages SET fx=1 WHERE convo=? AND fx=2", arrayOf<Any>(convo))
+        return m
     }
 
     /** Returns true if the message was new. */
@@ -106,7 +121,7 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 5) {
             put("reply_text", m.replyText); put("local_path", m.localPath); put("read", if (m.read) 1 else 0)
             put("status", m.status); put("upload_id", m.uploadId)
             put("edited", m.edited); put("fw_from", m.fwFrom); put("fw_name", m.fwName)
-            put("dur", m.dur); put("wave", waveStr(m.wave)); put("loc", locStr(m.loc)); put("reactions", reactionsStr(m.reactions)); put("stk", stkStr(m.stk))
+            put("dur", m.dur); put("wave", waveStr(m.wave)); put("loc", locStr(m.loc)); put("reactions", reactionsStr(m.reactions)); put("stk", stkStr(m.stk)); put("fx", m.fx)
         }
         return writableDatabase.insertWithOnConflict("messages", null, v, SQLiteDatabase.CONFLICT_IGNORE) != -1L
     }

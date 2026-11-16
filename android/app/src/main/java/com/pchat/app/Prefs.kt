@@ -67,6 +67,10 @@ object Prefs {
     var notifyGroups: Boolean
         get() = p.getBoolean("notif_group", true)
         set(v) { p.edit().putBoolean("notif_group", v).apply(); notifTick.value++ }
+    /** 1.22: show the full-screen effect of stickers sent by holding them */
+    var stickerFx: Boolean
+        get() = p.getBoolean("sticker_fx", true)
+        set(v) { p.edit().putBoolean("sticker_fx", v).apply(); notifTick.value++ }
     var sound: Boolean
         get() = p.getBoolean("notif_sound", true)
         set(v) { p.edit().putBoolean("notif_sound", v).apply(); notifTick.value++ }
