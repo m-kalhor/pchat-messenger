@@ -50,6 +50,8 @@ export const setProfile = (display_name, bio) => call('POST', '/api/profile', { 
 export const uploadAvatar = (webp) => call('POST', '/api/avatar', webp, { 'content-type': 'image/webp' });
 export const deleteAvatar = () => call('DELETE', '/api/avatar');
 export const pin = (target, messageId) => call('POST', '/api/pin', { target, messageId });
+/** 1.22.1: the short «what's new / fixed» lines of a version. */
+export const appNotes = (v) => call('GET', '/api/app/notes?v=' + encodeURIComponent(v));
 export const send = (target, payload, fileId, fx) => call('POST', '/api/send', fileId ? { target, kind: 'msg', payload, fileId } : { target, kind: 'msg', payload, ...(fx ? { fx: 1 } : {}) });
 export const signal = (target, kind, payload) => call('POST', '/api/send', { target, kind, payload }).then((r) => !!r.delivered);
 export const turn = () => call('GET', '/api/turn');

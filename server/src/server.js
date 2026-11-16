@@ -180,6 +180,13 @@ function isOnline(u) {
   if (set) for (const r of set) if (r.active) return true;
   return false;
 }
+/** 1.22.1: release-notes.json = { "<version name>": ["short line", ...] } (read once, ships with the code). */
+let notesCache = null;
+function releaseNotes(v) {
+  if (!notesCache) { try { notesCache = JSON.parse(fs.readFileSync(path.join(__dirname, 'release-notes.json'), 'utf8')); } catch { notesCache = {}; } }
+  const n = notesCache[v];
+  return Array.isArray(n) ? n.filter((x) => typeof x === 'string').slice(0, 10) : [];
+}
 /** 1.22: last full-screen sticker effect per user (ms); one per FX_GAP. */
 const FX_GAP = 5000;
 const fxLast = new Map();
@@ -614,7 +621,12 @@ async function route(req, res) {
   if (p === '/api/app/version' && req.method === 'GET') {
     const info = apkInfo();
     const v = info ? apkVersion(APK) : null;
-    return send(res, 200, v ? { code: v.code, name: v.name, size: info.size } : { code: null });
+    return send(res, 200, v ? { code: v.code, name: v.name, size: info.size, notes: releaseNotes(v.name) } : { code: null });
+  }
+  // 1.22.1: the short «what's new / fixed» list of a version, shown by the apps once after an update
+  if (p === '/api/app/notes' && req.method === 'GET') {
+    const v = String(url.searchParams.get('v') || '').slice(0, 20);
+    return send(res, 200, { v, notes: releaseNotes(v) });
   }
 
   if (p === '/api/login' && req.method === 'POST') {

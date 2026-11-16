@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.22.0';
+const VERSION = '1.22.1';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -158,6 +158,23 @@ function confirmBox(title, text, okLabel, danger = false) {
           h('button', { class: 'btn' + (danger ? ' danger' : ''), onclick: () => close(true) }, okLabel))));
     document.body.append(v);
   });
+}
+
+/** 1.22.1: «تازه‌های این نسخه» once per web version, for someone who used an older one (not on a first visit). */
+async function whatsNew() {
+  const seen = pref('notesSeen', null);
+  if (seen === VERSION) return;
+  if (seen === null && !api.getToken()) { setPref('notesSeen', VERSION); return; }
+  let r;
+  try { r = await api.appNotes(VERSION); } catch { return; } // tried again on the next start
+  setPref('notesSeen', VERSION);
+  const notes = (r && Array.isArray(r.notes) ? r.notes : []).filter((x) => typeof x === 'string');
+  if (!notes.length) return;
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'تازه‌های نسخهٔ ' + faNum(VERSION.split('.')[0]) + '.' + faNum(VERSION.split('.')[1]) + '.' + faNum(VERSION.split('.')[2])),
+      h('ul', { class: 'notes' }, notes.map((n) => h('li', null, n))),
+      h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => v.remove() }, 'باشه'))));
+  document.body.append(v);
 }
 
 /** Longest side and JPEG quality of a «compressed» photo (about 200-400 KB, fine for chat). */
@@ -2486,4 +2503,5 @@ Call.onCall(renderCall);
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { });
   try { await E.init(); } catch (e) { console.error(e); }
   route();
+  if (api.getToken()) setTimeout(whatsNew, 1500);
 })();
