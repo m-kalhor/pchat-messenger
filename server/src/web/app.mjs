@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.21.0';
+const VERSION = '1.22.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -478,7 +478,7 @@ E.on((kind, data) => {
 document.addEventListener('visibilitychange', () => {
   const visible = document.visibilityState === 'visible';
   E.setActive(visible);
-  if (visible) { E.resume(); if (S.openConvo) E.markRead(S.openConvo); }
+  if (visible) { E.resume(); if (S.openConvo) E.markRead(S.openConvo); if (view && view.update) view.update('visible'); }
 });
 addEventListener('pagehide', () => E.setActive(false));
 document.addEventListener('pointerdown', () => Call.unlockAudio(), { capture: true });
@@ -1261,6 +1261,7 @@ function ChatScreen(convo) {
     }
     if (!all.length) kids.push(h('div', { class: 'empty' }, search ? 'پیامی پیدا نشد' : 'هنوز پیامی نیست. پیام‌ها سرتاسری رمزنگاری می‌شوند 🔒'));
     fill(msgs, ...kids);
+    if (fxFlying) { const t = fxTarget(msgs, fxFlying); if (t) t.style.visibility = 'hidden'; }
     if (forceBottom || (atBottom && !keep)) { msgs.scrollTop = msgs.scrollHeight; forceBottom = false; }
     else msgs.scrollTop = msgs.scrollHeight - fromBottom;
     const total = (S.convos.get(convo) || []).length;
@@ -1385,7 +1386,12 @@ function ChatScreen(convo) {
       h('button', { class: panelMode === 'sticker' ? 'on' : '', onclick: () => { panelMode = 'sticker'; setPref('panelMode', panelMode); renderEmojis(); } }, 'استیکر'));
     if (panelMode === 'sticker') {
       const box = h('div', { class: 'stk-panel' });
-      renderStk = stickerPanel(box, async (k) => { forceBottom = true; await E.sendSticker(convo, k, reply); setReply(null); });
+      renderStk = stickerPanel(box, async (k, fx) => {
+        forceBottom = true;
+        if (fx) { fxLast = Date.now(); emojiPanel.classList.add('hidden'); }
+        await E.sendSticker(convo, k, reply, fx); setReply(null);
+        if (fx && pref('stkFx', true)) playFx(k.id, msgs);
+      });
       fill(emojiPanel, modeBar, box);
       emojiPanel.classList.add('stickers');
       return;
@@ -1407,6 +1413,13 @@ function ChatScreen(convo) {
   });
   ta.addEventListener('focus', () => emojiPanel.classList.add('hidden'));
 
+  /** 1.22: the newest effect sticker that came while this chat was not on screen, played once. */
+  function playPending() {
+    if (document.visibilityState !== 'visible' || S.openConvo !== convo) return;
+    const m = E.takeFx(convo);
+    if (m && m.stk && pref('stkFx', true)) playFx(m.stk.id, msgs);
+  }
+
   const renderAll = batched(() => { renderHeader(); renderPin(); renderReq(); renderLock(); renderList(); });
   const renderListB = batched(() => renderList());
   const tick = setInterval(renderHeader, 2000);
@@ -1415,7 +1428,7 @@ function ChatScreen(convo) {
   renderHeader(); renderPin(); renderReq(); renderGcBar(); renderLock();
   return {
     el,
-    mounted: () => { renderList(); autosize(); },
+    mounted: () => { renderList(); autosize(); playPending(); },
     destroy: () => {
       clearInterval(tick); clearInterval(recTick); if (viewsTimer) clearInterval(viewsTimer); offPlayer(); S.openConvo = null;
       if (rec) { rec.cancel(); rec = null; }
@@ -1426,9 +1439,11 @@ function ChatScreen(convo) {
         if (data && data.convo !== convo) return;
         if (document.visibilityState === 'visible') E.markRead(convo);
         renderListB(); renderPin();
+        if (data && data.fxPending) requestAnimationFrame(() => requestAnimationFrame(playPending));
       } else if (kind === 'progress' || kind === 'media' || kind === 'receipts' || kind === 'privacy' || (kind === 'react' && data && data.convo === convo)) renderListB();
       else if (kind === 'pins') { renderPin(); renderListB(); }
       else if (kind === 'requests') renderReq();
+      else if (kind === 'visible') playPending();
       else if (kind === 'gcall' || kind === 'groups') { renderGcBar(); if (kind === 'groups') renderAll(); }
       else if (kind === 'stickers') { if (renderStk) renderStk(); renderListB(); }
       else if (kind === 'users' || kind === 'typing' || kind === 'conn' || kind === 'groups' || kind === 'avatar') renderAll();
@@ -1753,6 +1768,7 @@ function SettingsScreen() {
       setting('استیکرهای من', 'ساختن پک، افزودن عکس یا فایل zip، مرتب‌کردن', h('button', { class: 'btn sm flat', onclick: () => go('#/stickers') }, 'باز کردن')),
       h('div', { class: 'section' }, 'اعلان‌ها'),
       setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
+      setting('نمایش افکت استیکر', 'استیکری که با نگه‌داشتن فرستاده شود، تمام‌صفحه می‌آید', toggle('stkFx', true)),
       pushBox,
       // 1.15: only for users the admin allowed to choose the call path
       S.meInfo.call_route ? h('div', { class: 'section' }, 'تماس') : null,
@@ -1881,10 +1897,56 @@ function toggleFav(k) {
 function addStkRecent(k) { setPref('stkRecent', [{ id: k.id, p: k.p, e: k.e || '' }, ...stkRecent().filter((x) => x.id !== k.id)].slice(0, 30)); }
 
 /** An <img> of a sticker that fills in when the image is loaded (from this browser or the server). */
+// ---------------- 1.22: full-screen sticker effect ----------------
+const FX_GAP = 5000;
+let fxLast = 0, fxFlying = null;
+/** true (and a toast) while the 5 seconds since the last effect have not passed. */
+function fxWait() {
+  const left = FX_GAP - (Date.now() - fxLast);
+  if (left <= 0) return false;
+  toast('⏳ ' + faNum(Math.ceil(left / 1000)) + ' ثانیه دیگر می‌توانید استیکر با افکت بفرستید');
+  return true;
+}
+/** The newest copy of sticker id in the chat (where the effect lands). */
+function fxTarget(msgs, id) {
+  const all = msgs.querySelectorAll('.bubble.sticker img[data-stk="' + id + '"]');
+  return all.length ? all[all.length - 1] : null;
+}
+/** The sticker comes up big in the middle of the screen, then shrinks into its place in the chat. */
+function playFx(id, msgs) {
+  if (fxFlying) return;
+  fxFlying = id;
+  const veil = h('div', { class: 'fx-veil' });
+  const big = stickerImg(id, 'fx-stk');
+  const layer = h('div', { class: 'fx-layer' }, veil, big);
+  document.body.append(layer);
+  const hide = () => { const t = fxTarget(msgs, id); if (t) t.style.visibility = 'hidden'; return t; };
+  hide();
+  let over = false;
+  const done = () => { if (over) return; over = true; fxFlying = null; layer.remove(); const t = fxTarget(msgs, id); if (t) t.style.visibility = ''; };
+  if (!big.animate) { setTimeout(done, 1500); return; }
+  veil.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 250, fill: 'forwards' });
+  big.animate([{ transform: 'scale(.2)', opacity: 0 }, { transform: 'scale(1.08)', opacity: 1, offset: 0.7 }, { transform: 'scale(1)', opacity: 1 }],
+    { duration: 420, easing: 'ease-out', fill: 'forwards' });
+  setTimeout(() => {
+    const t = hide();
+    const from = big.getBoundingClientRect();
+    const to = t ? t.getBoundingClientRect() : null;
+    const visible = to && to.width > 0 && to.bottom > 0 && to.top < innerHeight;
+    veil.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 480, fill: 'forwards' });
+    const end = visible
+      ? { transform: `translate(${to.left + to.width / 2 - (from.left + from.width / 2)}px, ${to.top + to.height / 2 - (from.top + from.height / 2)}px) scale(${to.width / from.width})`, opacity: 1 }
+      : { transform: 'scale(.4)', opacity: 0 };
+    const a = big.animate([{ transform: 'scale(1)', opacity: 1 }, end], { duration: 480, easing: 'cubic-bezier(.4,0,.2,1)', fill: 'forwards' });
+    a.onfinish = done;
+    setTimeout(done, 900); // in case the animation never finishes (hidden tab)
+  }, 1150);
+}
+
 function stickerImg(id, cls = 'stk') {
   const cached = E.stickerCached(id);
   if (cached === null) return h('div', { class: cls + ' gone' }, 'استیکر حذف شده');
-  const img = h('img', { class: cls, alt: '', draggable: 'false' });
+  const img = h('img', { class: cls, alt: '', draggable: 'false', 'data-stk': id });
   if (cached) { img.src = cached; return img; }
   img.classList.add('loading');
   E.stickerUrl(id).then((u) => {
@@ -1910,7 +1972,13 @@ function stickerPanel(box, onPick) {
         h('button', { title: 'استیکرهای من', onclick: () => go('#/stickers') }, '⚙')),
       cur ? h('div', { class: 'stk-grid' }, cur.list.map((k) => {
         const b = h('button', { onclick: () => { if (wasLong()) return; addStkRecent(k); onPick(k); } }, stickerImg(k.id));
-        const wasLong = onLongPress(b, () => toggleFav(k));
+        // 1.22: hold = send with the full-screen effect (a favourite goes at once; others get a small menu)
+        const withFx = () => { if (fxWait()) return; addStkRecent(k); onPick(k, true); };
+        const wasLong = onLongPress(b, () => {
+          try { navigator.vibrate && navigator.vibrate(25); } catch { }
+          if (isFav(k.id)) withFx();
+          else sheet(null, [{ label: '✨ ارسال با افکت', run: withFx }, { label: '⭐ افزودن به علاقه‌مندی‌ها', run: () => toggleFav(k) }]);
+        });
         return b;
       }))
         : h('div', { class: 'stk-empty' }, 'هنوز استیکری ندارید.', h('br'), h('button', { class: 'btn sm', onclick: () => go('#/stickers') }, 'ساختن یا افزودن استیکر')));

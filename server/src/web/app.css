@@ -305,6 +305,11 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .bubble.sticker .meta { background: rgba(0, 0, 0, .35); color: #fff !important; border-radius: 10px; padding: 1px 7px; width: fit-content; }
 .bubble.sticker .meta .tick { color: #fff !important; }
 .m.me .bubble.sticker .meta { margin-left: 0; }
+/* 1.22: full-screen sticker effect */
+.fx-layer { position: fixed; inset: 0; z-index: 9000; pointer-events: none; display: flex; align-items: center; justify-content: center; }
+.fx-veil { position: absolute; inset: 0; background: rgba(0, 0, 0, .35); opacity: 0; }
+.fx-stk { position: relative; width: min(78vw, 62vh, 440px); height: min(78vw, 62vh, 440px); object-fit: contain; opacity: 0; will-change: transform, opacity; }
+.fx-stk.gone { display: none; }
 .stk-maker { width: 280px; height: 280px; touch-action: none; border-radius: 12px; cursor: move;
   background: repeating-conic-gradient(var(--bg2) 0 25%, var(--bg) 0 50%) 0 0 / 20px 20px; }
 /* 1.17: sign-in number after the country code, read left to right */

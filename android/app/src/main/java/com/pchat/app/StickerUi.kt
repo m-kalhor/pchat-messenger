@@ -70,6 +70,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -99,7 +104,7 @@ fun StickerImage(id: String, modifier: Modifier = Modifier) {
 
 /** The composer's panel: emoji (as before) or stickers, remembered between chats. */
 @Composable
-fun EmojiStickerPanel(onEmoji: (String) -> Unit, onSticker: (Stk) -> Unit) {
+fun EmojiStickerPanel(onEmoji: (String) -> Unit, onSticker: (Stk, Boolean) -> Unit) {
     var mode by remember { mutableStateOf(Engine.prefs.getString("panel_mode", "emoji") ?: "emoji") }
     Column(Modifier.fillMaxWidth()) {
         Row(Modifier.padding(horizontal = 8.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -120,8 +125,16 @@ fun EmojiStickerPanel(onEmoji: (String) -> Unit, onSticker: (Stk) -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun StickerPanel(onSticker: (Stk) -> Unit) {
+private fun StickerPanel(onSticker: (Stk, Boolean) -> Unit) {
     val ctx = LocalContext.current
+    val haptic = LocalHapticFeedback.current
+    var menuFor by remember { mutableStateOf<Stk?>(null) }
+    // 1.22: hold = send with the full-screen effect, at most once per 5 seconds
+    val withFx = { k: Stk ->
+        val wait = Engine.fxWait()
+        if (wait > 0) Toast.makeText(ctx, "⏳ $wait ثانیه دیگر می‌توانید استیکر با افکت بفرستید", Toast.LENGTH_SHORT).show()
+        else onSticker(k, true)
+    }
     val st by Stickers.state.collectAsState()
     val favs by Stickers.favs.collectAsState()
     val recent by Stickers.recent.collectAsState()
@@ -160,10 +173,11 @@ private fun StickerPanel(onSticker: (Stk) -> Unit) {
                 items(cur.list, key = { it.id }) { k ->
                     Box(
                         Modifier.aspectRatio(1f).clip(RoundedCornerShape(10.dp)).combinedClickable(
-                            onClick = { onSticker(k) },
+                            onClick = { onSticker(k, false) },
                             onLongClick = {
-                                val fav = Stickers.toggleFav(k)
-                                Toast.makeText(ctx, if (fav) "به علاقه‌مندی‌ها اضافه شد ⭐" else "از علاقه‌مندی‌ها برداشته شد", Toast.LENGTH_SHORT).show()
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                // a favourite goes at once; others get «send with effect» / «add to favourites»
+                                if (favs.any { it.id == k.id }) withFx(k) else menuFor = k
                             }
                         ).padding(5.dp)
                     ) { StickerImage(k.id, Modifier.fillMaxSize()) }
@@ -172,13 +186,33 @@ private fun StickerPanel(onSticker: (Stk) -> Unit) {
         }
     }
     if (manage) StickerManager { manage = false }
+    menuFor?.let { k ->
+        AlertDialog(
+            onDismissRequest = { menuFor = null },
+            text = {
+                Column {
+                    TextButton(onClick = { menuFor = null; withFx(k) }, modifier = Modifier.fillMaxWidth()) { Text("✨ ارسال با افکت", Modifier.fillMaxWidth()) }
+                    TextButton(onClick = {
+                        menuFor = null
+                        val fav = Stickers.toggleFav(k)
+                        Toast.makeText(ctx, if (fav) "به علاقه‌مندی‌ها اضافه شد ⭐" else "از علاقه‌مندی‌ها برداشته شد", Toast.LENGTH_SHORT).show()
+                    }, modifier = Modifier.fillMaxWidth()) { Text("⭐ افزودن به علاقه‌مندی‌ها", Modifier.fillMaxWidth()) }
+                }
+            },
+            confirmButton = { TextButton(onClick = { menuFor = null }) { Text("انصراف") } }
+        )
+    }
 }
 
-/** A sticker in a chat: large, no bubble. */
+/** A sticker in a chat: large, no bubble. While its full-screen effect flies (1.22) it is hidden and reports where it is. */
 @Composable
 fun StickerContent(m: Msg) {
     val k = m.stk ?: return
-    StickerImage(k.id, Modifier.size(160.dp))
+    val fly by StickerFx.flying.collectAsState()
+    val mine = fly?.let { StickerFx.isTarget(it, m) } == true
+    StickerImage(k.id, Modifier.size(160.dp)
+        .then(if (mine) Modifier.onGloballyPositioned { StickerFx.place(m, it.boundsInRoot()) } else Modifier)
+        .alpha(if (mine) 0f else 1f))
 }
 
 /** A pack seen from a sticker in a chat: its stickers and «add to my stickers». */

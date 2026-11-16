@@ -865,7 +865,9 @@ object Engine {
                 fwFrom = f?.optString("u")?.ifEmpty { null }, fwName = f?.optString("n")?.ifEmpty { null },
                 dur = if (voice) plain.optLong("d", 0).coerceAtLeast(0) else 0,
                 wave = if (voice && wf != null) (0 until minOf(wf.length(), 100)).map { wf.optInt(it).coerceIn(0, 31) } else emptyList(),
-                loc = loc, reactions = reactionMap(o.optJSONObject("reactions")), stk = stk
+                loc = loc, reactions = reactionMap(o.optJSONObject("reactions")), stk = stk,
+                // 1.22: an effect sticker plays once when first seen (not old ones that come with a new login)
+                fx = if (stk == null || o.optInt("fx", 0) != 1) 0 else if (!mine && System.currentTimeMillis() - ts < 86_400_000L) 2 else 1
             )
         } catch (e: Exception) {
             if (e is NoChanKey) {
@@ -1727,13 +1729,24 @@ object Engine {
         return Stk(id, p, k.optString("e").take(16))
     }
 
+    /** 1.22: when this device last sent a sticker with the effect; one per FX_GAP (the server checks too). */
+    @Volatile var lastFx = 0L
+    const val FX_GAP = 5000L
+    /** Seconds left before the next effect is allowed (0 = now). */
+    fun fxWait(): Int = (((FX_GAP - (System.currentTimeMillis() - lastFx)) + 999) / 1000).toInt().coerceAtLeast(0)
+    /** The newest effect sticker of convo not played on this device yet. */
+    fun takeFx(convo: String): Msg? = db.takeFx(convo)
+
     fun stickerText(k: Stk) = (k.e.ifEmpty { "🎭" }) + " استیکر"
 
-    fun sendSticker(convo: String, k: Stk, reply: Msg?) {
+    /** fx: 1.22 sent with the full-screen effect (the app plays it here itself). */
+    fun sendSticker(convo: String, k: Stk, reply: Msg?, fx: Boolean = false) {
         Stickers.addRecent(k)
+        if (fx) lastFx = System.currentTimeMillis()
         db.insert(
             Msg(-System.nanoTime(), convo, me, true, System.currentTimeMillis(), "sticker", stickerText(k), null, null, null, 0, null, 0, 0,
-                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1, stk = k)
+                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1, stk = k,
+                fx = if (fx) 1 else 0)
         )
         tick.value++
         scope.launch { flushTexts() }
@@ -1979,17 +1992,17 @@ object Engine {
     }
 
     /** Sends; a channel that moved to a new key meanwhile (somebody was removed) gets the new key and one more try. */
-    private fun sendRekeyed(convo: String, plain: ByteArray, fileId: String?): Pair<Long, Long> = try {
-        Api.send(convo, encryptFor(convo, plain), fileId)
+    private fun sendRekeyed(convo: String, plain: ByteArray, fileId: String?, fx: Boolean = false): Pair<Long, Long> = try {
+        Api.send(convo, encryptFor(convo, plain), fileId, fx)
     } catch (e: Api.HttpError) {
         if (e.code != 409 || e.error != "chan_key_old") throw e
         refreshGroups()
         groupOf(convo)?.let { chanSyncNow(it) }
-        Api.send(convo, encryptFor(convo, plain), fileId)
+        Api.send(convo, encryptFor(convo, plain), fileId, fx)
     }
 
     private fun sendQueuedText(m: Msg) {
-        val (id, ts) = sendRekeyed(m.convo, plainOf(m).toString().toByteArray(), null)
+        val (id, ts) = sendRekeyed(m.convo, plainOf(m).toString().toByteArray(), null, m.type == "sticker" && m.fx != 0)
         db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, read = true))
         db.delete(m.id)
         tick.value++
