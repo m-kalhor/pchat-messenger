@@ -118,7 +118,7 @@ fun PickPeopleDialog(title: String, names: List<String>, okLabel: String, allowE
 
 /** Name and description of a group (new, or editing an existing one). */
 @Composable
-private fun GroupNameDialog(title: String, okLabel: String, name0: String, about0: String, onDone: (Pair<String, String>?) -> Unit) {
+private fun GroupNameDialog(title: String, okLabel: String, name0: String, about0: String, w: String = "گروه", onDone: (Pair<String, String>?) -> Unit) {
     var name by remember { mutableStateOf(name0) }
     var about by remember { mutableStateOf(about0) }
     AlertDialog(
@@ -126,7 +126,7 @@ private fun GroupNameDialog(title: String, okLabel: String, name0: String, about
         title = { Text(title) },
         text = {
             Column {
-                OutlinedTextField(name, { if (it.length <= 40) name = it }, singleLine = true, label = { Text("نام گروه") }, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(name, { if (it.length <= 40) name = it }, singleLine = true, label = { Text("نام $w") }, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
                 OutlinedTextField(about, { if (it.length <= 255) about = it }, label = { Text("توضیح (اختیاری)") }, minLines = 2, maxLines = 5, modifier = Modifier.fillMaxWidth())
             }
@@ -138,28 +138,37 @@ private fun GroupNameDialog(title: String, okLabel: String, name0: String, about
 
 /** «گروه تازه»: name and description, then members from the connected contacts. */
 @Composable
-fun NewGroupDialog(onClose: () -> Unit, onOpen: (String) -> Unit) {
+fun NewGroupDialog(onClose: () -> Unit, onOpen: (String) -> Unit, chan: Boolean = false) {
+    val w = if (chan) "کانال" else "گروه"
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val cfg by Engine.ugCfg.collectAsState()
     var info by remember { mutableStateOf<Pair<String, String>?>(null) }
     var busy by remember { mutableStateOf(false) }
+    if (chan && !cfg.chanOn) {
+        AlertDialog(
+            onDismissRequest = onClose, title = { Text("کانال تازه") },
+            text = { Text("ساختن کانال را مدیر سرور هنوز روشن نکرده است.") },
+            confirmButton = { TextButton(onClick = onClose) { Text("باشه") } }
+        )
+        return
+    }
     if (cfg.owned >= cfg.limit) {
         AlertDialog(
-            onDismissRequest = onClose, title = { Text("گروه تازه") },
-            text = { Text(if (cfg.limit > 0) "به حداکثر ${cfg.limit} گروه و کانالی که می‌توانید بسازید رسیده‌اید. برای ساختن گروه تازه، یکی از گروه‌هایتان را حذف کنید یا به عضو دیگری بسپارید." else "مدیر سرور ساختن گروه را برای شما بسته است.") },
+            onDismissRequest = onClose, title = { Text("$w تازه") },
+            text = { Text(if (cfg.limit > 0) "به حداکثر ${cfg.limit} گروه و کانالی که می‌توانید بسازید رسیده‌اید. برای ساختن $w تازه، یکی از گروه‌ها و کانال‌هایتان را حذف کنید یا به عضو دیگری بسپارید." else "مدیر سرور ساختن گروه را برای شما بسته است.") },
             confirmButton = { TextButton(onClick = onClose) { Text("باشه") } }
         )
         return
     }
     val i = info
-    if (i == null) GroupNameDialog("گروه تازه (${cfg.owned + 1} از ${cfg.limit})", "بعدی", "", "") { r -> if (r == null) onClose() else { info = r } }
-    else if (!busy) PickPeopleDialog("اعضای «${i.first}»", addableContacts(), "ساختن گروه", allowEmpty = true, max = (cfg.maxMembers - 1).coerceAtLeast(0)) { picked ->
+    if (i == null) GroupNameDialog("$w تازه (${cfg.owned + 1} از ${cfg.limit})", "بعدی", "", "", w) { r -> if (r == null) onClose() else { info = r } }
+    else if (!busy) PickPeopleDialog("اعضای «${i.first}»", addableContacts(), "ساختن $w", allowEmpty = true, max = ((if (chan) cfg.chanMax else cfg.maxMembers) - 1).coerceAtLeast(0)) { picked ->
         if (picked == null) { onClose(); return@PickPeopleDialog }
         busy = true
         scope.launch {
             val (r, err) = Engine.groupOp {
-                Api.ugroupOp("/create", JSONObject().put("name", i.first).put("about", i.second).put("members", JSONArray(picked)))
+                Api.ugroupOp("/create", JSONObject().put("name", i.first).put("about", i.second).put("members", JSONArray(picked)).apply { if (chan) put("kind", "chan") })
             }
             busy = false
             if (err != null) { Toast.makeText(ctx, err, Toast.LENGTH_LONG).show(); onClose() }
@@ -191,13 +200,13 @@ fun JoinGroupDialog(initial: String?, onClose: () -> Unit, onOpen: (String) -> U
     val p = preview
     AlertDialog(
         onDismissRequest = onClose,
-        title = { Text(if (p == null) "پیوستن با لینک دعوت" else "پیوستن به گروه") },
+        title = { Text(if (p == null) "پیوستن با لینک دعوت" else if (p.optString("kind") == "chan") "پیوستن به کانال" else "پیوستن به گروه") },
         text = {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
                 if (p == null) {
                     OutlinedTextField(text, { text = it; err = null }, singleLine = true, placeholder = { Text("لینک دعوت را اینجا بگذارید") }, modifier = Modifier.fillMaxWidth())
                 } else {
-                    Text("👥", fontSize = 40.sp)
+                    Text(if (p.optString("kind") == "chan") "📢" else "👥", fontSize = 40.sp)
                     Text(p.optString("name"), fontWeight = FontWeight.Bold, fontSize = 18.sp, textAlign = TextAlign.Center)
                     Text("${p.optInt("count")} عضو", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                     val about = p.optString("about")
@@ -261,13 +270,15 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                 TopAppBar(
                     colors = Look.barColors(),
                     navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت") } },
-                    title = { Text("گروه") }
+                    title = { Text(if (g?.isChan == true) "کانال" else "گروه") }
                 )
             }) { pad ->
                 if (g == null) {
-                    Box(Modifier.padding(pad).fillMaxSize(), contentAlignment = Alignment.Center) { Text("عضو این گروه نیستید") }
+                    Box(Modifier.padding(pad).fillMaxSize(), contentAlignment = Alignment.Center) { Text("عضو این گروه یا کانال نیستید") }
                     return@Scaffold
                 }
+                val chan = g.isChan
+                val w = if (chan) "کانال" else "گروه"
                 val manage = g.manages && !g.frozen
                 val own = g.role == "owner" && !g.frozen
                 val roles = HashMap<String, String>()
@@ -281,19 +292,19 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                         Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             Box(Modifier.clip(CircleShape).clickable(enabled = manage) { photoMenu = true }) { Avatar(convo, false, 96) }
                             DropdownMenu(expanded = photoMenu, onDismissRequest = { photoMenu = false }) {
-                                DropdownMenuItem(text = { Text("انتخاب عکس گروه") }, onClick = { photoMenu = false; pickPhoto.launch("image/*") })
+                                DropdownMenuItem(text = { Text("انتخاب عکس $w") }, onClick = { photoMenu = false; pickPhoto.launch("image/*") })
                                 if (g.avatarVer > 0) DropdownMenuItem(text = { Text("حذف عکس", color = MaterialTheme.colorScheme.error) }, onClick = { photoMenu = false; op { Api.deleteGroupAvatar(g.id) } })
                             }
                             Spacer(Modifier.height(10.dp))
                             Text(g.name, fontWeight = FontWeight.Bold, fontSize = 20.sp, textAlign = TextAlign.Center)
-                            Text("${g.members.size} عضو" + if (g.frozen) " · معلق" else "", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            Text("${if (chan) maxOf(g.count, g.members.size) else g.members.size} عضو" + if (g.frozen) " · معلق" else "", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                             if (g.about.isNotBlank()) { Spacer(Modifier.height(8.dp)); Text(g.about, fontSize = 14.sp, textAlign = TextAlign.Center) }
                         }
                     }
                     if (manage) {
-                        item { Section("مدیریت گروه") }
-                        item { ActionRow("✏️ نام و توضیح گروه") { editing = true } }
-                        item { ActionRow("🖼 عکس گروه") { photoMenu = true } }
+                        item { Section("مدیریت $w") }
+                        item { ActionRow("✏️ نام و توضیح $w") { editing = true } }
+                        item { ActionRow("🖼 عکس $w") { photoMenu = true } }
                         item { ActionRow("➕ افزودن عضو از مخاطبان") { adding = true } }
                         item { Section("لینک دعوت") }
                         if (link == null) item { ActionRow("🔗 ساختن لینک دعوت", "هر کس لینک را داشته باشد می‌تواند عضو شود") { op { Api.ugroupOp("/${g.id}/invite") } } }
@@ -303,7 +314,7 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                                 Row {
                                     TextButton(onClick = { clipboard.setText(AnnotatedString(link)); Toast.makeText(ctx, "لینک کپی شد", Toast.LENGTH_SHORT).show() }) { Text("کپی") }
                                     TextButton(onClick = {
-                                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "دعوت به گروه «${g.name}» در سپن:\n$link")
+                                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "دعوت به $w «${g.name}» در سپن:\n$link")
                                         ctx.startActivity(Intent.createChooser(send, "فرستادن لینک دعوت"))
                                     }) { Text("اشتراک") }
                                     TextButton(onClick = { op("لینک تازه ساخته شد؛ لینک قبلی دیگر کار نمی‌کند") { Api.ugroupOp("/${g.id}/invite") } }) { Text("لینک تازه") }
@@ -314,10 +325,13 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                     }
                     if (own) {
                         item { Section("تنظیمات مالک") }
-                        item { GSwitchRow("فقط مدیران پیام بفرستند", g.adminsOnly) { v -> op { Api.ugroupOp("/${g.id}/edit", JSONObject().put("admins_only", v)) } } }
-                        item { GSwitchRow("تماس گروهی در این گروه", g.callOn) { v -> op { Api.ugroupOp("/${g.id}/edit", JSONObject().put("call_on", v)) } } }
+                        if (chan) item { GSwitchRow("امضای نویسنده زیر هر پست", g.sign) { v -> op { Api.ugroupOp("/${g.id}/edit", JSONObject().put("sign", v)) } } }
+                        else {
+                            item { GSwitchRow("فقط مدیران پیام بفرستند", g.adminsOnly) { v -> op { Api.ugroupOp("/${g.id}/edit", JSONObject().put("admins_only", v)) } } }
+                            item { GSwitchRow("تماس گروهی در این گروه", g.callOn) { v -> op { Api.ugroupOp("/${g.id}/edit", JSONObject().put("call_on", v)) } } }
+                        }
                     }
-                    item { Section("اعضا (${g.members.size})") }
+                    item { Section(if (chan && !g.manages) "مدیران کانال" else "اعضا (${g.members.size})") }
                     items(members, key = { it }) { u ->
                         Box {
                             Row(
@@ -338,23 +352,23 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                             val r = roles[u] ?: "member"
                             DropdownMenu(expanded = memberMenu == u, onDismissRequest = { memberMenu = null }) {
                                 if (u != Engine.me) DropdownMenuItem(text = { Text("💬 پیام") }, onClick = { memberMenu = null; onOpenUser(u) })
-                                if (own && u != Engine.me && r == "member") DropdownMenuItem(text = { Text("⭐ مدیر گروه شود") }, onClick = {
+                                if (own && u != Engine.me && r == "member") DropdownMenuItem(text = { Text("⭐ مدیر $w شود") }, onClick = {
                                     memberMenu = null; op { Api.ugroupOp("/${g.id}/role", JSONObject().put("user", u).put("role", "admin")) }
                                 })
                                 if (own && u != Engine.me && r == "admin") DropdownMenuItem(text = { Text("برداشتن مدیری") }, onClick = {
                                     memberMenu = null; op { Api.ugroupOp("/${g.id}/role", JSONObject().put("user", u).put("role", "member")) }
                                 })
-                                if (own && u != Engine.me) DropdownMenuItem(text = { Text("👑 مالکیت گروه به او برسد") }, onClick = {
+                                if (own && u != Engine.me) DropdownMenuItem(text = { Text("👑 مالکیت $w به او برسد") }, onClick = {
                                     memberMenu = null
-                                    confirm = Triple("انتقال مالکیت", "مالکیت «${g.name}» به ${Engine.nameOf(u)} برسد؟ شما مدیر گروه می‌مانید.") {
+                                    confirm = Triple("انتقال مالکیت", "مالکیت «${g.name}» به ${Engine.nameOf(u)} برسد؟ شما مدیر $w می‌مانید.") {
                                         op("مالکیت منتقل شد") { Api.ugroupOp("/${g.id}/transfer", JSONObject().put("user", u)) }
                                     }
                                 })
                                 if (manage && u != Engine.me && r != "owner" && (own || r == "member")) DropdownMenuItem(
-                                    text = { Text("بیرون کردن از گروه", color = MaterialTheme.colorScheme.error) },
+                                    text = { Text("بیرون کردن از $w", color = MaterialTheme.colorScheme.error) },
                                     onClick = {
                                         memberMenu = null
-                                        confirm = Triple("بیرون کردن", "${Engine.nameOf(u)} از گروه بیرون شود؟ با لینک دعوت برنمی‌گردد؛ فقط مدیران می‌توانند دوباره اضافه‌اش کنند.") {
+                                        confirm = Triple("بیرون کردن", "${Engine.nameOf(u)} از $w بیرون شود؟ با لینک دعوت برنمی‌گردد؛ فقط مدیران می‌توانند دوباره اضافه‌اش کنند.") {
                                             op { Api.ugroupOp("/${g.id}/remove", JSONObject().put("user", u)) }
                                         }
                                     }
@@ -366,22 +380,22 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                         Column(Modifier.fillMaxWidth().padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                             OutlinedButton(onClick = {
                                 confirm = Triple(
-                                    "ترک گروه",
-                                    if (g.role == "owner") "شما مالک گروه هستید. اگر بروید، مالکیت به قدیمی‌ترین مدیر می‌رسد (اگر مدیری نباشد گروه معلق می‌شود)." else "از «${g.name}» بیرون می‌روید."
+                                    "ترک $w",
+                                    if (g.role == "owner") "شما مالک $w هستید. اگر بروید، مالکیت به قدیمی‌ترین مدیر می‌رسد (اگر مدیری نباشد $w معلق می‌شود)." else "از «${g.name}» بیرون می‌روید."
                                 ) { op(after = onLeft) { Api.ugroupOp("/${g.id}/leave") } }
-                            }) { Text("ترک گروه", color = MaterialTheme.colorScheme.error) }
+                            }) { Text("ترک $w", color = MaterialTheme.colorScheme.error) }
                             if (g.role == "owner") {
                                 Spacer(Modifier.height(8.dp))
                                 OutlinedButton(onClick = {
-                                    confirm = Triple("حذف گروه", "«${g.name}» و همهٔ پیام‌هایش برای همهٔ اعضا پاک می‌شود. این کار برگشت ندارد.") {
+                                    confirm = Triple("حذف $w", "«${g.name}» و همهٔ پیام‌هایش برای همهٔ اعضا پاک می‌شود. این کار برگشت ندارد.") {
                                         op(after = onLeft) { Api.ugroupOp("/${g.id}/delete") }
                                     }
-                                }) { Text("حذف گروه", color = MaterialTheme.colorScheme.error) }
+                                }) { Text("حذف $w", color = MaterialTheme.colorScheme.error) }
                             }
                         }
                     }
                 }
-                if (editing) GroupNameDialog("ویرایش گروه", "ذخیره", g.name, g.about) { r ->
+                if (editing) GroupNameDialog("ویرایش $w", "ذخیره", g.name, g.about, w) { r ->
                     editing = false
                     if (r != null) op { Api.ugroupOp("/${g.id}/edit", JSONObject().put("name", r.first).put("about", r.second)) }
                 }

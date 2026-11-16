@@ -27,6 +27,8 @@ export const S = {
   failures: new Map(),        // message id -> error text
   openConvo: null,            // convo on screen
   stickers: { create: false, limits: {}, packs: [] }, // 1.10: the sticker panel (official packs + my collection)
+  chanKeys: {},               // 1.21: channel key -> { version: base64 key }
+  views: {},                  // 1.21: channel key -> how far each member read (sorted, no names), for 👁
 };
 
 const listeners = new Set();
@@ -110,6 +112,10 @@ export function errText(e) {
     case 'no_such_group': return 'این گروه دیگر وجود ندارد';
     case 'cannot_remove': return 'مالک گروه را نمی‌شود بیرون کرد';
     case 'bad_name': return 'نام را بنویسید';
+    // 1.21: channels
+    case 'chans_off': return 'ساختن کانال را مدیر سرور خاموش کرده است';
+    case 'chan_key_old': return 'کلید کانال عوض شده؛ دوباره بفرستید';
+    case 'key_taken': case 'key_changed': return 'کلید کانال در حال به‌روزرسانی است؛ کمی بعد دوباره امتحان کنید';
     default: break;
   }
   if (e instanceof api.HttpError) return 'خطای سرور (' + e.status + ')';
@@ -137,6 +143,7 @@ export async function init() {
   S.receipts = (await store.kvGet('receipts')) || {};
   S.privacy = (await store.kvGet('privacy')) || S.privacy;
   S.stickers = (await store.kvGet('stickers')) || S.stickers;
+  S.chanKeys = (await store.kvGet('chankeys')) || {};
   for (const m of await store.allMsgs()) addLocal(m);
   for (const list of S.convos.values()) list.sort(byOrder);
   for (const m of [...S.convos.values()].flat()) if (m.status === 1 && !TEXTISH.has(m.type)) { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
@@ -304,7 +311,7 @@ function keyErr(e) {
 
 function resetState() {
   S.users = []; S.groups = []; S.pins = {}; S.read = {}; S.typing = {}; S.gtyping = {}; S.receipts = {}; S.rseq = -1;
-  S.convos = new Map(); S.lastId = 0; S.cseq = -1; S.progress.clear(); S.failures.clear();
+  S.convos = new Map(); S.lastId = 0; S.cseq = -1; S.progress.clear(); S.failures.clear(); S.chanKeys = {}; S.views = {};
 }
 
 export async function logout() {
@@ -344,6 +351,8 @@ export async function refreshGroups() {
   S.groups = await api.groups();
   await store.kvSet('groups', S.groups);
   emit('groups');
+  // 1.21: channels: owner/admins seal the key for people waiting; members fetch a key they still lack
+  for (const g of S.groups) if (g.kind === 'chan' && (g.role === 'owner' || g.role === 'admin' || !ckRaw(g.key, g.ckv))) chanSync(g).catch(() => { });
 }
 export async function refreshRequests() {
   S.requests = await api.contactRequests();
@@ -451,6 +460,7 @@ async function handleEvent(ev, data) {
       return emit('users');
     }
     case 'refresh': try { await refreshUsers(); await refreshGroups(); } catch { } return;
+    case 'chankey': chanSync(groupOf(o.convo)).catch(() => { }); return;
     case 'contacts': try { await refreshRequests(); } catch { } return;
     case 'login_alert': return emit('login_alert', o);
     case 'stickers': return refreshStickers().catch(() => { });
@@ -482,14 +492,19 @@ function removeLocal(m) {
   if (list) { const i = list.findIndex((x) => x.id === m.id); if (i >= 0) list.splice(i, 1); }
 }
 
-async function handleMsg(o) {
+async function handleMsg(o, again) {
   const mine = o.from === S.me;
   const convo = isGroup(o.target) ? o.target : mine ? o.target : o.from;
   let m, lx = null;
+  const kv = isGroup(o.target) ? C.chanVersion(o.payload) : 0;
   try {
-    let pub = pubOf(o.from);
-    if (!pub && !mine) { try { await refreshUsers(); } catch { } pub = pubOf(o.from); }
-    const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pub, o.payload)));
+    let plain;
+    if (kv) plain = await chanOpen(o);
+    else {
+      let pub = pubOf(o.from);
+      if (!pub && !mine) { try { await refreshUsers(); } catch { } pub = pubOf(o.from); }
+      plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pub, o.payload)));
+    }
     const r = plain.r || null;
     if (typeof plain.lx === 'string' && !mine) lx = plain.lx;
     // a voice message travels as a file with v:1 (older apps show it as an audio file)
@@ -503,8 +518,13 @@ async function handleMsg(o) {
       fileId: o.fileId || null, name: plain.n || null, mime: plain.m || null, size: plain.s || 0, fk: plain.fk || null,
       w: plain.w || 0, h: plain.h || 0, replyId: r ? r.id || 0 : 0, replyUser: r ? r.u || null : null, replyText: r ? r.x || null : null, status: 0,
     };
-  } catch {
-    m = { id: o.id, convo, sender: o.from, mine, ts: o.ts, type: 'text', text: '🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)', status: 0, locked: true };
+  } catch (e) {
+    m = e && e.noKey
+      // 1.21: a channel post whose key has not reached this device yet: kept and opened when it comes
+      ? { id: o.id, convo, sender: o.from, mine, ts: o.ts, type: 'text', text: '🔑 در انتظار کلید کانال؛ وقتی مالک یا یکی از مدیران آنلاین شود باز می‌شود', status: 0, locked: true, waitKey: true,
+        raw: { id: o.id, from: o.from, target: o.target, payload: o.payload, fileId: o.fileId || null, ts: o.ts, edited: o.edited || null } }
+      : { id: o.id, convo, sender: o.from, mine, ts: o.ts, type: 'text', text: '🔒 این پیام قابل رمزگشایی نیست (کلید قدیمی یا مشکل رمزنگاری)', status: 0, locked: true };
+    if (e && e.noKey) chanSync(groupOf(o.target)).catch(() => { });
   }
   if (o.reactions) m.reactions = { ...o.reactions };
   if (lx && m.fileId) { if (lanFiles.has(lx)) lanTakeOver(lx, m); else lanReal.set(lx, m); }
@@ -516,7 +536,7 @@ async function handleMsg(o) {
   if (isNew) {
     if (mine || (S.openConvo === convo && document.visibilityState === 'visible')) markRead(convo);
     emit('msg', m);
-  }
+  } else if (again) emit('msg', m);
 }
 
 /** An edit or a delete-for-everyone of a message we may already have. */
@@ -530,7 +550,8 @@ async function handleChange(o) {
     emit('msg', m);
   } else if (m && o.kind === 'edit') {
     try {
-      const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pubOf(o.from), o.payload)));
+      const plain = isGroup(o.target) && C.chanVersion(o.payload) ? await chanOpen(o)
+        : JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, o.from, o.target, pubOf(o.from), o.payload)));
       m.text = plain.x || '';
       m.edited = o.edited || Date.now();
       await store.putMsg(m);
@@ -655,7 +676,7 @@ function saveReceipts() { if (!saveTimer) saveTimer = setTimeout(() => { saveTim
 
 /** 'sent' (grey ✓) · 'delivered' (blue ✓) · 'seen' (blue ✓✓) for my message, null for others. In a group: all members. */
 export function tickOf(m) {
-  if (!m.mine || m.id <= 0 || m.status !== 0 || m.type === 'call') return null;
+  if (!m.mine || m.id <= 0 || m.status !== 0 || m.type === 'call' || isChan(m.convo)) return null; // a channel shows 👁 instead
   const rc = S.receipts[m.convo] || {};
   const d = (u) => Math.max((rc[u] || {}).d || 0, (rc[u] || {}).s || 0), s = (u) => (rc[u] || {}).s || 0;
   if (isGroup(m.convo)) {
@@ -924,6 +945,13 @@ export function deleteLocal(m) { removeLocal(m); store.delMsg(m.id); emit('msg',
 // ---------------- sending ----------------
 async function encryptFor(convo, plain) {
   const rec = {};
+  const ch = groupOf(convo);
+  if (ch && ch.kind === 'chan') {
+    let raw = ckRaw(convo, ch.ckv);
+    if (!raw) { try { await chanSync(ch); } catch { } raw = ckRaw(convo, ch.ckv); }
+    if (!raw) throw userError('کلید کانال هنوز آماده نیست؛ کمی بعد دوباره بفرستید');
+    return C.chanEncrypt(raw, ch.ckv, S.me, convo, typeof plain === 'string' ? plain : JSON.stringify(plain));
+  }
   if (isGroup(convo)) {
     const g = S.groups.find((x) => x.key === convo);
     const members = g ? g.members : S.users.map((u) => u.username);
@@ -972,6 +1000,13 @@ export async function flush() {
         const r = await api.send(m.convo, payload);
         await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0 });
       } catch (e) {
+        if (e instanceof api.HttpError && e.status === 409 && e.body && e.body.error === 'chan_key_old' && !m._rekeyed) {
+          // the channel moved to a new key (somebody was removed): get it and send again
+          Object.defineProperty(m, '_rekeyed', { value: true, enumerable: false, writable: true });
+          try { await refreshGroups(); await chanSync(groupOf(m.convo)); } catch { }
+          setTimeout(flush, 500);
+          break;
+        }
         if (e instanceof api.HttpError && e.status >= 400 && e.status < 500 && e.status !== 429 && e.status !== 401) {
           m.status = 2; S.failures.set(m.id, errText(e)); await store.putMsg(m); emit('msg', m);
         } else if (e.userText) { m.status = 2; S.failures.set(m.id, e.userText); await store.putMsg(m); emit('msg', m); }
@@ -1000,7 +1035,7 @@ export function retry(m) {
 
 const sentTyping = {};
 export function sendTyping(convo) {
-  if (S.conn !== 'online' || reqOf(convo) === 'out') return; // no "typing…" to someone who has not accepted yet
+  if (S.conn !== 'online' || reqOf(convo) === 'out' || isChan(convo)) return; // no "typing…" to someone who has not accepted yet, nor in a channel
   if (Date.now() - (sentTyping[convo] || 0) < 3000) return;
   sentTyping[convo] = Date.now();
   (isGroup(convo) ? api.typing(convo) : api.signal(convo, 'sig_typing', '1')).catch(() => { });
@@ -1257,13 +1292,15 @@ export function avatarUrl(u) {
 
 // ---------------- 1.20: groups users make themselves ----------------
 export const groupOf = (c) => S.groups.find((g) => g.key === c) || null;
-export const isUserGroup = (c) => { const g = groupOf(c); return !!g && g.kind === 'user'; };
+export const isUserGroup = (c) => { const g = groupOf(c); return !!g && (g.kind === 'user' || g.kind === 'chan'); };
+export const isChan = (c) => { const g = groupOf(c); return !!g && g.kind === 'chan'; };
 export const canManageGroup = (c) => { const g = groupOf(c); return !!g && (g.role === 'owner' || g.role === 'admin'); };
 /** Why the user cannot write here ('' = can write). */
 export function writeBlock(c) {
   const g = groupOf(c);
-  if (!g || g.kind !== 'user') return '';
-  if (g.frozen) return 'این گروه را مدیر سرور معلق کرده است';
+  if (!g || (g.kind !== 'user' && g.kind !== 'chan')) return '';
+  if (g.frozen) return g.kind === 'chan' ? 'این کانال را مدیر سرور معلق کرده است' : 'این گروه را مدیر سرور معلق کرده است';
+  if (g.kind === 'chan') return g.role === 'owner' || g.role === 'admin' ? '' : '📢 کانال: فقط مالک و مدیران مطلب می‌گذارند';
   if (g.admins_only && !(g.role === 'owner' || g.role === 'admin')) return 'فقط مدیران این گروه پیام می‌فرستند';
   return '';
 }
@@ -1291,6 +1328,89 @@ export async function groupAction(fn) {
   catch (e) { return { error: errText(e) }; }
 }
 export async function groupDetails(id) { try { return await api.ugroup(id); } catch (e) { return { error: errText(e) }; } }
+
+// ---------------- 1.21: channels ----------------
+// Posts are sealed with the channel's shared key (crypto.mjs). Each device keeps the versions it has; owner and
+// admins make a new version when needed and seal the versions they hold for members still waiting.
+const ckRaw = (gkey, kv) => { const m = S.chanKeys[gkey]; return m && m[kv] ? C.unb64(m[kv]) : null; };
+async function chanOpen(o) {
+  const raw = ckRaw(o.target, C.chanVersion(o.payload));
+  if (!raw) throw Object.assign(new Error('no channel key'), { noKey: true });
+  return JSON.parse(td.decode(await C.chanDecrypt(raw, o.from, o.target, o.payload)));
+}
+const chanBusy = new Map();
+export function chanSync(g) {
+  if (!g || g.kind !== 'chan' || !S.identity) return Promise.resolve();
+  let p = chanBusy.get(g.key);
+  if (!p) { p = doChanSync(g, 0).finally(() => chanBusy.delete(g.key)); chanBusy.set(g.key, p); }
+  return p;
+}
+async function doChanSync(g, round) {
+  const r = await api.chanKeys(g.id);
+  const mine = (S.chanKeys[g.key] = S.chanKeys[g.key] || {});
+  let got = false;
+  for (const k of r.keys || []) {
+    if (mine[k.kv]) continue;
+    try { mine[k.kv] = C.b64(await C.openChanKey(S.identity, S.me, k.by_user, k.by_pub, g.key, k.kv, k.wrapped)); got = true; } catch { }
+  }
+  const seal = (u, pub, kv, raw) => C.sealChanKey(S.identity, S.me, u, pub, g.key, kv, raw);
+  if (r.claim && r.members) {
+    // nobody has made this version yet: make it and seal it for everybody (and myself)
+    const raw = C.newChanKey();
+    const wraps = [];
+    const list = r.members.some((m) => m.u === S.me) ? r.members : [...r.members, { u: S.me, pub: S.identity.pubB64 }];
+    for (const m of list) { try { wraps.push({ u: m.u, w: await seal(m.u, m.pub, r.kv, raw), for_pub: m.u === S.me ? S.identity.pubB64 : m.pub }); } catch { } }
+    try {
+      await api.putChanKeys(g.id, { kv: r.kv, by_pub: S.identity.pubB64, wraps });
+      mine[r.kv] = C.b64(raw); got = true;
+    } catch (e) {
+      // another admin was first: take theirs
+      if (round < 2 && e instanceof api.HttpError && e.status === 409) { if (got) await store.kvSet('chankeys', S.chanKeys); return doChanSync(g, round + 1); }
+    }
+  }
+  if (r.pending && r.pending.length) {
+    const byKv = {};
+    for (const p of r.pending) for (const kv of p.kvs) {
+      const raw = ckRaw(g.key, kv);
+      if (raw) { try { (byKv[kv] = byKv[kv] || []).push({ u: p.u, w: await seal(p.u, p.pub, kv, raw), for_pub: p.pub }); } catch { } }
+    }
+    for (const [kv, wraps] of Object.entries(byKv)) { try { await api.putChanKeys(g.id, { kv: Number(kv), by_pub: S.identity.pubB64, wraps }); } catch { } }
+  }
+  if (got) {
+    await store.kvSet('chankeys', S.chanKeys);
+    for (const m of [...(S.convos.get(g.key) || [])]) if (m.waitKey && m.raw) await handleMsg(m.raw, true);
+  }
+}
+/** A channel on screen: fetch older posts once (a new member reads what came before), at most 500. */
+const chanLoaded = new Set();
+export async function loadChannel(convo) {
+  const g = groupOf(convo);
+  if (!g || g.kind !== 'chan' || chanLoaded.has(convo)) return;
+  chanLoaded.add(convo);
+  try {
+    for (let page = 0; page < 5; page++) {
+      const list = (S.convos.get(convo) || []).filter((m) => m.id > 0);
+      const before = list.length ? Math.min(...list.map((m) => m.id)) : 0;
+      const posts = (await api.chanPosts(g.id, before)).posts || [];
+      for (const o of posts) if (!list.some((m) => m.id === o.id)) await handleMsg(o);
+      if (posts.length < 100) break;
+    }
+  } catch { chanLoaded.delete(convo); }
+  refreshViews(convo);
+}
+/** 👁 counts: how far each member read (no names). */
+export async function refreshViews(convo) {
+  const g = groupOf(convo);
+  if (!g || g.kind !== 'chan') return;
+  try { S.views[convo] = (await api.chanViews(g.id)).seen || []; emit('receipts', convo); } catch { }
+}
+export function viewsOf(m) {
+  const v = S.views[m.convo];
+  if (!v || !(m.id > 0)) return 0;
+  let n = 0;
+  for (const x of v) if (x >= m.id) n++;
+  return n;
+}
 
 export async function saveProfile(name, bio) {
   try { await api.setProfile(name, bio); await refreshUsers(); return null; } catch (e) { return errText(e); }

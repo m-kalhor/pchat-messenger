@@ -81,6 +81,11 @@ export const patchUpload = (id, offset, bytes) => call('PATCH', '/api/uploads/' 
 // 1.20: groups users make themselves
 export const ugroup = (id) => call('GET', '/api/ugroups/' + id);
 export const ugroupOp = (path, body) => call('POST', '/api/ugroups' + path, body || {});
+// 1.21: channels
+export const chanKeys = (id) => call('GET', '/api/ugroups/' + id + '/keys');
+export const putChanKeys = (id, body) => call('POST', '/api/ugroups/' + id + '/keys', body);
+export const chanViews = (id) => call('GET', '/api/ugroups/' + id + '/views');
+export const chanPosts = (id, before) => call('GET', '/api/ugroups/' + id + '/posts?before=' + (before || 0));
 export const joinPreview = (t) => call('GET', '/api/ugroups/join/' + encodeURIComponent(t));
 export const joinGroup = (t) => call('POST', '/api/ugroups/join/' + encodeURIComponent(t), {});
 export const uploadGroupAvatar = (id, webp) => call('POST', '/api/ugroups/' + id + '/avatar', webp, { 'content-type': 'image/webp' });

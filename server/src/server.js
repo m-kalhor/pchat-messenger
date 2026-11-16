@@ -4,7 +4,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { db, DATA_DIR, hashPassword, checkPassword, getSetting } = require('./db');
+const { db, DATA_DIR, hashPassword, checkPassword, getSetting, setSetting } = require('./db');
 const core = require('./core');
 const contacts = require('./contacts');
 const { sanitizeWebp } = require('./webp');
@@ -180,9 +180,9 @@ function isOnline(u) {
   if (set) for (const r of set) if (r.active) return true;
   return false;
 }
-const msgJson = (m, reactions) => ({
+const msgJson = (m, reactions, namer) => ({
   id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null,
-  ...(reactions && reactions.length ? { reactions: Object.fromEntries(reactions.map((r) => [r.username, r.emoji])) } : {}),
+  ...(reactions && reactions.length ? { reactions: Object.fromEntries(reactions.map((r) => [namer ? namer(m.id, r.username) : r.username, r.emoji])) } : {}),
 });
 /** An edit or delete-for-everyone of message m, as clients receive it (seq orders all changes). */
 const changeJson = (seq, kind, m) => (kind === 'del'
@@ -245,7 +245,22 @@ const gcallCfgFor = () => { const c = gcall.cfg(); return { on: c.on, video: c.v
 // ---------- 1.20: groups users make themselves ----------
 function ugroupsFor(user) {
   const c = ugroups.cfg();
-  return { on: c.on, limit: ugroups.limitOf(user), owned: ugroups.ownedCount(user), max_members: c.max_members, calls: c.calls };
+  return { on: c.on, limit: ugroups.limitOf(user), owned: ugroups.ownedCount(user), max_members: c.max_members, calls: c.calls, chan_on: c.chan_on, chan_max: c.chan_max };
+}
+/** 1.21: the channel behind a target key, or null. */
+function chanOfKey(key) {
+  if (!/^g:\d+$/.test(String(key || ''))) return null;
+  const g = core.groupByKey(key);
+  return ugroups.isChan(g) ? g : null;
+}
+// In a channel, members see how many reacted with what, not who: another member's name is replaced by a
+// stable stand-in per message ('~' + 10 hex), so taking a reaction back still matches. Owner/admins see names.
+let anonSecret = getSetting('anon_secret', '');
+if (!anonSecret) { anonSecret = require('node:crypto').randomBytes(32).toString('hex'); setSetting('anon_secret', anonSecret); }
+function reactNamer(viewer, target) {
+  const g = chanOfKey(target);
+  if (!g || ugroups.canManage(viewer, g)) return (id, u) => u;
+  return (id, u) => (u === viewer ? u : '~' + require('node:crypto').createHmac('sha256', anonSecret).update(id + ':' + u).digest('hex').slice(0, 10));
 }
 function groupModerator(user, target) {
   if (!/^g:\d+$/.test(target)) return false;
@@ -263,7 +278,7 @@ function inviteLink(token) {
 }
 /** Everyone who should reload their chat list after a change to group g (plus extra people, e.g. removed). */
 function groupChanged(g, extra = []) {
-  const who = new Set([...core.membersOf(g.id), ...extra]);
+  const who = new Set([...ugroups.audienceOf(g), ...extra]);
   for (const u of who) emit(u, 'refresh', {});
 }
 async function ugroupRoute(req, res, p, url, user) {
@@ -272,7 +287,7 @@ async function ugroupRoute(req, res, p, url, user) {
     const full = core.groupByKey(g.gkey);
     if (!full || !core.isMember(user, full.id)) return { id: g.id, key: g.gkey, name: g.name, left: true };
     const info = ugroups.info(user, full);
-    return { id: full.id, key: full.gkey, name: full.name, members: core.membersOf(full.id), call: gcall.groupAllowed(full.gkey), ...info, invite_link: inviteLink(info.invite) };
+    return { id: full.id, key: full.gkey, name: full.name, members: ugroups.visibleMembers(user, full), call: gcall.groupAllowed(full.gkey), ...info, invite_link: inviteLink(info.invite) };
   };
   try {
     if (p === '/api/ugroups' && req.method === 'GET') return ok(ugroupsFor(user));
@@ -291,7 +306,7 @@ async function ugroupRoute(req, res, p, url, user) {
       if (req.method === 'POST') {
         addFail('ugjoin:' + user);
         const g = ugroups.join(user, jm[1]);
-        groupChanged(g);
+        groupChanged(g, [user]);
         return ok({ group: groupOut(g) });
       }
     }
@@ -302,9 +317,27 @@ async function ugroupRoute(req, res, p, url, user) {
     if (op === '' && req.method === 'GET') {
       const g = ugroups.mine(user, id);
       const out = groupOut(g);
-      if (ugroups.canManage(user, g)) out.roles = db.prepare('SELECT username, role, joined, via FROM user_categories WHERE category_id=? ORDER BY joined, username').all(g.id);
-      else out.roles = db.prepare("SELECT username, role FROM user_categories WHERE category_id=? ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, username").all(g.id);
+      if (ugroups.canManage(user, g)) out.roles = db.prepare('SELECT uc.username, uc.role, uc.joined, uc.via, u.display_name FROM user_categories uc LEFT JOIN users u ON u.username=uc.username WHERE uc.category_id=? ORDER BY uc.joined, uc.username').all(g.id);
+      else out.roles = db.prepare(`SELECT username, role FROM user_categories WHERE category_id=? ${ugroups.isChan(g) ? "AND role IN ('owner','admin')" : ''} ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, username`).all(g.id);
       return ok(out);
+    }
+    // 1.21: the shared channel key (sealed copies), and the 👁 counts
+    if (op === 'keys' && req.method === 'GET') return ok(ugroups.chanKeys(user, id));
+    if (op === 'keys' && req.method === 'POST') {
+      const b = await readJson(req, 400000);
+      const r = ugroups.putChanKeys(user, id, b);
+      for (const u of r.got) if (u !== user) emit(u, 'chankey', { convo: r.g.gkey });
+      return ok({ stored: r.got.length });
+    }
+    if (op === 'views' && req.method === 'GET') return ok({ seen: ugroups.chanViews(user, id) });
+    // older posts of a channel (a new member reads what came before): up to 100 before message `before`
+    if (op === 'posts' && req.method === 'GET') {
+      const g = ugroups.mine(user, id);
+      if (!ugroups.isChan(g)) return send(res, 404, { error: 'not_found' });
+      const before = Math.max(0, Number(url.searchParams.get('before')) || 0) || Number.MAX_SAFE_INTEGER;
+      const rows = db.prepare('SELECT * FROM messages WHERE target=? AND deleted=0 AND id<? ORDER BY id DESC LIMIT 100').all(g.gkey, before).reverse();
+      const namer = reactNamer(user, g.gkey);
+      return ok({ posts: rows.map((m) => msgJson(m, q.reactsOf.all(m.id), namer)) });
     }
     if (op === 'qr' && req.method === 'GET') {
       const g = ugroups.managed(user, id);
@@ -404,8 +437,10 @@ function replayReactions(user, since, msgSince) {
   const sql = `SELECT r.seq AS seq, r.msg_id AS id, r.username AS user, r.emoji AS emoji, m.sender AS sender, m.target AS target
     FROM reactions r JOIN messages m ON m.id=r.msg_id
     WHERE r.seq>? AND m.id<=? AND m.deleted=0 AND (m.target=? OR m.sender=?${gk.length ? ` OR m.target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY r.seq LIMIT 5000`;
+  const namers = new Map();
+  const namer = (t) => { if (!namers.has(t)) namers.set(t, reactNamer(user, t)); return namers.get(t); };
   return db.prepare(sql).all(since, msgSince, user, user, ...gk)
-    .map((r) => ({ seq: r.seq, id: r.id, from: r.sender, target: r.target, user: r.user, emoji: r.emoji }));
+    .map((r) => ({ seq: r.seq, id: r.id, from: r.sender, target: r.target, user: namer(r.target)(r.id, r.user), emoji: r.emoji }));
 }
 
 /**
@@ -420,7 +455,8 @@ function receiptsFor(user) {
   const rows = db.prepare(`SELECT * FROM receipts WHERE substr(convo,1,?)=? OR (substr(convo,1,3)='dm:' AND substr(convo,-?)=?)${gk.length ? ` OR convo IN (${gk.map(() => '?').join(',')})` : ''}`)
     .all(pre.length, pre, suf.length, suf, ...gk);
   const me = core.q.user.get(user);
-  return rows.map((r) => {
+  const chans = new Set(core.groupsOf(user).filter((g) => g.kind === 'chan').map((g) => g.gkey));
+  return rows.filter((r) => !chans.has(r.convo) || r.username === user).map((r) => {
     if (!r.convo.startsWith('dm:')) return { convo: r.convo, user: r.username, delivered: r.delivered, seen: r.seen };
     const [a, b] = r.convo.slice(3).split(':');
     // hiding "seen" works both ways in private chats: who hides it does not see it from others either
@@ -441,7 +477,8 @@ function applyReceipt(user, me, it) {
   if (seen === old.seen && delivered === old.delivered) return;
   q.setRcpt.run(user, key, delivered, seen);
   if (tr.type === 'group') {
-    for (const u of core.membersOf(tr.cat.id)) emit(u, 'receipt', { convo: key, user, delivered, seen });
+    // a channel: nobody learns who read what (the 👁 count comes from /views); only the user's own devices
+    for (const u of tr.cat.kind === 'chan' ? [user] : core.membersOf(tr.cat.id)) emit(u, 'receipt', { convo: key, user, delivered, seen });
   } else {
     const peer = core.q.user.get(tr.peer);
     emit(tr.peer, 'receipt', { convo: user, user, delivered, seen: peer && peer.hide_seen ? 0 : seen });
@@ -464,6 +501,7 @@ const okEmoji = (e) => typeof e === 'string' && EMOJI_RE.test(e) && /\p{Extended
 function pushData(m, tr, request) {
   const sender = core.q.user.get(m.sender);
   const who = (sender && sender.display_name) || m.sender;
+  if (tr.type === 'group' && tr.cat.kind === 'chan') return { t: 'msg', convo: tr.cat.gkey, id: m.id, title: tr.cat.name, body: 'پست تازه' };
   return tr.type === 'group'
     ? { t: 'msg', convo: tr.cat.gkey, id: m.id, title: tr.cat.name, body: who + ': پیام تازه' }
     : { t: 'msg', convo: m.sender, id: m.id, title: who, body: request ? 'درخواست پیام تازه' : 'پیام تازه' };
@@ -758,7 +796,7 @@ async function route(req, res) {
     const b = await readJson(req, 1024);
     const tr = resolveTarget(user, String(b.target || '').toLowerCase());
     if (tr.error) return send(res, tr.code, { error: tr.error });
-    if (tr.type === 'group') { for (const u of core.membersOf(tr.cat.id)) if (u !== user) emit(u, 'typing', { convo: tr.cat.gkey, from: user }); }
+    if (tr.type === 'group') { if (tr.cat.kind !== 'chan') for (const u of core.membersOf(tr.cat.id)) if (u !== user) emit(u, 'typing', { convo: tr.cat.gkey, from: user }); }
     else emit(tr.peer, 'typing', { convo: user, from: user });
     return send(res, 200, { ok: true });
   }
@@ -777,7 +815,8 @@ async function route(req, res) {
     const seq = q.maxReact.get().s + 1;
     q.react.run(m.id, user, emoji, seq);
     const ev = { seq, id: m.id, from: m.sender, target: m.target, user, emoji };
-    for (const u of new Set(msgAudience(m))) emit(u, 'react', ev);
+    if (chanOfKey(m.target)) for (const u of new Set(msgAudience(m))) emit(u, 'react', { ...ev, user: reactNamer(u, m.target)(m.id, user) });
+    else for (const u of new Set(msgAudience(m))) emit(u, 'react', ev);
     return send(res, 200, { ok: true, seq });
   }
 
@@ -802,7 +841,7 @@ async function route(req, res) {
 
   if (p === '/api/groups' && req.method === 'GET') {
     const gc = gcall.cfg();
-    return send(res, 200, core.groupsOf(user).map((g) => ({ id: g.id, key: g.gkey, name: g.name, members: core.membersOf(g.id), call: gcall.groupAllowed(g.gkey, gc), ...ugroups.info(user, g) })));
+    return send(res, 200, core.groupsOf(user).map((g) => ({ id: g.id, key: g.gkey, name: g.name, members: ugroups.visibleMembers(user, g), call: gcall.groupAllowed(g.gkey, gc), ...ugroups.info(user, g) })));
   }
 
   // ---- 1.20: groups users make themselves (see ugroups.js) ----
@@ -943,7 +982,9 @@ async function route(req, res) {
     const csParam = url.searchParams.get('csince');
     // rsince: last reaction change the client has seen; -1 = none yet (it only learns the current number)
     const rsParam = url.searchParams.get('rsince');
-    for (const m of replay(user, since)) res.write(`id: ${m.id}\nevent: msg\ndata: ${JSON.stringify(msgJson(m, q.reactsOf.all(m.id)))}\n\n`);
+    const namers = new Map();
+    const namer = (t) => { if (!namers.has(t)) namers.set(t, reactNamer(user, t)); return namers.get(t); };
+    for (const m of replay(user, since)) res.write(`id: ${m.id}\nevent: msg\ndata: ${JSON.stringify(msgJson(m, q.reactsOf.all(m.id), namer(m.target)))}\n\n`);
     if (csParam != null) {
       const cs = Number(csParam);
       if (Number.isInteger(cs) && cs >= 0) for (const c of replayChanges(user, cs, since)) res.write(`event: change\ndata: ${JSON.stringify(c)}\n\n`);
@@ -1003,6 +1044,8 @@ async function route(req, res) {
     }
     if (tr.error) return send(res, tr.code, { error: tr.error });
     if (tr.type === 'group' && !kind.startsWith('sig_') && !ugroups.canWrite(user, tr.cat)) return send(res, 403, { error: tr.cat.frozen ? 'group_frozen' : 'admins_only' });
+    // 1.21: a channel post is sealed with the channel key's current version (older = a removed member could read it)
+    if (tr.type === 'group' && !kind.startsWith('sig_') && !ugroups.postKeyOk(tr.cat, b.payload)) return send(res, 409, { error: 'chan_key_old', kv: tr.cat.ckv });
     if (kind.startsWith('sig_')) { // live-only signalling (typing, calls) — private chats only, never stored
       if (tr.type !== 'dm') return send(res, 400, { error: 'sig_needs_target' });
       const delivered = emit(target, 'sig', { from: user, kind, payload: b.payload });
@@ -1043,6 +1086,7 @@ async function route(req, res) {
       if (typeof b.payload !== 'string' || !b.payload || b.payload.length > 131072) return send(res, 400, { error: 'bad_payload' });
       if (b.prev != null && (typeof b.prev !== 'string' || b.prev.length > 131072)) return send(res, 400, { error: 'bad_payload' });
       if (t - m.ts > EDIT_WINDOW) return send(res, 403, { error: 'edit_window_passed' });
+      if (tr.type === 'group' && !ugroups.postKeyOk(tr.cat, b.payload)) return send(res, 409, { error: 'chan_key_old', kv: tr.cat.ckv });
       q.editMsg.run(b.payload, t, m.id);
       if (b.prev) q.addHist.run(m.id, b.prev, t);
     } else {

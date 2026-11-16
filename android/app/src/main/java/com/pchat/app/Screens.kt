@@ -95,7 +95,7 @@ fun Avatar(name: String, online: Boolean, size: Int = 48) {
             if (b != null) {
                 Image(b, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             } else {
-                val label = if (group) "👥" else Engine.nameOf(name).take(1).uppercase()
+                val label = if (g?.isChan == true) "📢" else if (group) "👥" else Engine.nameOf(name).take(1).uppercase()
                 Text(label, color = Color.White, fontSize = (size * 0.42).sp, fontWeight = FontWeight.Bold)
             }
         }
@@ -359,6 +359,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     // 1.20: groups users make themselves
     val ug by Engine.ugCfg.collectAsState()
     var newGroup by remember { mutableStateOf(false) }
+    var newChan by remember { mutableStateOf(false) }
     var joinGroup by remember { mutableStateOf(false) }
     val incoming by Engine.incomingRequests.collectAsState()
     // 1.19: «گفتگوها» / «تماس‌ها» tabs, and a green 📞 on groups with a running call
@@ -405,7 +406,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(text = { Text("پیام به @نام‌کاربری / افزودن مخاطب") }, onClick = { menu = false; addContact = true })
                         if (ug.on) DropdownMenuItem(text = { Text("👥 گروه تازه" + if (ug.limit > 0) " (${ug.owned} از ${ug.limit})" else "") }, onClick = { menu = false; newGroup = true })
-                        if (ug.on) DropdownMenuItem(text = { Text("🔗 پیوستن با لینک دعوت") }, onClick = { menu = false; joinGroup = true })
+                        if (ug.chanOn) DropdownMenuItem(text = { Text("📢 کانال تازه" + if (ug.limit > 0) " (${ug.owned} از ${ug.limit})" else "") }, onClick = { menu = false; newChan = true })
+                        if (ug.on || ug.chanOn) DropdownMenuItem(text = { Text("🔗 پیوستن با لینک دعوت") }, onClick = { menu = false; joinGroup = true })
                         DropdownMenuItem(text = { Text("درخواست‌ها" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
                         DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
                         DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
@@ -471,7 +473,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                                     Text(draft.replace('\n', ' '), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim)
                                 }
                                 else -> {
-                                    val prev = r.last?.let { (if (group && !it.mine) Engine.nameOf(it.sender) + ": " else if (it.mine) "شما: " else "") + U.preview(it) } ?: "هنوز پیامی نیست"
+                                    val prev = r.last?.let { (if (group && !it.mine && !Engine.isChan(it.convo)) Engine.nameOf(it.sender) + ": " else if (it.mine) "شما: " else "") + U.preview(it) } ?: "هنوز پیامی نیست"
                                     Text(prev, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim, modifier = Modifier.weight(1f))
                                 }
                             }
@@ -544,6 +546,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     )
     if (addContact) AddContactDialog(onClose = { addContact = false }, onOpen = onOpen)
     if (newGroup) NewGroupDialog(onClose = { newGroup = false }, onOpen = onOpen)
+    if (newChan) NewGroupDialog(onClose = { newChan = false }, onOpen = onOpen, chan = true)
     if (joinGroup) JoinGroupDialog(null, onClose = { joinGroup = false }, onOpen = onOpen)
     if (showRequests) RequestsDialog(onClose = { showRequests = false }, onOpen = onOpen)
 }

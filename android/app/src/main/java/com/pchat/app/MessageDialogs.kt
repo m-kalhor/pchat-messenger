@@ -142,7 +142,7 @@ fun ReactorsDialog(m: Msg, onClose: () -> Unit, onRemoveMine: () -> Unit) {
                     Row(Modifier.fillMaxWidth().padding(vertical = 5.dp), verticalAlignment = Alignment.CenterVertically) {
                         Avatar(u, false, 34)
                         Spacer(Modifier.width(10.dp))
-                        Text(if (u == Engine.me) "شما" else Engine.nameOf(u), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (u == Engine.me) "شما" else if (u.startsWith("~")) "یکی از اعضا" else Engine.nameOf(u), modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(e, fontSize = 22.sp)
                     }
                 }

@@ -34,6 +34,28 @@ test('Android -> web: group message decrypts in the browser; tampering is reject
   await assert.rejects(C.decryptFrom(web, 'sara', 'reza', 'g:3', phone.pubB64, payload), /not addressed/);
 });
 
+test('1.21 channel key: sealed on the web, opened by Android, and posts both ways', async () => {
+  const C = await W();
+  const web = await C.newIdentity(), phone = N.newIdentity();
+  const raw = C.newChanKey();
+  const w = await C.sealChanKey(web, 'mina', 'reza', phone.pubB64, 'g:9', 2, raw);
+  const got = N.openChanKey(phone, 'reza', 'mina', web.pubB64, 'g:9', 2, w);
+  assert.deepEqual(new Uint8Array(got), raw);
+  assert.throws(() => N.openChanKey(phone, 'reza', 'mina', web.pubB64, 'g:9', 3, w), 'the version is bound into the AAD');
+  // the maker's own copy
+  const self = await C.sealChanKey(web, 'mina', 'mina', null, 'g:9', 2, raw);
+  assert.deepEqual(await C.openChanKey(web, 'mina', 'mina', null, 'g:9', 2, self), raw);
+  // Android seals for the web
+  const w2 = N.sealChanKey(phone, 'reza', 'mina', web.pubB64, 'g:9', 2, Buffer.from(raw));
+  assert.deepEqual(await C.openChanKey(web, 'mina', 'reza', phone.pubB64, 'g:9', 2, w2), raw);
+  const post = await C.chanEncrypt(raw, 2, 'reza', 'g:9', '{"t":"text","x":"خبر"}');
+  assert.equal(C.chanVersion(post), 2);
+  assert.equal(N.chanDecrypt(Buffer.from(raw), 'reza', 'g:9', post).toString(), '{"t":"text","x":"خبر"}');
+  assert.throws(() => N.chanDecrypt(Buffer.from(raw), 'mina', 'g:9', post), 'the sender is bound into the AAD');
+  const back = N.chanEncrypt(Buffer.from(raw), 2, 'reza', 'g:9', 'پست');
+  assert.equal(td.decode(await C.chanDecrypt(raw, 'reza', 'g:9', back)), 'پست');
+});
+
 test('fingerprint matches the Android format', async () => {
   const C = await W();
   const id = N.newIdentity();

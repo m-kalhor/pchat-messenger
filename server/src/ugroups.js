@@ -13,12 +13,17 @@
  * Members are added directly only from the adder's own connections (never across a ⛔ of the admin matrix);
  * anyone else joins with the invite link. Somebody who was removed comes back only when an admin adds them.
  * The admin panel can freeze a group (nobody writes), hand it over, remove members or delete it.
+ *
+ * 1.21: channels are the same with kind='chan': only the owner and admins post, members do not see each other
+ * (they are not "mates" and get only the owner/admins as the member list), no group calls, and posts are
+ * sealed with a shared channel key (see chanKeys below) so a post does not grow with the member count and new
+ * members can read older posts. Removing somebody moves the channel to a new key version.
  */
 const crypto = require('node:crypto');
 const { db, getSetting, setSetting } = require('./db');
 const core = require('./core');
 
-const DEFAULTS = { on: false, limit: 3, max_members: 200, calls: true };
+const DEFAULTS = { on: false, limit: 3, max_members: 200, calls: true, chan_on: false, chan_max: 1000 };
 
 function int(key, def, min, max) {
   const n = Number(getSetting(key, String(def)));
@@ -30,6 +35,8 @@ function cfg() {
     limit: int('ugroups_limit', DEFAULTS.limit, 0, 50),
     max_members: int('ugroups_max_members', DEFAULTS.max_members, 2, 1000),
     calls: getSetting('ugroups_calls', DEFAULTS.calls ? '1' : '0') === '1',
+    chan_on: getSetting('chans_on', DEFAULTS.chan_on ? '1' : '0') === '1',
+    chan_max: int('chans_max_members', DEFAULTS.chan_max, 2, 5000),
   };
 }
 /** Saves the fields present in b (admin panel); throws Error('bad_ugroup_settings'). */
@@ -42,13 +49,15 @@ function setCfg(b) {
   if (b.calls !== undefined) bool('ugroups_calls', b.calls);
   if (b.limit !== undefined) num('ugroups_limit', b.limit, 0, 50);
   if (b.max_members !== undefined) num('ugroups_max_members', b.max_members, 2, 1000);
+  if (b.chan_on !== undefined) bool('chans_on', b.chan_on);
+  if (b.chan_max !== undefined) num('chans_max_members', b.chan_max, 2, 5000);
   for (const [k, v] of out) setSetting(k, v);
   return cfg();
 }
 
 const q = {
   cat: db.prepare('SELECT * FROM categories WHERE id=?'),
-  owned: db.prepare("SELECT COUNT(*) AS n FROM categories WHERE kind='user' AND owner=?"),
+  owned: db.prepare("SELECT COUNT(*) AS n FROM categories WHERE kind IN ('user','chan') AND owner=?"),
   role: db.prepare('SELECT role FROM user_categories WHERE username=? AND category_id=?'),
   count: db.prepare('SELECT COUNT(*) AS n FROM user_categories uc JOIN users u ON u.username=uc.username WHERE uc.category_id=? AND u.disabled=0'),
   add: db.prepare("INSERT OR IGNORE INTO user_categories(username,category_id,role,joined,via) VALUES(?,?,?,?,?)"),
@@ -59,13 +68,16 @@ const q = {
   ban: db.prepare('INSERT OR IGNORE INTO group_bans(category_id,username,ts) VALUES(?,?,?)'),
   unban: db.prepare('DELETE FROM group_bans WHERE category_id=? AND username=?'),
   banned: db.prepare('SELECT 1 FROM group_bans WHERE category_id=? AND username=?'),
-  byInvite: db.prepare("SELECT * FROM categories WHERE invite=? AND kind='user'"),
-  ownedBy: db.prepare("SELECT id FROM categories WHERE kind='user' AND owner=?"),
+  byInvite: db.prepare("SELECT * FROM categories WHERE invite=? AND kind IN ('user','chan')"),
+  ownedBy: db.prepare("SELECT id FROM categories WHERE kind IN ('user','chan') AND owner=?"),
   userLimit: db.prepare('SELECT ugroup_limit FROM users WHERE username=?'),
 };
 
 const err = (code, msg) => Object.assign(new Error(msg), { code });
-const isUser = (g) => !!g && g.kind === 'user';
+/** A group or channel a user made (not one of the admin's categories). */
+const isUser = (g) => !!g && (g.kind === 'user' || g.kind === 'chan');
+const isChan = (g) => !!g && g.kind === 'chan';
+const maxOf = (g) => (isChan(g) ? cfg().chan_max : cfg().max_members);
 const roleOf = (user, id) => { const r = q.role.get(user, id); return r ? r.role : null; };
 const canManage = (user, g) => { const r = roleOf(user, g.id); return r === 'owner' || r === 'admin'; };
 const newToken = () => crypto.randomBytes(12).toString('base64url');
@@ -105,7 +117,7 @@ function addable(by, who) {
 
 function list(user, names, g, via) {
   const out = [];
-  const max = cfg().max_members;
+  const max = maxOf(g);
   let n = q.count.get(g.id).n;
   for (const raw of names) {
     const u = String(raw || '').toLowerCase();
@@ -121,17 +133,18 @@ function list(user, names, g, via) {
 
 function create(user, b) {
   const c = cfg();
-  if (!c.on) throw err(403, 'ugroups_off');
+  const chan = b.kind === 'chan';
+  if (!(chan ? c.chan_on : c.on)) throw err(403, chan ? 'chans_off' : 'ugroups_off');
   if (ownedCount(user) >= limitOf(user)) throw err(403, 'group_limit');
   const name = core.cleanDisplay(b.name);
   if (!name) throw err(400, 'bad_name');
   const members = [...new Set((Array.isArray(b.members) ? b.members : []).map((x) => String(x).toLowerCase()))].filter((u) => u !== user);
-  if (members.length + 1 > c.max_members) throw err(400, 'group_full');
+  if (members.length + 1 > (chan ? c.chan_max : c.max_members)) throw err(400, 'group_full');
   for (const u of members) if (!addable(user, u)) throw Object.assign(err(403, 'cannot_add'), { detail: u });
   db.exec('BEGIN');
   try {
-    const r = db.prepare("INSERT INTO categories(name,gkey,kind,owner,created,about) VALUES(?, ?, 'user', ?, ?, ?)")
-      .run(name, 'tmp:' + newToken(), user, Date.now(), cleanAbout(b.about) || null);
+    const r = db.prepare('INSERT INTO categories(name,gkey,kind,owner,created,about,ckv,sign) VALUES(?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(name, 'tmp:' + newToken(), chan ? 'chan' : 'user', user, Date.now(), cleanAbout(b.about) || null, chan ? 1 : 0, chan && b.sign ? 1 : 0);
     const id = Number(r.lastInsertRowid);
     db.prepare('UPDATE categories SET gkey=? WHERE id=?').run('g:' + id, id);
     q.add.run(user, id, 'owner', Date.now(), 'created');
@@ -154,6 +167,7 @@ function edit(user, id, b) {
   const own = roleOf(user, g.id) === 'owner';
   if (b.admins_only !== undefined) { if (!own) throw err(403, 'not_group_owner'); db.prepare('UPDATE categories SET admins_only=? WHERE id=?').run(b.admins_only ? 1 : 0, g.id); }
   if (b.call_on !== undefined) { if (!own) throw err(403, 'not_group_owner'); db.prepare('UPDATE categories SET call_on=? WHERE id=?').run(b.call_on ? 1 : 0, g.id); }
+  if (b.sign !== undefined) { if (!own) throw err(403, 'not_group_owner'); db.prepare('UPDATE categories SET sign=? WHERE id=?').run(b.sign ? 1 : 0, g.id); }
   return q.cat.get(g.id);
 }
 
@@ -172,7 +186,15 @@ function remove(user, id, who) {
   if (r === 'admin' && roleOf(user, g.id) !== 'owner') throw err(403, 'not_group_owner');
   q.remove.run(who, g.id);
   q.ban.run(g.id, who, Date.now());
+  memberGone(g, who, true);
   return g;
+}
+
+/** 1.21: somebody left a channel (rotate = they were removed: later posts get a new key they never see). */
+function memberGone(g, who, rotate) {
+  if (!isChan(g)) return;
+  db.prepare('DELETE FROM chan_keys WHERE category_id=? AND username=?').run(g.id, who);
+  if (rotate) db.prepare('UPDATE categories SET ckv=ckv+1 WHERE id=?').run(g.id);
 }
 
 function setRole(user, id, who, role) {
@@ -217,6 +239,7 @@ function leave(user, id) {
   const g = mine(user, id);
   const r = roleOf(user, g.id);
   q.remove.run(user, g.id);
+  memberGone(g, user, false);
   if (r === 'owner') ownerGone(g, user);
   if (!q.count.get(g.id).n) dropGroup(g.id);
   return g;
@@ -235,6 +258,7 @@ function dropGroup(id) {
     db.prepare('DELETE FROM receipts WHERE convo=?').run(g.gkey);
     db.prepare('DELETE FROM user_categories WHERE category_id=?').run(g.id);
     db.prepare('DELETE FROM group_bans WHERE category_id=?').run(g.id);
+    db.prepare('DELETE FROM chan_keys WHERE category_id=?').run(g.id);
     db.prepare('DELETE FROM categories WHERE id=?').run(g.id);
     db.exec('COMMIT');
   } catch (e) { db.exec('ROLLBACK'); throw e; }
@@ -256,14 +280,15 @@ function preview(user, token) {
   if (!TOKEN.test(String(token || ''))) throw err(404, 'bad_invite');
   const g = q.byInvite.get(String(token));
   if (!g || g.frozen) throw err(404, 'bad_invite');
-  return { id: g.id, key: g.gkey, name: g.name, about: g.about || '', count: q.count.get(g.id).n, avatar_ver: g.avatar_ver, member: !!roleOf(user, g.id) };
+  return { id: g.id, key: g.gkey, name: g.name, about: g.about || '', count: q.count.get(g.id).n, avatar_ver: g.avatar_ver, member: !!roleOf(user, g.id), kind: g.kind };
 }
 function join(user, token) {
-  if (!cfg().on) throw err(403, 'ugroups_off');
   const p = preview(user, token);
-  if (p.member) return q.cat.get(p.id);
+  const g = q.cat.get(p.id);
+  if (!(isChan(g) ? cfg().chan_on : cfg().on)) throw err(403, isChan(g) ? 'chans_off' : 'ugroups_off');
+  if (p.member) return g;
   if (q.banned.get(p.id, user)) throw err(403, 'removed_from_group');
-  if (p.count >= cfg().max_members) throw err(400, 'group_full');
+  if (p.count >= maxOf(g)) throw err(400, 'group_full');
   q.add.run(user, p.id, 'member', Date.now(), 'link');
   return q.cat.get(p.id);
 }
@@ -272,7 +297,7 @@ function join(user, token) {
 function canWrite(user, cat) {
   if (!isUser(cat)) return true;
   if (cat.frozen) return false;
-  if (!cat.admins_only) return true;
+  if (!cat.admins_only && !isChan(cat)) return true;
   return canManage(user, cat);
 }
 
@@ -283,11 +308,119 @@ function info(user, g) {
   const rows = q.roles.all(g.id);
   const manage = role === 'owner' || role === 'admin';
   return {
-    kind: 'user', role, owner: g.owner, about: g.about || '', avatar_ver: g.avatar_ver,
+    kind: g.kind, role, owner: g.owner, about: g.about || '', avatar_ver: g.avatar_ver,
     admins: rows.filter((r) => r.role === 'admin' || r.role === 'owner').map((r) => r.username),
-    admins_only: !!g.admins_only, frozen: !!g.frozen, call_on: !!g.call_on,
+    admins_only: isChan(g) || !!g.admins_only, frozen: !!g.frozen, call_on: !isChan(g) && !!g.call_on,
     invite: manage ? g.invite || null : null,
+    ...(isChan(g) ? { ckv: g.ckv, sign: !!g.sign, count: rows.length } : {}),
   };
+}
+
+/**
+ * Who of the group the user may see: everybody in a group; in a channel the owner and admins see everybody,
+ * members only the owner and admins (the people who post).
+ */
+function visibleMembers(user, g) {
+  const all = core.membersOf(g.id);
+  if (!isChan(g) || canManage(user, g)) return all;
+  const adm = new Set(q.roles.all(g.id).filter((r) => r.role === 'admin' || r.role === 'owner').map((r) => r.username));
+  return all.filter((u) => adm.has(u));
+}
+/** Who should reload their lists when the group changes (a channel: only its owner and admins, plus extra). */
+function audienceOf(g) {
+  if (!isChan(g)) return core.membersOf(g.id);
+  return q.roles.all(g.id).filter((r) => r.role === 'admin' || r.role === 'owner').map((r) => r.username);
+}
+
+// ---- 1.21: the shared channel key ----
+// Version v of a channel's key is made by the first owner/admin device that needs it (claim: nobody has a
+// copy of v yet) and sealed for each member with ECDH(that device, member) like a message key. Other admins
+// who hold v seal it for members who join later. The server checks who may store what, never the key.
+const ck = {
+  mine: db.prepare('SELECT kv, wrapped, by_user, by_pub, for_pub FROM chan_keys WHERE category_id=? AND username=? ORDER BY kv'),
+  any: db.prepare('SELECT 1 FROM chan_keys WHERE category_id=? AND kv=? LIMIT 1'),
+  has: db.prepare('SELECT for_pub FROM chan_keys WHERE category_id=? AND kv=? AND username=?'),
+  kvs: db.prepare('SELECT DISTINCT kv FROM chan_keys WHERE category_id=? ORDER BY kv'),
+  put: db.prepare('INSERT OR REPLACE INTO chan_keys(category_id,kv,username,wrapped,by_user,by_pub,for_pub,ts) VALUES(?,?,?,?,?,?,?,?)'),
+  members: db.prepare('SELECT u.username, u.pubkey FROM user_categories uc JOIN users u ON u.username=uc.username WHERE uc.category_id=? AND u.disabled=0 AND u.pubkey IS NOT NULL'),
+  sealed: db.prepare('SELECT username, for_pub FROM chan_keys WHERE category_id=? AND kv=?'),
+};
+const WRAP = /^[A-Za-z0-9+/]{40,200}={0,2}$/;
+
+function chanOf(user, id) {
+  const g = mine(user, id);
+  if (!isChan(g)) throw err(404, 'no_such_group');
+  return g;
+}
+/**
+ * The user's copies of the channel key (every version), and for an owner/admin the members still waiting
+ * for versions this admin holds (`pending`, at most 300 people a call) and whether the current version
+ * still has to be made (`claim`).
+ */
+function chanKeys(user, id) {
+  const g = chanOf(user, id);
+  const keys = ck.mine.all(g.id, user);
+  const out = { kv: g.ckv, keys };
+  if (!canManage(user, g) || g.frozen) return out;
+  out.claim = !ck.any.get(g.id, g.ckv);
+  const held = keys.map((k) => k.kv);
+  const pending = new Map();
+  const members = ck.members.all(g.id);
+  // making a new version: everybody it must be sealed for
+  if (out.claim) out.members = members.map((m) => ({ u: m.username, pub: m.pubkey }));
+  for (const kv of held) {
+    const done = new Map(ck.sealed.all(g.id, kv).map((r) => [r.username, r.for_pub]));
+    for (const m of members) {
+      if (done.get(m.username) === m.pubkey) continue;
+      let e = pending.get(m.username);
+      if (!e) { if (pending.size >= 300) continue; pending.set(m.username, (e = { u: m.username, pub: m.pubkey, kvs: [] })); }
+      e.kvs.push(kv);
+    }
+  }
+  out.pending = [...pending.values()];
+  return out;
+}
+/** Stores sealed copies: b = { kv, by_pub, wraps: [{ u, w, for_pub }] }. Returns the users who got a copy. */
+function putChanKeys(user, id, b) {
+  const g = managed(user, id);
+  if (!isChan(g)) throw err(404, 'no_such_group');
+  const kv = Number(b.kv);
+  if (!Number.isInteger(kv) || kv < 1 || kv > g.ckv) throw err(400, 'bad_key_version');
+  const me = core.q.user.get(user);
+  if (!me.pubkey || b.by_pub !== me.pubkey) throw err(409, 'key_changed');
+  const wraps = Array.isArray(b.wraps) ? b.wraps.slice(0, 1000) : [];
+  const claim = !ck.any.get(g.id, kv);
+  if (claim) {
+    // a new version: only the current one, and the maker keeps a copy for themselves
+    if (kv !== g.ckv) throw err(400, 'bad_key_version');
+    if (!wraps.some((x) => x && x.u === user)) throw err(400, 'bad_keys');
+  } else if (!ck.has.get(g.id, kv, user)) throw err(409, 'key_taken');
+  const pubs = new Map(ck.members.all(g.id).map((r) => [r.username, r.pubkey]));
+  const t = Date.now();
+  const got = [];
+  db.exec('BEGIN');
+  try {
+    if (claim && ck.any.get(g.id, kv)) throw err(409, 'key_taken');
+    for (const x of wraps) {
+      if (!x || typeof x.w !== 'string' || !WRAP.test(x.w)) throw err(400, 'bad_keys');
+      const u = String(x.u || '');
+      if (!pubs.has(u) || pubs.get(u) !== x.for_pub) continue; // left, or changed key meanwhile: asked again later
+      ck.put.run(g.id, kv, u, x.w, user, me.pubkey, x.for_pub, t);
+      got.push(u);
+    }
+    db.exec('COMMIT');
+  } catch (e) { db.exec('ROLLBACK'); throw e; }
+  return { g, got };
+}
+/** A channel post must be sealed with the current key version (so a removed member cannot read it). */
+function postKeyOk(g, payload) {
+  if (!isChan(g)) return true;
+  try { const o = JSON.parse(payload); return o && o.v === 2 && o.kv === g.ckv && typeof o.c === 'string'; } catch { return false; }
+}
+/** How far each member has read (no names), for the 👁 count under posts. */
+function chanViews(user, id) {
+  const g = chanOf(user, id);
+  return db.prepare('SELECT seen FROM receipts WHERE convo=? AND seen>0 ORDER BY seen').all(g.gkey).map((r) => r.seen);
 }
 
 /** Groups the user owns (deleted account): hand each to the oldest admin or freeze it. */
@@ -305,10 +438,11 @@ function adminList() {
       (SELECT COUNT(*) FROM messages WHERE target=c.gkey) AS msgs,
       (SELECT COALESCE(SUM(f.size),0) FROM files f WHERE f.id IN (SELECT file_id FROM messages WHERE target=c.gkey AND file_id IS NOT NULL)) AS bytes,
       (SELECT MAX(ts) FROM messages WHERE target=c.gkey) AS last
-    FROM categories c WHERE c.kind='user' ORDER BY c.id`).all();
+    FROM categories c WHERE c.kind IN ('user','chan') ORDER BY c.id`).all();
   return rows.map((g) => ({
-    id: g.id, key: g.gkey, name: g.name, about: g.about || '', owner: g.owner, created: g.created, count: g.count, msgs: g.msgs,
+    id: g.id, key: g.gkey, kind: g.kind, name: g.name, about: g.about || '', owner: g.owner, created: g.created, count: g.count, msgs: g.msgs,
     bytes: g.bytes, last: g.last, frozen: !!g.frozen, admins_only: !!g.admins_only, call_on: !!g.call_on, invite: !!g.invite,
+    ...(g.kind === 'chan' ? { ckv: g.ckv, sign: !!g.sign } : {}),
   }));
 }
 function adminMembers(id) {
@@ -335,7 +469,7 @@ function adminRemove(id, who, ban) {
   if (!isUser(g)) throw err(404, 'no_such_group');
   who = String(who || '').toLowerCase();
   const r = roleOf(who, g.id);
-  if (r) { q.remove.run(who, g.id); if (r === 'owner') ownerGone(g, who); }
+  if (r) { q.remove.run(who, g.id); memberGone(g, who, ban !== false); if (r === 'owner') ownerGone(g, who); }
   if (ban === false) q.unban.run(g.id, who); else if (r) q.ban.run(g.id, who, Date.now());
   return g;
 }
@@ -363,12 +497,13 @@ function setUserLimit(user, v) {
   db.prepare('UPDATE users SET ugroup_limit=? WHERE username=?').run(n, user);
 }
 function userLimits() {
-  const own = new Map(db.prepare("SELECT owner, COUNT(*) AS n FROM categories WHERE kind='user' AND owner IS NOT NULL GROUP BY owner").all().map((r) => [r.owner, r.n]));
+  const own = new Map(db.prepare("SELECT owner, COUNT(*) AS n FROM categories WHERE kind IN ('user','chan') AND owner IS NOT NULL GROUP BY owner").all().map((r) => [r.owner, r.n]));
   return db.prepare('SELECT username, ugroup_limit FROM users').all().map((r) => ({ username: r.username, owned: own.get(r.username) || 0, limit: r.ugroup_limit }));
 }
 
 module.exports = {
-  DEFAULTS, cfg, setCfg, limitOf, ownedCount, roleOf, canManage, isUser, canWrite, info,
+  DEFAULTS, cfg, setCfg, limitOf, ownedCount, roleOf, canManage, isUser, isChan, canWrite, info, visibleMembers, audienceOf,
+  chanKeys, putChanKeys, postKeyOk, chanViews,
   create, edit, add, remove, setRole, transfer, leave, del, dropGroup, invite, preview, join, userDeleted, mine, managed, owned,
   adminList, adminMembers, adminAdd, adminRemove, adminRole, adminFreeze, setUserLimit, userLimits,
 };

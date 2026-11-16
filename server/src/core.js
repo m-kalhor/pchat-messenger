@@ -18,7 +18,8 @@ const q = {
   cut: db.prepare('SELECT 1 FROM disconnects WHERE a=? AND b=?'),
   reqIn: db.prepare('SELECT from_user AS u, status FROM contact_requests WHERE to_user=?'),
   reqOut: db.prepare('SELECT to_user AS u, status FROM contact_requests WHERE from_user=?'),
-  mates: db.prepare('SELECT DISTINCT b.username AS u FROM user_categories a JOIN user_categories b ON a.category_id=b.category_id WHERE a.username=? AND b.username<>?'),
+  // 1.21: members of a channel do not see each other
+  mates: db.prepare("SELECT DISTINCT b.username AS u FROM user_categories a JOIN user_categories b ON a.category_id=b.category_id JOIN categories c ON c.id=a.category_id WHERE a.username=? AND b.username<>? AND c.kind<>'chan'"),
 };
 
 const activeUser = (name) => { const u = q.user.get(name); return u && !u.disabled ? u : null; };

@@ -225,6 +225,34 @@ object Crypto {
         return JSONObject().put("v", 1).put("c", b64(seal(k, plain, aad))).put("k", keys).toString()
     }
 
+    // ---------------- 1.21: channels (same format as server/src/web/crypto.mjs) ----------------
+    // Version kv of a channel key is sealed for each member with ECDH(sealer, member), AAD "sepan-ck|<channel>|<kv>|<member>".
+    // A post is {v:2, kv, c: AES-GCM(channel key, plaintext, AAD "<sender>|<target>")}.
+    fun newChanKey(): ByteArray = randomBytes(32)
+    private fun ckAad(gkey: String, kv: Int, member: String) = "sepan-ck|$gkey|$kv|$member".toByteArray()
+
+    fun sealChanKey(my: Identity, me: String, member: String, memberPub: String?, gkey: String, kv: Int, raw: ByteArray): String {
+        val sk = if (member == me) pairKey(my, my.pubB64, me, me) else pairKey(my, memberPub!!, me, member)
+        return b64(seal(sk, raw, ckAad(gkey, kv, member)))
+    }
+
+    fun openChanKey(my: Identity, me: String, byUser: String, byPub: String, gkey: String, kv: Int, wrapped: String): ByteArray {
+        val sk = if (byUser == me) pairKey(my, my.pubB64, me, me) else pairKey(my, byPub, byUser, me)
+        return open(sk, unb64(wrapped), ckAad(gkey, kv, me))
+    }
+
+    fun chanEncrypt(raw: ByteArray, kv: Int, sender: String, target: String, plain: ByteArray): String =
+        JSONObject().put("v", 2).put("kv", kv).put("c", b64(seal(SecretKeySpec(raw, "AES"), plain, "$sender|$target".toByteArray()))).toString()
+
+    /** The key version a channel post was sealed with (0 = not a channel post). */
+    fun chanVersion(payload: String): Int = try {
+        val o = JSONObject(payload)
+        if (o.optInt("v") == 2 && o.has("kv")) o.getInt("kv") else 0
+    } catch (e: Exception) { 0 }
+
+    fun chanDecrypt(raw: ByteArray, sender: String, target: String, payload: String): ByteArray =
+        open(SecretKeySpec(raw, "AES"), unb64(JSONObject(payload).getString("c")), "$sender|$target".toByteArray())
+
     fun decryptFrom(my: Identity, me: String, sender: String, target: String, senderPub: String?, payload: String): ByteArray {
         val o = JSONObject(payload)
         val wrapped = o.getJSONObject("k").optString(me, "")

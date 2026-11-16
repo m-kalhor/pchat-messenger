@@ -67,6 +67,12 @@
 - کد: `server/src/ugroups.js`؛ API: `GET /api/ugroups`، `POST /api/ugroups/create`، `GET|POST /api/ugroups/join/<token>`، `GET /api/ugroups/<id>`، `POST /api/ugroups/<id>/{edit,add,remove,role,transfer,invite,leave,delete}`، `POST|DELETE /api/ugroups/<id>/avatar`، `GET /api/ugroups/<id>/qr`، `GET /api/gavatar/<id>`. پنل: `/admin/api/ugroups…`.
 - سقف ساخت (تنظیم `ugroups_limit`، ستون `users.ugroup_limit` برای هر کاربر) فقط گروه‌هایی را می‌شمارد که کاربر الان مالک آن‌هاست.
 
+## کانال‌ها (۱.۲۱)
+- ردیف `categories` با `kind='chan'`؛ ستون‌های تازه `ckv` (نسخهٔ فعلی کلید) و `sign`. جدول `chan_keys(category_id, kv, username, wrapped, by_user, by_pub, for_pub)` نسخهٔ قفل‌شدهٔ کلید هر عضو را نگه می‌دارد.
+- کلید کانال ۳۲ بایت تصادفی (AES-GCM) است و برای هر عضو با کلید ECDH جفتی قفل می‌شود (AAD: `sepan-ck|<gkey>|<kv>|<member>`). پست: `{v:2, kv, c}` با AAD `<sender>|<target>`. اولین مدیری که نسخهٔ بی‌کلید را بگیرد آن را «ادعا» می‌کند و برای همه قفل می‌کند؛ بعد هر مدیر برای اعضای بی‌کلید (`pending`) قفل می‌کند. بیرون کردن عضو `ckv` را یکی بالا می‌برد؛ ارسال با نسخهٔ قدیمی `409 chan_key_old` می‌گیرد.
+- API: `GET|POST /api/ugroups/<id>/keys`، `GET /api/ugroups/<id>/views` (فهرست بی‌نام آخرین پیام دیدهٔ هر عضو)، `GET /api/ugroups/<id>/posts?before=` (۱۰۰ تایی). رسیدها فقط به دستگاه‌های خود خواننده می‌روند؛ واکنش‌ها برای غیرمدیر با HMAC بی‌نام می‌شوند؛ تایپ و تماس در کانال نیست؛ اعضای کانال «هم‌گروه» حساب نمی‌شوند.
+- تنظیمات: `chans_on` (پیش‌فرض خاموش)، `chans_max_members` (پیش‌فرض ۱۰۰۰).
+
 ## پنل مدیریت
 پورت جدا (۸۴۴۴)، رابط فارسی راست‌به‌چپ، CSRF، کوکی HttpOnly/SameSite=Strict/Secure، سیاست CSP سخت‌گیرانه، محدودیت تلاش ورود (۵ شکست برای هر IP ← ۱۰ دقیقه مسدودی)، و `ufw limit 8444/tcp`.
 
