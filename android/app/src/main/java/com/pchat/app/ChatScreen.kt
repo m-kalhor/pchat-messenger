@@ -461,6 +461,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         // 1.19: group voice call (the admin turns it on per group in the panel)
                         if (isGroup && gcfg.on && groups.firstOrNull { it.key == convo }?.call == true) {
                             IconButton(onClick = { gcalls.groupCall(convo) }) { Icon(Icons.Default.Call, contentDescription = "تماس گروهی") }
+                            // 1.23: group video call (the admin turns it on in the panel)
+                            if (gcfg.video) IconButton(onClick = { gcalls.groupCall(convo, true) }) { Text("📹", fontSize = 20.sp) }
                         }
                         if (!isGroup) {
                             IconButton(onClick = { startCall(convo, false) }) { Icon(Icons.Default.Call, contentDescription = "تماس صوتی") }

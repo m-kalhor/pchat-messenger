@@ -216,5 +216,47 @@ test('admin settings: off, the group «همه», groups turned off, limits; /api
   assert.equal((await call('m0', 'start', { group: 'g:' + big })).status, 429, 'one call at a time');
   await call('ali', 'leave', { id: r1.data.room.id });
   await adm('POST', '/auth', { gcall: { max_rooms: 5, all: false } });
-  assert.equal((await call('ali', 'start', { users: ['bob'], video: true })).status, 403, 'video group calls come later');
+  assert.equal((await call('ali', 'start', { users: ['bob'], video: true })).status, 403, 'video is off until the admin turns it on');
+});
+
+test('1.23 video: cameras on and off, at most max_video at once, a video call rings as one', async () => {
+  const r0 = await call('ali', 'start', { group: gkey() });
+  assert.equal((await call('ali', 'act', { id: r0.data.room.id, cam: true })).status, 403, 'video off');
+  await call('ali', 'leave', { id: r0.data.room.id });
+
+  await adm('POST', '/auth', { gcall: { video: true, max_video: 2 } });
+  assert.equal((await adm('POST', '/auth', { gcall: { max_video: 5 } })).status, 400);
+  const me = (await S.api(T.ali, 'GET', '/api/me')).data.gcall;
+  assert.deepEqual({ video: me.video, max_video: me.max_video }, { video: true, max_video: 2 });
+
+  const L = await listen(T.bob);
+  const r = await call('ali', 'start', { group: gkey(), video: true });
+  assert.equal(r.status, 200, JSON.stringify(r.data));
+  const id = r.data.room.id;
+  assert.equal(r.data.room.video, true);
+  assert.equal(r.data.room.max, 8, 'a video call still takes up to max_voice people');
+  assert.equal(r.data.room.max_cam, 2);
+  assert.equal(r.data.room.parts[0].cam, true, 'the starter of a video call has the camera on');
+  await wait();
+  const ringing = L.of('gcall').find((e) => e.data.ring);
+  assert.ok(ringing && ringing.data.room.video, 'rings as a video call');
+  L.stop();
+
+  let j = await call('bob', 'join', { id, cam: true });
+  assert.equal(j.data.room.parts.find((p) => p.u === 'bob').cam, true);
+  j = await call('cy', 'join', { id, cam: true });
+  assert.equal(j.status, 200, 'joins anyway');
+  assert.equal(j.data.room.parts.find((p) => p.u === 'cy').cam, false, 'no camera slot left: voice only');
+  assert.equal((await call('cy', 'act', { id, cam: true })).status, 409);
+  assert.equal((await call('cy', 'act', { id, cam: true })).data.error, 'gcall_video_full');
+  // bob turns his camera off: now cy may
+  assert.equal((await call('bob', 'act', { id, cam: false })).data.room.parts.find((p) => p.u === 'bob').cam, false);
+  const c = await call('cy', 'act', { id, cam: true });
+  assert.equal(c.status, 200);
+  assert.deepEqual(c.data.room.parts.filter((p) => p.cam).map((p) => p.u).sort(), ['ali', 'cy']);
+  // leaving frees the slot
+  await call('ali', 'leave', { id });
+  assert.equal((await call('bob', 'act', { id, cam: true })).status, 200);
+  for (const n of ['bob', 'cy']) await call(n, 'leave', { id });
+  await adm('POST', '/auth', { gcall: { video: false, max_video: 4 } });
 });

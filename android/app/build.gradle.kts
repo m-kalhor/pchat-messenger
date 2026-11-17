@@ -31,8 +31,8 @@ android {
         applicationId = "com.pchat.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 30
-        versionName = "1.22.2"
+        versionCode = 31
+        versionName = "1.23.0"
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "SERVER_PORT", "$serverPort")
