@@ -179,6 +179,7 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .dialog { background: var(--bg); width: calc(100% - 32px); max-width: 420px; border-radius: 16px; padding: 18px; margin: auto; }
 .dialog h3 { margin: 0 0 8px; }
 .dialog p { margin: 0 0 14px; color: var(--fg2); font-size: 15px; }
+.dialog ul.notes { margin: 0 0 14px; padding-inline-start: 20px; color: var(--fg); font-size: 15px; line-height: 1.7; }
 .dialog .btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .viewer { position: fixed; inset: 0; background: #000; z-index: 30; display: flex; flex-direction: column; }
 .viewer img { flex: 1; min-height: 0; object-fit: contain; width: 100%; }

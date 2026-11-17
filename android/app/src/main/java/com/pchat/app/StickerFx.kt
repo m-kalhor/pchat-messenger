@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -44,7 +45,10 @@ object StickerFx {
     private val places = HashMap<Long, Pair<Long, Rect>>() // message id -> (its time, where it is on screen)
 
     fun start(stkId: String, msgId: Long, mine: Boolean) {
-        if (flying.value != null) return
+        // 1.22.1: an effect never blocks the next one for long (one cut off by leaving the chat used to stay "flying"
+        // forever, so no effect played again until the app was restarted)
+        val cur = flying.value
+        if (cur != null && System.currentTimeMillis() - cur.since < 4_000) return
         synchronized(places) { places.clear() }
         flying.value = Fly(stkId, msgId, mine)
     }
@@ -57,7 +61,8 @@ object StickerFx {
     /** Where the flying sticker lands: the newest matching copy that is on screen. */
     fun target(): Rect? = synchronized(places) { places.values.maxByOrNull { it.first }?.second }
 
-    fun done() { flying.value = null }
+    /** Ends f (and only f: a newer effect that started meanwhile keeps playing). */
+    fun done(f: Fly) { flying.compareAndSet(f, null) }
 }
 
 @Composable
@@ -74,7 +79,9 @@ fun StickerFxOverlay() {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         val side = min(min(maxWidth * 0.78f, maxHeight * 0.62f), 440.dp)
         val sidePx = with(density) { side.toPx() }
+        DisposableEffect(f) { onDispose { StickerFx.done(f) } } // the chat closed mid-way
         LaunchedEffect(f) {
+          try {
             // up: from small to a little bigger than full, then settle
             launch { veil.animateTo(1f, tween(250)) }
             launch { alpha.animateTo(1f, tween(200)) }
@@ -95,7 +102,7 @@ fun StickerFxOverlay() {
             )
             launch { veil.animateTo(0f, tween(480)) }
             jobs.forEach { it.await() }
-            StickerFx.done()
+          } finally { StickerFx.done(f) }
         }
         Box(Modifier.fillMaxSize().graphicsLayer { this.alpha = veil.value }.background(Color.Black.copy(alpha = 0.35f)))
         Box(Modifier.size(side).onGloballyPositioned { if (self == null) self = it.boundsInRoot() }.graphicsLayer {

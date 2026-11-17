@@ -46,7 +46,7 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /** A newer APK on the server. */
-data class AppUpdate(val code: Long, val name: String, val size: Long)
+data class AppUpdate(val code: Long, val name: String, val size: Long, val notes: List<String> = emptyList())
 
 /**
  * 1.9: in-app updates. The server reads the version of the APK the admin uploaded (/api/app/version);
@@ -112,7 +112,9 @@ object Updater {
             val o = Api.appVersion()
             if (o.isNull("code")) return@withContext null
             val code = o.getLong("code")
-            if (code > installedCode(ctx)) AppUpdate(code, o.optString("name", code.toString()), o.optLong("size", 0L)) else null
+            val na = o.optJSONArray("notes")
+            val notes = if (na == null) emptyList() else (0 until na.length()).map { na.optString(it) }.filter { it.isNotBlank() }
+            if (code > installedCode(ctx)) AppUpdate(code, o.optString("name", code.toString()), o.optLong("size", 0L), notes) else null
         } catch (e: Exception) { null }
     }
 
@@ -147,6 +149,19 @@ object Updater {
         ctx.startActivity(i)
     }
 
+    /** 1.22.1: «تازه‌های این نسخه», shown once after an update: (version name, lines). */
+    val whatsNew = MutableStateFlow<Pair<String, List<String>>?>(null)
+
+    /** Fetches the notes of the installed version the first time it runs (marked seen once the server answered). */
+    suspend fun checkWhatsNew(ctx: Context) = withContext(Dispatchers.IO) {
+        val code = installedCode(ctx)
+        if (code <= 0L || Engine.prefs.getLong("notes_seen", 0L) >= code) return@withContext
+        val name = installedName(ctx)
+        val notes = try { Api.appNotes(name) } catch (e: Exception) { return@withContext } // retried next start
+        Engine.prefs.edit().putLong("notes_seen", code).apply()
+        if (notes.isNotEmpty()) whatsNew.value = name to notes
+    }
+
     /** Removes a downloaded APK once the new version runs. */
     fun cleanup(ctx: Context) { try { apkFile(ctx).delete() } catch (e: Exception) { } }
 }
@@ -177,6 +192,10 @@ fun UpdateDialog(u: AppUpdate, onClose: () -> Unit) {
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("نسخهٔ ${u.name} آماده است" + (if (u.size > 0) " (${U.size(u.size)})" else "") + ". نسخهٔ فعلی شما ${Updater.installedName(ctx)} است.", fontSize = 14.sp)
+                if (u.notes.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("تازه‌ها و اصلاح‌ها:", fontSize = 13.sp)
+                    for (n in u.notes) Text("• $n", fontSize = 13.sp)
+                }
                 Text("پیام‌ها و تنظیمات شما با به‌روزرسانی پاک نمی‌شوند.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 prog?.let {
                     LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth())
@@ -196,6 +215,17 @@ fun UpdateDialog(u: AppUpdate, onClose: () -> Unit) {
             }) { Text("دانلود") }
         },
         dismissButton = { TextButton(enabled = !busy, onClick = onClose) { Text("بعداً") } }
+    )
+}
+
+/** 1.22.1: the short list of what is new / fixed in the version that was just installed. */
+@Composable
+fun WhatsNewDialog(name: String, notes: List<String>, onClose: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("تازه‌های نسخهٔ $name") },
+        text = { Column(verticalArrangement = Arrangement.spacedBy(6.dp)) { for (n in notes) Text("• $n", fontSize = 14.sp) } },
+        confirmButton = { TextButton(onClick = onClose) { Text("باشه") } }
     )
 }
 

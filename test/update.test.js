@@ -23,7 +23,7 @@ test('GET /api/app/version: null without an APK, the version after an upload', a
   const apk = fakeApk(12, '1.9.1');
   fs.mkdirSync(path.join(process.env.DATA_DIR, 'apk'), { recursive: true });
   fs.writeFileSync(path.join(process.env.DATA_DIR, 'apk', 'sepan.apk'), apk);
-  assert.deepEqual((await S.api(null, 'GET', '/api/app/version')).data, { code: 12, name: '1.9.1', size: apk.length });
+  assert.deepEqual((await S.api(null, 'GET', '/api/app/version')).data, { code: 12, name: '1.9.1', size: apk.length, notes: [] });
   // a file that is not readable as an APK gives no version (no update offered)
   fs.writeFileSync(path.join(process.env.DATA_DIR, 'apk', 'sepan.apk'), Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(3000, 7)]));
   assert.deepEqual((await S.api(null, 'GET', '/api/app/version')).data, { code: null });
@@ -40,4 +40,12 @@ test('a user changes their own login password; other devices are logged out', as
   assert.equal((await S.api(t2, 'GET', '/api/me')).status, 401, 'the other device is logged out');
   assert.equal((await S.api(null, 'POST', '/api/login', { username: 'nima', password: pw })).status, 401);
   assert.equal((await S.api(null, 'POST', '/api/login', { username: 'nima', password: 'new-password-1' })).status, 200);
+});
+
+test('GET /api/app/notes: the short what\'s-new list of a version (empty for unknown ones)', async () => {
+  const r = await S.api(null, 'GET', '/api/app/notes?v=1.22.1');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.v, '1.22.1');
+  assert.ok(r.data.notes.length >= 1 && r.data.notes.every((x) => typeof x === 'string'));
+  assert.deepEqual((await S.api(null, 'GET', '/api/app/notes?v=0.0.1')).data, { v: '0.0.1', notes: [] });
 });

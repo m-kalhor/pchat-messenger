@@ -165,6 +165,7 @@ fun App(deepLink: MutableState<String?>) {
             if (!pm.isIgnoringBatteryOptimizations(ctx.packageName) && !Engine.prefs.getBoolean("battery_asked", false)) askBattery = true
             // 1.9: a newer APK on the server is offered each time the app is opened (never forced)
             Updater.cleanup(ctx)
+            Updater.checkWhatsNew(ctx) // 1.22.1
             Updater.check(ctx)?.let { Updater.offer.value = it }
         } else {
             convo = null
@@ -196,6 +197,11 @@ fun App(deepLink: MutableState<String?>) {
     val offer = updateOffer
     if (offer != null && offer.code != Updater.dismissed && logged && !askBattery && !inCall && !locked && ks == null) {
         UpdateDialog(offer) { Updater.dismissed = offer.code; Updater.offer.value = null }
+    }
+
+    val news by Updater.whatsNew.collectAsState()
+    news?.let { (name, notes) ->
+        if (logged && offer == null && !askBattery && !inCall && !locked && ks == null) WhatsNewDialog(name, notes) { Updater.whatsNew.value = null }
     }
 
     if (askBattery) {

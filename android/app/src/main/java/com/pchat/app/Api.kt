@@ -197,6 +197,12 @@ object Api {
     /** 1.9: the version of the APK on the server: {code, name, size} or {code: null} */
     fun appVersion(): JSONObject = JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/version").get().build()))
 
+    /** 1.22.1: the short «what's new / fixed» lines of a version name. */
+    fun appNotes(v: String): List<String> {
+        val a = JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/notes?v=" + java.net.URLEncoder.encode(v, "UTF-8")).get().build())).optJSONArray("notes")
+        return if (a == null) emptyList() else (0 until a.length()).map { a.optString(it) }.filter { it.isNotBlank() }
+    }
+
     /** 1.9: downloads the server's APK into [dest], reporting (bytes, total) */
     fun downloadApk(dest: java.io.File, onProgress: (Long, Long) -> Unit) {
         client.newCall(Request.Builder().url(Config.BASE + "/download/sepan.apk").get().build()).execute().use { resp ->
