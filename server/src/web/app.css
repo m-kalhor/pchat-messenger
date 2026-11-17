@@ -350,12 +350,13 @@ mark { background: #ffe082; color: inherit; border-radius: 3px; }
 .call.gcall .tile.vid { padding: 0; overflow: hidden; aspect-ratio: 3 / 4; background: #000; }
 .call.gcall .tile.vid video { width: 100%; height: 100%; object-fit: cover; display: block; }
 .call.gcall .tile.vid .tn { position: absolute; bottom: 6px; right: 8px; left: 8px; margin: 0; text-align: right; text-shadow: 0 1px 3px #000; }
-.call.gcall .tiles.hasvid { align-content: stretch; }
+.call.gcall .tiles.hasvid { align-content: stretch; padding-bottom: 250px; }
 .call.gcall .tiles.pinned .tile.pin { grid-column: 1 / -1; aspect-ratio: auto; min-height: 50vh; }
 .call.gcall .tiles.pinned .tile.pin video { object-fit: contain; }
 .call.gcall video.mirror { transform: scaleX(-1); }
-.call.gcall .gpip { position: absolute; left: 12px; bottom: 170px; width: 96px; height: 128px; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 2px 10px rgba(0,0,0,.5); z-index: 3; cursor: pointer; }
+.call.gcall .gpip { position: absolute; left: 12px; bottom: 250px; width: 96px; height: 128px; border-radius: 12px; overflow: hidden; background: #000; box-shadow: 0 2px 10px rgba(0,0,0,.5); z-index: 3; cursor: pointer; }
 .call.gcall .gpip video { width: 100%; height: 100%; object-fit: cover; }
+.call.gcall .gpip .gswitch { position: absolute; bottom: 4px; left: 4px; width: 32px; height: 32px; border-radius: 50%; border: 0; background: rgba(0,0,0,.5); color: #fff; font-size: 15px; cursor: pointer; }
 @keyframes gcpop { from { transform: scale(.3); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .call.gcall .gtop .icon, .bar .icon.newcall { white-space: nowrap; font-size: 16px; }
 .bar .icon.newcall { width: auto; padding: 0 10px; }
