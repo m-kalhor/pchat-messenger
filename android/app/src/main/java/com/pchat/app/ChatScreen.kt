@@ -125,6 +125,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.FileProvider
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -234,9 +235,14 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     }
     LaunchedEffect(tick, resumed, convo) {
         if (!resumed) return@LaunchedEffect
-        val m = withContext(Dispatchers.IO) { Engine.takeFx(convo) } ?: return@LaunchedEffect
-        val k = m.stk ?: return@LaunchedEffect
-        if (Prefs.stickerFx) StickerFx.start(k.id, m.id, mine = false)
+        // 1.22.2: taking the waiting effect and starting it is one step that is never cut off. Opening a chat changes
+        // tick at once, which restarted this effect after takeFx had already marked the sticker played, so a sticker
+        // that came while the chat was closed never played.
+        withContext(NonCancellable + Dispatchers.IO) {
+            val m = Engine.takeFx(convo)
+            val k = m?.stk
+            if (k != null && Prefs.stickerFx) StickerFx.start(k.id, m.id, mine = false)
+        }
     }
     LaunchedEffect(Unit) { while (true) { delay(1000); now = System.currentTimeMillis() } }
     // the unsent text stays as a draft («پیش‌نویس» in the chat list)
