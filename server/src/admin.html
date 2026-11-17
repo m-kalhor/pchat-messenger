@@ -911,7 +911,7 @@ async function devicesCard(box){
     h('div',{class:'mut',style:'margin-bottom:6px'},'گوشی‌هایی که با اثر انگشت یا قفل گوشی، بدون رمز وارد پنل می‌شوند. هر گوشی اگر '+D.expire_days+' روز استفاده نشود خودبه‌خود حذف می‌شود. تغییر رمز پنل همهٔ گوشی‌ها را حذف می‌کند. اگر گوشی گم شد: همین‌جا حذفش کنید یا روی سرور «msgadmin devices-off».'),
     list.length?list:h('div',{class:'mut',style:'padding:8px 0'},'هنوز گوشی‌ای ثبت نشده است.'),
     list.length>1?h('div',{class:'row',style:'margin-top:8px'},h('button',{class:'sec',onclick:guard(async function(){if(!confirm('همهٔ گوشی‌ها حذف شوند؟'))return;await api('POST','/devices/remove',{all:true});render();})},'حذف همه')):null,
-    APP&&me&&me.can_pair&&!D.current?h('div',{class:'row',style:'margin-top:8px'},h('button',{class:'pri',onclick:function(){try{APP.loggedIn();}catch(x){}}},'ثبت همین گوشی')):null,
+    APP&&me&&me.can_pair&&!D.current?h('div',{class:'row',style:'margin-top:8px'},h('button',{class:'pri',onclick:function(){try{if(APP.pairNow)APP.pairNow();else APP.loggedIn();}catch(x){}}},'ثبت همین گوشی')):null,
     h('h3',{style:'margin-top:16px'},'فایل اپ «سپن مدیر»'),
     h('div',{style:'margin-bottom:8px'},A?['نسخهٔ '+(A.name||'؟')+' — '+fmtB(A.size)+'  ',h('a',{href:'/admin/api/adminapp/download',style:'color:#6cb4ff'},'دانلود و نصب روی گوشی')]:h('span',{class:'mut'},'هنوز روی سرور نیست')),
     APP?null:h('div',{class:'row'},file,h('button',{class:'pri',onclick:async function(){
