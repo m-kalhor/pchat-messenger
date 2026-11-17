@@ -18,6 +18,7 @@ const ugroups = require('./ugroups');
 const stickers = require('./stickers');
 const usage = require('./usage');
 const totp = require('./totp');
+const devices = require('./admindevices');
 const { qrSvg } = require('./web');
 
 const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
@@ -80,7 +81,26 @@ function session(req) {
   const s = t && sessions.get(t);
   if (!s) return null;
   if (Date.now() - s.ts > SESSION_MS) { sessions.delete(t); return null; }
+  // 1.24: a session opened by a phone ends as soon as that phone is removed (panel, password change, msgadmin)
+  if (s.device && !devices.exists(s.device)) { sessions.delete(t); return null; }
   return { t, s };
+}
+/** Opens a panel session (cookie) and returns its CSRF token. via: 'password' or 'device'. */
+function openSession(res, secure, via, device) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const csrf = crypto.randomBytes(16).toString('hex');
+  sessions.set(token, { csrf, ts: Date.now(), via, device: device || null });
+  res.setHeader('Set-Cookie', `adm=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${secure ? '; Secure' : ''}`);
+  return csrf;
+}
+const ADMIN_APK = () => path.join(DATA_DIR, 'apk', 'sepan-admin.apk');
+/** 1.24: the «سپن مدیر» APK on the server (uploaded in the panel or placed by the installer), or null. */
+function adminAppInfo() {
+  try {
+    const st = fs.statSync(ADMIN_APK());
+    const v = apkVersion(ADMIN_APK());
+    return { size: st.size, mtime: st.mtimeMs, name: v ? v.name : null, code: v ? v.code : null };
+  } catch { return null; }
 }
 
 function stateDump(ctx) {
@@ -179,19 +199,81 @@ async function route(ctx, req, res, secure) {
       return json(res, 401, { error: 'bad_login' });
     }
     for (const [k] of failKeys(ip)) fails.delete(k);
-    const token = crypto.randomBytes(32).toString('hex');
-    const csrf = crypto.randomBytes(16).toString('hex');
-    sessions.set(token, { csrf, ts: Date.now() });
-    res.setHeader('Set-Cookie', `adm=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_MS / 1000}${secure ? '; Secure' : ''}`);
+    const csrf = openSession(res, secure, 'password');
+    return json(res, 200, { csrf, username: adminUser() });
+  }
+
+  // ---- 1.24: sign-in of a paired phone («سپن مدیر»): a one-time challenge signed by the phone's Keystore key ----
+  if (sub === '/device/challenge' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const ip = cleanIp(req.socket.remoteAddress);
+    const wait = lockedFor(ip);
+    if (wait) return json(res, 429, { error: 'rate_limited', wait });
+    const nonce = devices.challenge(b.id);
+    if (!nonce) { addFail(ip); return json(res, 401, { error: 'device_unknown' }); }
+    return json(res, 200, { nonce });
+  }
+  if (sub === '/device/login' && req.method === 'POST') {
+    const b = await readJson(req, 2048);
+    const ip = cleanIp(req.socket.remoteAddress);
+    const wait = lockedFor(ip);
+    if (wait) return json(res, 429, { error: 'rate_limited', wait });
+    if (!devices.verify(b.id, b.nonce, b.sig, ip)) {
+      addFail(ip);
+      await new Promise((r) => setTimeout(r, 800));
+      return json(res, 401, { error: devices.exists(b.id) ? 'bad_signature' : 'device_unknown' });
+    }
+    for (const [k] of failKeys(ip)) fails.delete(k);
+    const csrf = openSession(res, secure, 'device', b.id);
     return json(res, 200, { csrf, username: adminUser() });
   }
 
   const ses = session(req);
   if (!ses) return json(res, 401, { error: 'unauthorized' });
-  if (sub === '/session') return json(res, 200, { csrf: ses.s.csrf, username: adminUser(), totp: totp.enabled() });
+  if (sub === '/session') {
+    return json(res, 200, {
+      csrf: ses.s.csrf, username: adminUser(), totp: totp.enabled(), device: ses.s.device || null,
+      // a phone may be paired only from a fresh password sign-in, never from a session a phone opened
+      can_pair: ses.s.via === 'password' && Date.now() - ses.s.ts < devices.PAIR_WINDOW_MS,
+    });
+  }
   if (req.method !== 'GET' && req.headers['x-csrf'] !== ses.s.csrf) return json(res, 403, { error: 'bad_csrf' });
 
   if (sub === '/logout' && req.method === 'POST') { sessions.delete(ses.t); return json(res, 200, { ok: true }); }
+
+  // ---- 1.24: paired phones («سپن مدیر») ----
+  if (sub === '/devices' && req.method === 'GET') return json(res, 200, { devices: devices.list(), current: ses.s.device || null, max: devices.MAX_DEVICES, expire_days: devices.EXPIRE_MS / 86400e3 });
+  if (sub === '/devices/pair' && req.method === 'POST') {
+    if (ses.s.via !== 'password' || Date.now() - ses.s.ts > devices.PAIR_WINDOW_MS) return json(res, 403, { error: 'pair_needs_fresh_login' });
+    const b = await readJson(req, 4096);
+    try {
+      const d = devices.pair(b.name, b.pubkey, cleanIp(req.socket.remoteAddress));
+      return json(res, 200, d);
+    } catch (e) { return json(res, 400, { error: e.message }); }
+  }
+  if (sub === '/devices/remove' && req.method === 'POST') {
+    const b = await readJson(req, 1024);
+    const n = b.all ? devices.removeAll() : (devices.remove(b.id) ? 1 : 0);
+    for (const [k, v] of sessions) if (v.device && !devices.exists(v.device)) sessions.delete(k);
+    return json(res, 200, { ok: true, removed: n });
+  }
+  // the «سپن مدیر» APK: version for the app's update check, download, upload / delete from the panel
+  if (sub === '/adminapp' && req.method === 'GET') return json(res, 200, { app: adminAppInfo() });
+  if (sub === '/adminapp/download' && req.method === 'GET') {
+    const info = adminAppInfo();
+    if (!info) return json(res, 404, { error: 'not_found' });
+    res.writeHead(200, { 'Content-Type': 'application/vnd.android.package-archive', 'Content-Length': info.size, 'Content-Disposition': 'attachment; filename="sepan-admin.apk"', 'Cache-Control': 'no-store' });
+    return fs.createReadStream(ADMIN_APK()).pipe(res);
+  }
+  if (sub === '/adminapp' && req.method === 'POST') {
+    fs.mkdirSync(path.dirname(ADMIN_APK()), { recursive: true });
+    try { await saveApk(req, ADMIN_APK()); } catch (e) { return json(res, e.code === 413 ? 413 : 400, { error: e.message }); }
+    return json(res, 200, { app: adminAppInfo() });
+  }
+  if (sub === '/adminapp' && req.method === 'DELETE') {
+    try { fs.unlinkSync(ADMIN_APK()); } catch { }
+    return json(res, 200, { app: null });
+  }
 
   // ---- 1.18 second factor (authenticator app) for the panel: start with the password, confirm with a code ----
   if (sub === '/totp/start' && req.method === 'POST') {
@@ -239,6 +321,8 @@ async function route(ctx, req, res, secure) {
     if (pw !== null) {
       setSetting('admin_pass', hashPassword(pw));
       for (const k of [...sessions.keys()]) if (k !== ses.t) sessions.delete(k); // log out every other browser
+      devices.removeAll(); // 1.24: and every paired phone signs in (and pairs) again with the new password
+      if (ses.s.device) { ses.s.device = null; ses.s.via = 'password'; ses.s.ts = Date.now(); } // this session was just proved by the password
     }
     return json(res, 200, { ok: true, username: user });
   }
@@ -606,6 +690,7 @@ function start(ctx, tlsOptions) {
     const t = Date.now();
     for (const [k, v] of sessions) if (t - v.ts > SESSION_MS) sessions.delete(k);
     for (const [k, v] of fails) if (t - v.t > LOCK_MS) fails.delete(k);
+    devices.prune(t);
   }, 600000).unref();
   return srv;
 }
