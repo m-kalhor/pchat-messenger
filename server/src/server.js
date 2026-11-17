@@ -20,6 +20,7 @@ const usage = require('./usage');
 const gcall = require('./gcall');
 const ugroups = require('./ugroups');
 const { domainName } = require('./web');
+require('./license').enforce(); // 1.25: packaged server only (install approval); nothing in the source tree
 
 const PORT = +(process.env.PORT || 8443);
 const CERT_DIR = process.env.CERT_DIR || path.join(DATA_DIR, '..', 'certs');
@@ -717,7 +718,8 @@ async function route(req, res) {
     const day = signupsByIp.get(ip);
     if (day && now() - day.t < DAY && day.n >= SIGNUPS_PER_IP) return send(res, 429, { error: 'rate_limited' });
     const cat = auth.signupCategory();
-    core.createUser(username, b.display_name, cat ? [cat] : []);
+    try { core.createUser(username, b.display_name, cat ? [cat] : []); }
+    catch (e) { return send(res, e.message === 'user_limit' ? 403 : 400, { error: e.message }); }
     db.prepare('UPDATE users SET phone=? WHERE username=?').run(tk.phone, username);
     signupTickets.delete(b.ticket);
     signupsByIp.set(ip, day && now() - day.t < DAY ? { n: day.n + 1, t: day.t } : { n: 1, t: now() });
@@ -851,7 +853,7 @@ async function route(req, res) {
   if (p === '/api/push/test' && req.method === 'POST') {
     if (limited('push:' + user, 10)) return send(res, 429, { error: 'rate_limited' });
     addFail('push:' + user);
-    return send(res, 200, { results: await push.notify(user, { t: 'test', title: 'سپن', body: 'اعلان آزمایشی رسید ✓' }) });
+    return send(res, 200, { results: await push.notify(user, { t: 'test', title: require('./brand').appName(), body: 'اعلان آزمایشی رسید ✓' }) });
   }
 
   if (p === '/api/groups' && req.method === 'GET') {

@@ -1,0 +1,10 @@
+{
+  "name": "sepan-package-tools",
+  "private": true,
+  "description": "Build tools for the packaged Sepan server (tools/package/build.mjs). Not part of the server.",
+  "devDependencies": {
+    "esbuild": "0.24.2",
+    "javascript-obfuscator": "4.1.1",
+    "postject": "1.0.0-alpha.6"
+  }
+}

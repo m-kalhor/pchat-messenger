@@ -31,8 +31,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 
 /** The public intro page shown on a domain name (what the service is, what SMS is used for, contact). */
 function introPage(site, hasApk) {
-  const title = site.title || 'پیام‌رسان سپن';
-  const about = site.about || 'سپن یک پیام‌رسان امن است که روی سرور خود مجموعه نصب می‌شود. پیام‌ها، تماس‌ها و فایل‌ها با رمزنگاری سرتاسری فرستاده می‌شوند و روی سرور خود مجموعه نگه داشته می‌شوند.';
+  const title = site.title || require('./brand').brand('پیام‌رسان سپن');
+  const about = site.about || require('./brand').brand('سپن یک پیام‌رسان امن است که روی سرور خود مجموعه نصب می‌شود. پیام‌ها، تماس‌ها و فایل‌ها با رمزنگاری سرتاسری فرستاده می‌شوند و روی سرور خود مجموعه نگه داشته می‌شوند.');
   const para = (t) => esc(t).split(/\n+/).filter(Boolean).map((l) => `<p>${l}</p>`).join('');
   return `<!doctype html>
 <html lang="fa" dir="rtl"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -73,7 +73,8 @@ function loadStatic() {
     const type = TYPES[path.extname(n)];
     const fp = path.join(WEB_DIR, n);
     if (!type || !fs.statSync(fp).isFile()) continue;
-    const body = fs.readFileSync(fp);
+    let body = fs.readFileSync(fp);
+    if (/^text|json|xml/.test(type)) body = require('./brand').brand(body); // 1.25: this server's app name
     files.set('/' + n, { body, type, etag: '"' + crypto.createHash('sha1').update(body).digest('hex').slice(0, 16) + '"' });
   }
   if (files.has('/index.html')) files.set('/', files.get('/index.html'));
@@ -119,8 +120,8 @@ function caInfo(certDir) {
       <key>PayloadVersion</key><integer>1</integer>
     </dict>
   </array>
-  <key>PayloadDescription</key><string>گواهی امنیتی پیام‌رسان سپن برای اتصال امن نسخهٔ وب</string>
-  <key>PayloadDisplayName</key><string>سپن</string>
+  <key>PayloadDescription</key><string>${require('./brand').brand('گواهی امنیتی پیام‌رسان سپن برای اتصال امن نسخهٔ وب')}</string>
+  <key>PayloadDisplayName</key><string>${require('./brand').appName()}</string>
   <key>PayloadIdentifier</key><string>sepan.ca.${h.slice(0, 12)}</string>
   <key>PayloadRemovalDisallowed</key><false/>
   <key>PayloadType</key><string>Configuration</string>

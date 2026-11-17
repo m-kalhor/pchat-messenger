@@ -19,6 +19,11 @@ fun serverProp(name: String, def: String? = null): String =
 val serverHost = serverProp("pchat.serverHost")
 val adminPort = serverProp("pchat.adminPort", "8444").toIntOrNull() ?: error("pchat.adminPort must be a number")
 val sepanKeystore = System.getenv("SEPAN_KEYSTORE")?.let { file(it) }?.takeIf { it.isFile }
+// 1.25: customer builds (same properties as the app module): name «<appName> مدیر», package com.sepan.admin.<appId>
+fun optProp(name: String): String? = (findProperty(name) as String?)?.takeIf { it.isNotBlank() } ?: localProps.getProperty(name)?.takeIf { it.isNotBlank() }
+val appName = optProp("pchat.appName") ?: "سپن"
+val appIdSuffix = optProp("pchat.appId")?.also { require(Regex("^[a-z][a-z0-9]{1,19}$").matches(it)) { "pchat.appId: 2-20 of a-z, 0-9" } }
+fun kotlinString(s: String) = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$") + "\""
 
 // the server certificate is pinned exactly like in the Sepan app: one copy, taken from the app module
 val certRes: File = layout.buildDirectory.dir("generated/certres").get().asFile
@@ -32,7 +37,7 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.sepan.admin"
+        applicationId = if (appIdSuffix != null) "com.sepan.admin.$appIdSuffix" else "com.sepan.admin"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
@@ -40,6 +45,8 @@ android {
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "ADMIN_PORT", "$adminPort")
+        buildConfigField("String", "APP_NAME", kotlinString(appName))
+        manifestPlaceholders["appLabel"] = "$appName مدیر"
     }
 
     sourceSets["main"].res.srcDir(certRes)

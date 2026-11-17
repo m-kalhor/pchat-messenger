@@ -146,7 +146,7 @@ object CallManager {
         // 1.9.2: someone who never logged in has no key yet, so the invite cannot be encrypted.
         // Say so up front instead of starting (and instantly tearing down) a call.
         if (Engine.users.value.firstOrNull { it.username == peer }?.pubkey.isNullOrEmpty()) {
-            main.post { Toast.makeText(app, "این کاربر هنوز وارد سپن نشده؛ بعد از اولین ورودش می‌توانید با او تماس بگیرید", Toast.LENGTH_LONG).show() }
+            main.post { Toast.makeText(app, "این کاربر هنوز وارد ${BuildConfig.APP_NAME} نشده؛ بعد از اولین ورودش می‌توانید با او تماس بگیرید", Toast.LENGTH_LONG).show() }
             return
         }
         if (GroupCall.active()) {

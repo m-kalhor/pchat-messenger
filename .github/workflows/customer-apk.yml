@@ -1,0 +1,82 @@
+name: Customer APK
+
+# 1.25: the Android apps (messenger + admin) for a customer's server installed with sepan-setup.sh.
+# Run it from Actions > Customer APK > Run workflow and paste the BUILD CODE the installer printed
+# (app name, short id, server address, ports and the server certificate the apps pin; no secrets).
+# An own launcher icon: commit a square PNG as branding/<id>/icon.png before running.
+on:
+  workflow_dispatch:
+    inputs:
+      build_code:
+        description: "BUILD CODE from the installer (starts with SB1.)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Read the build code
+        env:
+          BUILD_CODE: ${{ inputs.build_code }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, re, ipaddress
+          c = os.environ["BUILD_CODE"].strip().replace("\n", "").replace(" ", "")
+          if not c.startswith("SB1."): raise SystemExit("::error::not a build code (must start with SB1.)")
+          b = c[4:]; b += "=" * (-len(b) % 4)
+          d = json.loads(base64.urlsafe_b64decode(b))
+          name, cid, host, port, aport, pem = d["n"].strip(), d["id"], d["h"], int(d["p"]), int(d["a"]), d["c"]
+          if not (1 <= len(name) <= 30) or re.search(r'[<>&"\'`\\$\x00-\x1f]', name): raise SystemExit("::error::bad app name")
+          if not re.fullmatch(r"[a-z][a-z0-9]{1,19}", cid): raise SystemExit("::error::bad id")
+          ipaddress.IPv4Address(host)
+          if not (0 < port < 65536 and 0 < aport < 65536): raise SystemExit("::error::bad port")
+          if not pem.startswith("-----BEGIN CERTIFICATE-----"): raise SystemExit("::error::bad certificate")
+          open("app/src/main/res/raw/server_cert.pem", "w").write(pem)
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"C_NAME={name}\nC_ID={cid}\nC_HOST={host}\nC_PORT={port}\nC_APORT={aport}\n")
+          print(f"customer {cid}: {name} @ {host}:{port} (admin {aport})")
+          PY
+          openssl x509 -in app/src/main/res/raw/server_cert.pem -noout -subject -ext subjectAltName -fingerprint -sha256
+      - name: Icon
+        run: |
+          if [ -f "../branding/$C_ID/icon.png" ]; then echo "C_ICON=$(realpath ../branding/$C_ID/icon.png)" >> "$GITHUB_ENV"; echo "own icon"; else echo "Sepan icon"; fi
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.SEPAN_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.SEPAN_KEYSTORE_PASSWORD }}
+        run: |
+          [ -n "$KEYSTORE_B64" ] || { echo "::error::SEPAN_KEYSTORE_B64 secret missing"; exit 1; }
+          echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/sepan.jks"
+          echo "SEPAN_KEYSTORE=$RUNNER_TEMP/sepan.jks" >> "$GITHUB_ENV"
+          echo "SEPAN_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+      - name: Build
+        run: |
+          ./gradlew assembleRelease --stacktrace -Ppchat.serverHost="$C_HOST" -Ppchat.serverPort="$C_PORT" -Ppchat.adminPort="$C_APORT" \
+            -Ppchat.appName="$C_NAME" -Ppchat.appId="$C_ID" ${C_ICON:+-Ppchat.iconPng="$C_ICON"}
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          mkdir -p ../out
+          for M in app admin; do
+            APK=$(ls $M/build/outputs/apk/release/*.apk | head -1)
+            "$BT/apksigner" verify "$APK"
+            "$BT/aapt" dump badging "$APK" | grep -E "^package:|^application-label:"
+            cp "$APK" "../out/$C_ID-$M.apk"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: customer-${{ env.C_ID }}-apk
+          path: out/*.apk
+          compression-level: 0

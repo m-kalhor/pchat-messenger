@@ -17,7 +17,12 @@ async function startServer(env = {}) {
     ...process.env, PLAIN_HTTP: '1', PORT: String(port), DATA_DIR: app.dataDir, ADMIN_DISABLE: '1', WEB_DISABLE: '1', MIN_FREE_MB: '0',
     NODE_NO_WARNINGS: '1', ...env,
   };
-  const child = spawn(process.execPath, [path.join(app.appDir, 'server.js')], { env: fullEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  // 1.25: SEPAN_TEST_BIN = the packaged executable (tools/package) to run instead, with SEPAN_TEST_LICENSE as its
+  // activation code: the same tests then check the obfuscated build. The test process still seeds from the source.
+  const bin = process.env.SEPAN_TEST_BIN;
+  if (bin) fullEnv.LICENSE_FILE = process.env.SEPAN_TEST_LICENSE;
+  const child = bin ? spawn(bin, [], { env: fullEnv, stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(process.execPath, [path.join(app.appDir, 'server.js')], { env: fullEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   let log = '';
   await new Promise((resolve, reject) => {
     const t = setTimeout(() => reject(new Error('server did not start:\n' + log)), 15000);

@@ -95,7 +95,7 @@ object AppLock {
         if (Build.VERSION.SDK_INT < 29) return
         val exec = act.mainExecutor
         BiometricPrompt.Builder(act)
-            .setTitle("باز کردن قفل سپن")
+            .setTitle("باز کردن قفل ${BuildConfig.APP_NAME}")
             .setNegativeButton("استفاده از رمز", exec) { _, _ -> }
             .build()
             .authenticate(CancellationSignal(), exec, object : BiometricPrompt.AuthenticationCallback() {
@@ -130,7 +130,7 @@ fun LockScreen() {
         Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Text("🔒", fontSize = 42.sp)
             Spacer(Modifier.height(8.dp))
-            Text("سپن قفل است", fontWeight = FontWeight.Bold, fontSize = 20.sp)
+            Text("${BuildConfig.APP_NAME} قفل است", fontWeight = FontWeight.Bold, fontSize = 20.sp)
             Text("رمز قفل برنامه را وارد کنید", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
             Spacer(Modifier.height(18.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
