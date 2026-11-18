@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.22.2';
+const VERSION = '1.23.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -911,7 +911,8 @@ function ChatScreen(convo) {
   const viewsTimer = chan ? setInterval(() => E.refreshViews(convo), 30000) : null;
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
-  const callBtns = group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, '📞')] : [
+  const callBtns = group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, '📞'),
+    h('button', { class: 'icon gcbtn gcvid', title: 'تماس تصویری گروهی', onclick: () => groupCall(convo, true) }, '🎥')] : [
     h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => call(false) }, '📞'),
     h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => call(true) }, '🎥')];
   // 1.19: the green «پیوستن» bar of a group call that is running in this group (like Telegram)
@@ -919,7 +920,7 @@ function ChatScreen(convo) {
   function renderGcBar() {
     const r = group ? GC.roomOf(convo) : null;
     const g = group && S.groups.find((x) => x.key === convo);
-    for (const b of el.querySelectorAll('.gcbtn')) b.classList.toggle('hidden', !(GC.cfg().on && g && g.call !== false));
+    for (const b of el.querySelectorAll('.gcbtn')) b.classList.toggle('hidden', !(GC.cfg().on && g && g.call !== false && (!b.classList.contains('gcvid') || GC.videoOn())));
     const mine = r && GC.G.room && GC.G.room.id === r.id && GC.G.phase === 'active';
     gcBar.classList.toggle('hidden', !r || mine);
     if (!r || mine) return;
@@ -2279,18 +2280,19 @@ const callable = () => S.users.filter((u) => u.dm && u.username !== S.me && u.pu
 const maxVoice = () => (GC.cfg().max_voice || 8);
 
 /** Group chat 📞: join the running call, or start one (a group of over 8 people: pick who rings, like WhatsApp). */
-async function groupCall(convo) {
+async function groupCall(convo, video = false) {
   const r = GC.roomOf(convo);
   if (r) return GC.join(r.id);
   const g = S.groups.find((x) => x.key === convo);
   if (!g) return;
   const others = g.members.filter((u) => u !== S.me);
+  const kind = video ? 'تماس تصویری گروهی' : 'تماس صوتی گروهی';
   if (others.length + 1 <= 8) {
-    if (!await confirmBox('تماس صوتی گروهی', 'گوشی ' + faNum(others.length) + ' عضو «' + g.name + '» زنگ می‌خورد.', 'تماس')) return;
-    return GC.start({ group: convo });
+    if (!await confirmBox(kind, 'گوشی ' + faNum(others.length) + ' عضو «' + g.name + '» زنگ می‌خورد.', 'تماس')) return;
+    return GC.start({ group: convo, video });
   }
   const ring = await pickPeople('گوشی چه کسانی زنگ بخورد؟', others, 'تماس', maxVoice() - 1);
-  if (ring) GC.start({ group: convo, ring });
+  if (ring) GC.start({ group: convo, ring, video });
 }
 
 /** «تماس جدید» in the Calls tab: one person = a normal call, more = a group call. */
@@ -2353,37 +2355,60 @@ function renderGcall(g) {
   const title = r.title || (r.host === S.me ? 'تماس گروهی' : E.nameOf(r.host));
   const btn = (label, cls, fn, t) => h('button', { class: 'cb ' + cls, title: t, onclick: fn }, label);
   if (g.phase === 'incoming') {
-    fill(gcEl, h('div', { class: 'info' }, avatar(r.group || r.host, 'lg'), h('h2', null, title), h('div', null, 'تماس صوتی گروهی از ' + E.nameOf(g.by)),
+    fill(gcEl, h('div', { class: 'info' }, avatar(r.group || r.host, 'lg'), h('h2', null, title), h('div', null, (r.video ? 'تماس تصویری گروهی از ' : 'تماس صوتی گروهی از ') + E.nameOf(g.by)),
       h('div', { class: 'avs' }, r.parts.map((p) => avatar(p.u, 'sm')))),
       h('div', { class: 'ctrls' }, btn('✕', 'red', GC.decline, 'رد'), btn('📞', 'green', GC.accept, 'پیوستن')));
     return;
   }
   const s = Math.floor((Date.now() - g.joinedAt) / 1000);
   const host = r.host === S.me;
-  const tiles = r.parts.map((p) => {
+  // 1.23: whose picture is shown; my own goes small in the corner when someone else is in the call
+  const vidOf = (p) => (p.u === S.me ? g.cam : p.cam) && g.videos[p.u] ? g.videos[p.u] : null;
+  const pip = g.cam && g.videos[S.me] && r.parts.length > 1 && g.pin !== S.me;
+  const shown = r.parts.filter((p) => !(pip && p.u === S.me));
+  const pinned = g.pin && shown.some((p) => p.u === g.pin) ? g.pin : '';
+  const tiles = shown.map((p) => {
     const lv = g.levels[p.u] || 0;
     const reacts = g.reacts.filter((x) => x.from === p.u).slice(-1);
-    const tile = h('div', { class: 'tile' + (lv > 0.03 && !p.muted ? ' speak' : '') },
-      avatar(p.u, 'lg'), h('div', { class: 'tn' }, (p.u === S.me ? 'شما' : E.nameOf(p.u)) + (p.u === r.host ? ' ★' : '')),
-      h('div', { class: 'ti' }, p.muted ? '🔇' : '', p.hand ? '✋' : ''),
+    const vs = vidOf(p);
+    const tile = h('div', { class: 'tile' + (lv > 0.03 && !p.muted ? ' speak' : '') + (vs ? ' vid' : '') + (pinned === p.u ? ' pin' : '') },
+      vs ? videoEl(p.u, vs, p.u === S.me && g.front) : avatar(p.u, 'lg'),
+      h('div', { class: 'tn' }, (p.u === S.me ? 'شما' : E.nameOf(p.u)) + (p.u === r.host ? ' ★' : '')),
+      h('div', { class: 'ti' }, p.muted ? '🔇' : '', p.hand ? '✋' : '', pinned === p.u ? '📌' : ''),
       reacts.length ? h('div', { class: 'treact' }, reacts[0].emoji) : null);
-    if (p.u !== S.me) tile.onclick = () => personSheet(p.u, host);
+    tile.onclick = p.u !== S.me ? () => personSheet(p.u, host, !!vs) : (vs ? () => GC.pin(S.me) : null);
     return tile;
   });
+  for (const u of [...vidEls.keys()]) if (!r.parts.some((p) => p.u === u && vidOf(p))) vidEls.delete(u);
   const ringing = r.ringing.filter((u) => !r.parts.some((p) => p.u === u));
   fill(gcEl,
     h('div', { class: 'gtop' }, h('div', null, h('b', null, title), h('div', { class: 'mut' }, Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + ' · ' + faNum(r.parts.length) + ' نفر' + (ringing.length ? ' · در حال زنگ: ' + ringing.map(E.nameOf).join('، ') : ''))),
       h('button', { class: 'icon', title: 'افزودن نفر', onclick: addPeople }, '👤+')),
-    h('div', { class: 'tiles n' + Math.min(r.parts.length, 9) }, tiles),
+    h('div', { class: 'tiles n' + Math.min(shown.length, 9) + (pinned ? ' pinned' : '') + (shown.some(vidOf) ? ' hasvid' : '') }, tiles),
+    pip ? h('div', { class: 'gpip', onclick: () => GC.pin(S.me) }, videoEl(S.me, g.videos[S.me], g.front),
+      h('button', { class: 'gswitch', title: 'دوربین جلو / عقب', onclick: (e) => { e.stopPropagation(); GC.switchCam(); } }, '🔄')) : null,
     h('div', { class: 'ctrls' },
       btn(g.muted ? '🔇' : '🎙', g.muted ? 'on' : '', GC.toggleMute, 'میکروفون'),
+      GC.videoOn() ? btn(g.cam ? '📷' : '🚫📷', g.cam ? 'on' : '', GC.toggleCam, 'دوربین') : null,
+      g.cam && !pip ? btn('🔄', '', GC.switchCam, 'دوربین جلو / عقب') : null,
       btn('✋', g.hand ? 'on' : '', GC.toggleHand, 'بالا بردن دست'),
       btn('😀', '', () => sheet('واکنش', ['👍', '❤️', '😂', '😮', '👏'].map((e) => ({ label: e, run: () => GC.react(e) }))), 'واکنش'),
       btn('✕', 'red', () => GC.leave(), 'خروج')));
 }
-function personSheet(u, host) {
+/** 1.23: one <video> per person, kept across the once-a-second redraw so the picture does not blink. */
+const vidEls = new Map();
+function videoEl(u, stream, mirror) {
+  let v = vidEls.get(u);
+  if (!v) { v = h('video', { autoplay: true, playsinline: true }); v.muted = true; vidEls.set(u, v); }
+  if (v.srcObject !== stream) v.srcObject = stream;
+  v.classList.toggle('mirror', !!mirror);
+  if (v.paused) setTimeout(() => v.play().catch(() => { }), 0);
+  return v;
+}
+function personSheet(u, host, vid) {
   const vol = h('input', { type: 'range', min: 0, max: 100, value: Math.round((GC.G.volume[u] != null ? GC.G.volume[u] : 1) * 100), oninput: () => GC.setVolume(u, vol.value / 100) });
   sheet(E.nameOf(u), [
+    vid ? { label: GC.G.pin === u ? '📌 برداشتن سنجاق' : '📌 نمایش بزرگ (سنجاق)', run: () => GC.pin(u) } : null,
     E.user(u) && E.user(u).dm ? { label: '💬 پیام خصوصی', run: () => go('#/c/' + encodeURIComponent(u)) } : null,
     host ? { label: '🔇 بستن صدای او برای همه', run: () => GC.host(u, 'mute') } : null,
     host ? { label: '⛔ بیرون کردن از تماس', danger: true, run: async () => { if (await confirmBox('بیرون کردن', E.nameOf(u) + ' از تماس بیرون برود؟', 'بیرون کردن', true)) GC.host(u, 'remove'); } } : null,

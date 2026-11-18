@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
@@ -90,6 +92,25 @@ fun rememberMic(): (() -> Unit) -> Unit {
     }
 }
 
+/** 1.23: like [rememberMic], and also asks for the camera (the call goes on without it if refused). */
+@Composable
+fun rememberMicCam(): (() -> Unit) -> Unit {
+    val ctx = LocalContext.current
+    var pending by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val launcher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { _ ->
+        val a = pending
+        pending = null
+        if (ContextCompat.checkSelfPermission(ctx, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) a?.invoke()
+        else Toast.makeText(ctx, "برای تماس باید اجازه میکروفون بدهید", Toast.LENGTH_LONG).show()
+    }
+    return { action ->
+        val need = ArrayList<String>()
+        for (perm in listOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA))
+            if (ContextCompat.checkSelfPermission(ctx, perm) != PackageManager.PERMISSION_GRANTED) need.add(perm)
+        if (need.isEmpty()) action() else { pending = action; launcher.launch(need.toTypedArray()) }
+    }
+}
+
 class PickReq(val title: String, val names: List<String>, val action: String, val max: Int, val done: (List<String>) -> Unit)
 class ConfirmReq(val title: String, val text: String, val action: String, val run: () -> Unit)
 
@@ -98,23 +119,26 @@ class GroupCallActions {
     var pick by mutableStateOf<PickReq?>(null)
     var confirm by mutableStateOf<ConfirmReq?>(null)
     internal var mic: (() -> Unit) -> Unit = { it() }
+    internal var micCam: (() -> Unit) -> Unit = { it() }
     internal var call1: (String, Boolean) -> Unit = { _, _ -> }
     internal var toast: (String) -> Unit = { }
 
     /** Group chat 📞: join the running call, or start one (over 8 people: pick who rings, like WhatsApp). */
-    fun groupCall(convo: String) {
-        GroupCall.roomOf(convo)?.let { r -> mic { GroupCall.join(r.id) }; return }
+    fun groupCall(convo: String, video: Boolean = false) {
+        GroupCall.roomOf(convo)?.let { r -> (if (r.video && GroupCall.videoOn()) micCam else mic) { GroupCall.join(r.id) }; return }
+        val ask = if (video) micCam else mic
+        val kind = if (video) "تماس تصویری گروهی" else "تماس صوتی گروهی"
         val g = Engine.groups.value.firstOrNull { it.key == convo } ?: return
         if (!GroupCall.cfg.value.on) { toast("تماس گروهی در این سرور خاموش است"); return }
         if (!g.call) { toast("تماس گروهی در این گروه خاموش است"); return }
         val others = g.members.filter { it != Engine.me }
         if (others.isEmpty()) { toast("کس دیگری در این گروه نیست"); return }
         if (others.size + 1 <= 8) {
-            confirm = ConfirmReq("تماس صوتی گروهی", "گوشی ${U.fa(others.size)} عضو «${g.name}» زنگ می‌خورد.", "تماس") {
-                mic { GroupCall.start(convo, null, null) }
+            confirm = ConfirmReq(kind, "گوشی ${U.fa(others.size)} عضو «${g.name}» زنگ می‌خورد.", "تماس") {
+                ask { GroupCall.start(convo, null, null, video) }
             }
         } else {
-            pick = PickReq("گوشی چه کسانی زنگ بخورد؟", others, "تماس", maxVoice() - 1) { ring -> mic { GroupCall.start(convo, null, ring) } }
+            pick = PickReq("گوشی چه کسانی زنگ بخورد؟", others, "تماس", maxVoice() - 1) { ring -> ask { GroupCall.start(convo, null, ring, video) } }
         }
     }
 
@@ -135,6 +159,7 @@ fun rememberGroupCallActions(): GroupCallActions {
     val ctx = LocalContext.current
     val a = remember { GroupCallActions() }
     a.mic = rememberMic()
+    a.micCam = rememberMicCam()
     a.call1 = rememberCallStarter()
     a.toast = { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show() }
     GroupCallDialogs(a)
@@ -344,13 +369,13 @@ private fun titleOf(r: GRoom) = r.title.ifEmpty { if (r.host == Engine.me) "تم
 
 @Composable
 private fun GcIncoming(g: GState, r: GRoom) {
-    val mic = rememberMic()
+    val mic = if (r.video && GroupCall.videoOn()) rememberMicCam() else rememberMic()
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Avatar(r.group ?: r.host, false, 110)
             Spacer(Modifier.height(14.dp))
             Text(titleOf(r), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
-            Text("تماس صوتی گروهی از " + Engine.nameOf(g.by), color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
+            Text((if (r.video) "تماس تصویری گروهی از " else "تماس صوتی گروهی از ") + Engine.nameOf(g.by), color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { for (p in r.parts.take(6)) Avatar(p.u, false, 34) }
         }
@@ -375,8 +400,58 @@ private fun GcActive(g: GState, r: GRoom) {
     var reactMenu by remember { mutableStateOf(false) }
     val sec = if (g.phase == GPhase.ACTIVE) ((now - g.joinedAt) / 1000).toInt().coerceAtLeast(0) else 0
     val ringing = r.ringing.filter { u -> !r.has(u) }
-    val big = r.parts.size <= 4
+    val vids by GroupCall.videos.collectAsState()
+    val askCam = rememberMicCam()
+    val videoOn = GroupCall.cfg.collectAsState().value.video
+    // 1.23: whose picture is shown; my own goes small in the corner while someone else is in the call
+    fun vidOf(p: GPart): org.webrtc.VideoTrack? = if (p.u == me) (if (g.cam) vids[me] else null) else if (p.cam) vids[p.u] else null
+    val pip = g.cam && vids[me] != null && r.parts.size > 1 && g.pin != me
+    val shown = r.parts.filter { !(pip && it.u == me) }
+    val pinned = shown.firstOrNull { it.u == g.pin && vidOf(it) != null }
+    val big = shown.size <= 4
+    val anyVid = shown.any { vidOf(it) != null }
+    val tileH = when {
+        shown.size <= 1 -> 460.dp
+        shown.size == 2 && anyVid -> 300.dp
+        big -> if (anyVid) 230.dp else 170.dp
+        else -> 130.dp
+    }
 
+    @Composable
+    fun Tile(p: GPart, h: androidx.compose.ui.unit.Dp?, modifier: Modifier) {
+        val speaking = (g.levels[p.u] ?: 0f) > 0.03f && !p.muted
+        val react = g.reacts.lastOrNull { it.from == p.u }
+        val shape = RoundedCornerShape(14.dp)
+        val vt = vidOf(p)
+        Box(
+            modifier.then(if (h != null) Modifier.height(h) else Modifier).clip(shape).background(Color(0xFF1C2733))
+                .border(3.dp, if (speaking) Color(0xFF4CD964) else Color.Transparent, shape)
+                .clickable(enabled = p.u != me || vt != null) { if (p.u == me) GroupCall.pin(me) else person = p.u },
+            contentAlignment = Alignment.Center
+        ) {
+            if (vt != null) {
+                VideoView(vt, p.u == me && g.front, false, Modifier.fillMaxSize())
+                Text(
+                    (if (p.u == me) "شما" else Engine.nameOf(p.u)) + (if (p.u == r.host) " ★" else "") + (if (p.muted) " 🔇" else "") + (if (p.hand > 0) " ✋" else ""),
+                    color = Color.White, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.align(Alignment.BottomStart).background(Color(0x66000000), RoundedCornerShape(8.dp)).padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            } else Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Avatar(p.u, false, if (big) 72 else 54)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    (if (p.u == me) "شما" else Engine.nameOf(p.u)) + (if (p.u == r.host) " ★" else ""),
+                    color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(horizontal = 6.dp)
+                )
+                Text((if (p.muted) "🔇" else "") + (if (p.hand > 0) " ✋" else ""), fontSize = 14.sp)
+            }
+            if (g.pin == p.u && vt != null) Text("📌", fontSize = 16.sp, modifier = Modifier.align(Alignment.TopStart).padding(6.dp))
+            if (react != null) Text(react.emoji, fontSize = 34.sp, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp))
+        }
+    }
+
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -390,39 +465,26 @@ private fun GcActive(g: GState, r: GRoom) {
                 Modifier.clip(RoundedCornerShape(18.dp)).background(Color(0x33FFFFFF)).clickable { adding = true }.padding(horizontal = 12.dp, vertical = 8.dp)
             ) { Text("👤+", color = Color.White, fontSize = 16.sp, maxLines = 1, softWrap = false) }
         }
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(if (big) 2 else 3),
+        if (pinned != null) {
+            Tile(pinned, null, Modifier.weight(1f).fillMaxWidth().padding(horizontal = 10.dp).fillMaxHeight())
+            LazyRow(
+                Modifier.fillMaxWidth().padding(top = 8.dp), contentPadding = PaddingValues(horizontal = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) { items(shown.filter { it.u != pinned.u }, key = { it.u }) { p -> Tile(p, 120.dp, Modifier.width(96.dp)) } }
+        } else LazyVerticalGrid(
+            columns = GridCells.Fixed(if (shown.size <= 1) 1 else if (big) 2 else 3),
             modifier = Modifier.weight(1f).fillMaxWidth(),
             contentPadding = PaddingValues(10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            items(r.parts, key = { it.u }) { p ->
-                val speaking = (g.levels[p.u] ?: 0f) > 0.03f && !p.muted
-                val react = g.reacts.lastOrNull { it.from == p.u }
-                val shape = RoundedCornerShape(14.dp)
-                Box(
-                    Modifier.fillMaxWidth().height(if (big) 170.dp else 130.dp).clip(shape).background(Color(0xFF1C2733))
-                        .border(3.dp, if (speaking) Color(0xFF4CD964) else Color.Transparent, shape)
-                        .clickable(enabled = p.u != me) { person = p.u },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Avatar(p.u, false, if (big) 72 else 54)
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            (if (p.u == me) "شما" else Engine.nameOf(p.u)) + (if (p.u == r.host) " ★" else ""),
-                            color = Color.White, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.padding(horizontal = 6.dp)
-                        )
-                        Text((if (p.muted) "🔇" else "") + (if (p.hand > 0) " ✋" else ""), fontSize = 14.sp)
-                    }
-                    if (react != null) Text(react.emoji, fontSize = 34.sp, modifier = Modifier.align(Alignment.TopEnd).padding(8.dp))
-                }
-            }
+            items(shown, key = { it.u }) { p -> Tile(p, tileH, Modifier.fillMaxWidth()) }
         }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
             GBtn(if (g.muted) "🔇" else "🎤", "میکروفون", if (g.muted) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { GroupCall.toggleMute() }
+            if (videoOn) GBtn(if (g.cam) "📷" else "📷", if (g.cam) "دوربین" else "دوربین خاموش", if (g.cam) Color(0xFF3390EC) else Color(0x33FFFFFF)) {
+                if (g.cam) GroupCall.toggleCam() else askCam { GroupCall.toggleCam() }
+            }
             val (ico, cap) = when (g.route) {
                 AudioRoute.BLUETOOTH -> "🎧" to "بلوتوث"
                 AudioRoute.SPEAKER -> "🔊" to "بلندگو"
@@ -441,8 +503,23 @@ private fun GcActive(g: GState, r: GRoom) {
             GBtn("✖", "خروج", Color(0xFFE53935)) { GroupCall.leave() }
         }
     }
+    // my own picture, small in the corner; tap = show it big, 🔄 = front / back camera
+    if (pip) {
+        Box(Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = 12.dp, bottom = 112.dp).size(96.dp, 128.dp).clip(RoundedCornerShape(12.dp)).background(Color.Black)
+            .clickable { GroupCall.pin(me) }) {
+            VideoView(vids[me], g.front, true, Modifier.fillMaxSize())
+        }
+    }
+    if (g.cam) {
+        Box(
+            Modifier.align(Alignment.BottomStart).navigationBarsPadding().padding(start = if (pip) 116.dp else 12.dp, bottom = 112.dp).size(40.dp).clip(CircleShape)
+                .background(Color(0x66000000)).clickable { GroupCall.switchCam() },
+            contentAlignment = Alignment.Center
+        ) { Text("🔄", fontSize = 18.sp) }
+    }
+    }
 
-    person?.let { u -> PersonSheet(u, host) { person = null } }
+    person?.let { u -> PersonSheet(u, host, r.parts.firstOrNull { it.u == u }?.let { vidOf(it) } != null, g.pin == u) { person = null } }
     if (adding) {
         val inCall = (r.parts.map { it.u } + r.ringing).toSet()
         val gm = r.group?.let { k -> Engine.groups.value.firstOrNull { it.key == k }?.members } ?: emptyList()
@@ -458,7 +535,7 @@ private fun GcActive(g: GState, r: GRoom) {
 
 /** Tap a person: their volume (only on this phone), and for the one who started the call: mute / remove. */
 @Composable
-private fun PersonSheet(u: String, host: Boolean, onClose: () -> Unit) {
+private fun PersonSheet(u: String, host: Boolean, vid: Boolean, pinned: Boolean, onClose: () -> Unit) {
     val vols by GroupCall.volume.collectAsState()
     var confirmRemove by remember { mutableStateOf(false) }
     AlertDialog(
@@ -469,6 +546,7 @@ private fun PersonSheet(u: String, host: Boolean, onClose: () -> Unit) {
                 val v = vols[u] ?: 1f
                 Text("🔈 بلندی صدا: ${U.fa((v * 100).toInt())}٪", fontSize = 14.sp)
                 Slider(value = v, onValueChange = { GroupCall.setVolume(u, it) }, valueRange = 0f..2f)
+                if (vid) TextButton(onClick = { GroupCall.pin(u); onClose() }) { Text(if (pinned) "📌 برداشتن سنجاق" else "📌 نمایش بزرگ (سنجاق)") }
                 if (host) {
                     TextButton(onClick = { GroupCall.host(u, "mute"); onClose() }) { Text("🔇 بستن صدای او برای همه") }
                     TextButton(onClick = { confirmRemove = true }) { Text("⛔ بیرون کردن از تماس", color = MaterialTheme.colorScheme.error) }

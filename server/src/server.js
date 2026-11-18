@@ -882,7 +882,7 @@ async function route(req, res) {
     const op = p.slice('/api/gcall/'.length);
     try {
       if (op === 'start') return send(res, 200, { room: gcalls.start(user, b) });
-      if (op === 'join') return send(res, 200, { room: gcalls.join(user, b.id) });
+      if (op === 'join') return send(res, 200, { room: gcalls.join(user, b.id, { cam: b.cam === true }) });
       if (op === 'leave') { gcalls.leave(user, b.id); return send(res, 200, { ok: true }); }
       if (op === 'decline') { gcalls.decline(user, b.id); return send(res, 200, { ok: true }); }
       if (op === 'invite') return send(res, 200, { room: gcalls.invite(user, b.id, b.users) });

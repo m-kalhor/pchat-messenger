@@ -12,7 +12,11 @@
  * Only the person who started the call may mute others or remove them. The call ends when the last one leaves.
  *
  * Admin panel settings (card «تماس گروهی»): on/off, the group «همه» on/off, groups turned off one by one,
- * the most people in a voice / video call, the most calls at the same time.
+ * the most people in a call, the most cameras on at once (video), the most calls at the same time.
+ *
+ * 1.23: video. Anyone in the call may turn their camera on or off at any time (part.cam); at most max_video
+ * cameras are on at once, the others stay voice only. A call started as a video call (room.video) rings as one,
+ * and the people who join it try to turn their camera on (if there is still room).
  */
 const crypto = require('node:crypto');
 const { getSetting, setSetting } = require('./db');
@@ -37,7 +41,7 @@ function cfg() {
     max_voice: int('gcall_max_voice', DEFAULTS.max_voice, 2, 8),
     max_video: int('gcall_max_video', DEFAULTS.max_video, 2, 4),
     max_rooms: int('gcall_max_rooms', DEFAULTS.max_rooms, 1, 50),
-    // video group calls come in a later release; until then the apps only offer voice
+    // 1.23: cameras in group calls (off until the admin turns it on)
     video: getSetting('gcall_video', DEFAULTS.video ? '1' : '0') === '1',
   };
 }
@@ -103,8 +107,8 @@ function create(deps) {
     for (const u of [...r.parts.keys(), ...ringing]) { const k = pub(u); if (k) keys[u] = k; }
     return {
       id: r.id, group: r.gkey, title: r.gkey ? nameOf(r.gkey) : '', host: r.host, video: r.video, started: r.started,
-      parts: [...r.parts.entries()].map(([u, p]) => ({ u, muted: !!p.muted, hand: p.hand || 0, joined: p.joined })),
-      ringing, members: r.gkey ? [] : [...r.extra], keys, max: r.max,
+      parts: [...r.parts.entries()].map(([u, p]) => ({ u, muted: !!p.muted, hand: p.hand || 0, joined: p.joined, cam: !!p.cam })),
+      ringing, members: r.gkey ? [] : [...r.extra], keys, max: r.max, max_cam: cfg().max_video,
     };
   }
   function announce(r) {
@@ -143,7 +147,7 @@ function create(deps) {
     if (rooms.size >= c.max_rooms) throw err(429, 'gcall_busy');
     const r = {
       id: crypto.randomBytes(8).toString('hex'), gkey: null, host: user, video, started: now(),
-      parts: new Map(), invited: new Map(), extra: new Set([user]), max: video ? c.max_video : c.max_voice, gone: new Map(),
+      parts: new Map(), invited: new Map(), extra: new Set([user]), max: c.max_voice, gone: new Map(),
     };
     let toRing = [];
     if (b.group != null) {
@@ -171,7 +175,7 @@ function create(deps) {
     }
     if (inCall(user)) leave(user, inCall(user).id);
     rooms.set(r.id, r);
-    r.parts.set(user, { joined: now(), muted: false, hand: 0 });
+    r.parts.set(user, { joined: now(), muted: false, hand: 0, cam: video });
     if (deps.usage) deps.usage.add(user, 'calls_out', 1);
     for (const u of toRing) r.invited.set(u, now());
     announce(r);
@@ -185,7 +189,13 @@ function create(deps) {
     return r;
   }
 
-  function join(user, id) {
+  /** Cameras on in the room, not counting [but]. */
+  const cams = (r, but) => [...r.parts].filter(([u, p]) => p.cam && u !== but).length;
+  /** May this person turn the camera on now? */
+  const camRoom = (r, u) => cfg().video && cams(r, u) < cfg().max_video;
+
+  /** opts.cam: join with the camera on (if video is allowed and there is room; the view says what happened). */
+  function join(user, id, opts = {}) {
     const r = get(id);
     if (!mayJoin(r, user)) throw err(403, 'not_invited');
     if (r.gkey && !groupAllowed(r.gkey)) throw err(403, 'gcall_off_here');
@@ -193,7 +203,7 @@ function create(deps) {
       if (r.parts.size >= r.max) throw err(409, 'gcall_full');
       const other = inCall(user);
       if (other) leave(user, other.id);
-      r.parts.set(user, { joined: now(), muted: false, hand: 0 });
+      r.parts.set(user, { joined: now(), muted: false, hand: 0, cam: !!opts.cam && camRoom(r, user) });
       r.invited.delete(user);
       if (deps.usage) deps.usage.add(user, 'calls_in', 1);
       announce(r);
@@ -254,6 +264,11 @@ function create(deps) {
     let changed = false;
     if (typeof b.muted === 'boolean' && b.muted !== p.muted) { p.muted = b.muted; changed = true; }
     if (typeof b.hand === 'boolean') { const h = b.hand ? (p.hand || now()) : 0; if (h !== p.hand) { p.hand = h; changed = true; } }
+    if (typeof b.cam === 'boolean' && b.cam !== !!p.cam) {
+      if (b.cam && !cfg().video) throw err(403, 'gcall_video_off');
+      if (b.cam && !camRoom(r, user)) throw err(409, 'gcall_video_full');
+      p.cam = b.cam; changed = true;
+    }
     if (changed) announce(r);
     if (b.react != null) {
       if (typeof b.react !== 'string' || !deps.okEmoji(b.react)) throw err(400, 'bad_emoji');

@@ -1,8 +1,11 @@
 package com.pchat.app
 
+import android.Manifest
+import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
@@ -13,25 +16,32 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.webrtc.AudioSource
 import org.webrtc.AudioTrack
+import org.webrtc.Camera2Enumerator
+import org.webrtc.CameraVideoCapturer
 import org.webrtc.DataChannel
 import org.webrtc.IceCandidate
 import org.webrtc.MediaConstraints
 import org.webrtc.MediaStream
+import org.webrtc.MediaStreamTrack
 import org.webrtc.PeerConnection
 import org.webrtc.RTCStatsReport
 import org.webrtc.RtpTransceiver
 import org.webrtc.SessionDescription
+import org.webrtc.SurfaceTextureHelper
+import org.webrtc.VideoSource
+import org.webrtc.VideoTrack
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /** One person in a group call (server view). */
-data class GPart(val u: String, val muted: Boolean, val hand: Long, val joined: Long)
+data class GPart(val u: String, val muted: Boolean, val hand: Long, val joined: Long, val cam: Boolean = false)
 
 /** A group call "room" as the server sends it (see server/src/gcall.js, view()). */
 data class GRoom(
     val id: String, val group: String?, val title: String, val host: String, val video: Boolean, val started: Long,
-    val parts: List<GPart>, val ringing: List<String>, val members: List<String>, val keys: Map<String, String>, val max: Int
+    val parts: List<GPart>, val ringing: List<String>, val members: List<String>, val keys: Map<String, String>, val max: Int,
+    val maxCam: Int = 4
 ) {
     fun has(u: String) = parts.any { it.u == u }
     /** The chat this call belongs to: the group, or (a call without a group) the person who started it. */
@@ -56,14 +66,18 @@ data class GState(
     val bt: Boolean = false,
     /** username -> 0..1, who is speaking */
     val levels: Map<String, Float> = emptyMap(),
-    val reacts: List<GReact> = emptyList()
+    val reacts: List<GReact> = emptyList(),
+    /** 1.23: my camera is on; front or back camera; the person shown big */
+    val cam: Boolean = false,
+    val front: Boolean = true,
+    val pin: String = ""
 )
 
 fun parseRoom(o: JSONObject): GRoom {
     val pa = o.optJSONArray("parts") ?: JSONArray()
     val parts = (0 until pa.length()).map {
         val p = pa.getJSONObject(it)
-        GPart(p.getString("u"), p.optBoolean("muted"), p.optLong("hand"), p.optLong("joined"))
+        GPart(p.getString("u"), p.optBoolean("muted"), p.optLong("hand"), p.optLong("joined"), p.optBoolean("cam"))
     }
     fun strs(a: JSONArray?) = if (a == null) emptyList() else (0 until a.length()).map { a.getString(it) }
     val k = o.optJSONObject("keys")
@@ -72,7 +86,7 @@ fun parseRoom(o: JSONObject): GRoom {
     return GRoom(
         o.getString("id"), if (o.isNull("group")) null else o.optString("group").ifEmpty { null }, o.optString("title", ""),
         o.optString("host", ""), o.optBoolean("video"), o.optLong("started"), parts, strs(o.optJSONArray("ringing")),
-        strs(o.optJSONArray("members")), keys, o.optInt("max", 8)
+        strs(o.optJSONArray("members")), keys, o.optInt("max", 8), o.optInt("max_cam", 4)
     )
 }
 
@@ -85,6 +99,10 @@ fun parseGCfg(o: JSONObject?): GCfg =
  * participants has its own WebRTC connection, and the SDP / ICE between them is end-to-end encrypted with
  * the pair's keys. The newcomer sends the offers; the people already in the call answer. All connections
  * share one microphone track.
+ *
+ * 1.23: video. Every connection between two 1.23+ apps carries one video line from the start (the offer and
+ * the answer say v:1), so turning a camera on or off only swaps the track that is sent, with no new
+ * offer/answer. An older app gets no video from us. The server keeps who has the camera on (at most max_cam).
  */
 object GroupCall {
     val state = MutableStateFlow(GState())
@@ -93,12 +111,23 @@ object GroupCall {
     val cfg = MutableStateFlow(GCfg())
     /** username -> 0..2 playback volume (per person, like Telegram); 1 = normal. */
     val volume = MutableStateFlow<Map<String, Float>>(emptyMap())
+    /** 1.23: the video of each person (mine under my own name while the camera is on). */
+    val videos = MutableStateFlow<Map<String, VideoTrack>>(emptyMap())
+    private const val GROUP_KBPS = 500
 
     private class Peer(val pc: PeerConnection) {
         val ice = ArrayList<IceCandidate>()
         @Volatile var remoteSet = false
         @Volatile var track: AudioTrack? = null
+        /** the video line, and whether the other app shows video (1.23+) */
+        @Volatile var vt: RtpTransceiver? = null
+        @Volatile var v = false
     }
+
+    private var capturer: CameraVideoCapturer? = null
+    private var vhelper: SurfaceTextureHelper? = null
+    private var vsrc: VideoSource? = null
+    private var vtrack: VideoTrack? = null
 
     private val main = Handler(Looper.getMainLooper())
     private val peers = ConcurrentHashMap<String, Peer>()
@@ -132,7 +161,7 @@ object GroupCall {
     // ------------------------------------------------------------ actions
 
     /** From a group chat ([group]; [ring] = who rings in a big group) or with chosen people ([users]). */
-    fun start(group: String?, users: List<String>?, ring: List<String>?) {
+    fun start(group: String?, users: List<String>?, ring: List<String>?, video: Boolean = false) {
         if (busy() || CallManager.state.value.phase != CallPhase.IDLE) { toast("اول تماس فعلی را تمام کنید"); return }
         set { GState(GPhase.JOINING) }
         Engine.scope.launch {
@@ -142,6 +171,7 @@ object GroupCall {
                 if (group != null) b.put("group", group)
                 if (users != null) b.put("users", JSONArray(users))
                 if (ring != null) b.put("ring", JSONArray(ring))
+                if (video) b.put("video", true)
                 val r = parseRoom(Api.gcall("start", b).getJSONObject("room"))
                 enter(r)
                 CallTones.play(CallTones.Tone.RINGBACK)
@@ -169,7 +199,9 @@ object GroupCall {
     private fun doJoin(id: String, prepared: Boolean) {
         try {
             if (!prepared) prepare()
-            val r = parseRoom(Api.gcall("join", JSONObject().put("id", id)).getJSONObject("room"))
+            val known = rooms.value[id] ?: state.value.room?.takeIf { it.id == id }
+            val cam = known?.video == true && videoOn() && camAllowed()
+            val r = parseRoom(Api.gcall("join", JSONObject().put("id", id).put("cam", cam)).getJSONObject("room"))
             enter(r)
             // the newcomer calls everyone already in the call
             for (p in r.parts) if (p.u != me) { val u = p.u; post { offerTo(u) } }
@@ -278,6 +310,102 @@ object GroupCall {
         Engine.cancelCallNotification()
         CallManager.startCallService(false)
         startLevels()
+        if (r.parts.firstOrNull { it.u == me }?.cam == true) {
+            if (!camOn()) act(JSONObject().put("cam", false))
+        }
+    }
+
+    // ------------------------------------------------------------ 1.23: camera
+
+    fun videoOn(): Boolean = cfg.value.video
+    fun camAllowed(): Boolean = ContextCompat.checkSelfPermission(Engine.app, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+    /** Opens the camera and sends it to everyone who shows video; false when there is no camera or no permission. */
+    private fun camOn(): Boolean {
+        synchronized(lock) { if (vtrack != null) return true }
+        if (!camAllowed()) return false
+        return try {
+            val f = CallManager.ensureFactory()
+            val e = Camera2Enumerator(Engine.app)
+            val front = state.value.front
+            val name = e.deviceNames.firstOrNull { e.isFrontFacing(it) == front } ?: e.deviceNames.firstOrNull() ?: return false
+            val cap = e.createCapturer(name, null) ?: return false
+            val hp = SurfaceTextureHelper.create("gcapture", CallManager.egl.eglBaseContext)
+            val vs = f.createVideoSource(false)
+            cap.initialize(hp, Engine.app, vs.capturerObserver)
+            cap.startCapture(640, 360, 15)
+            val vt = f.createVideoTrack("gv0", vs)
+            synchronized(lock) { capturer = cap; vhelper = hp; vsrc = vs; vtrack = vt }
+            CallManager.startCallService(true) // the call service may now use the camera in the background too
+            set { it.copy(cam = true, front = e.isFrontFacing(name)) }
+            videos.value = videos.value + (me to vt)
+            for (p in peers.values) applyVideo(p)
+            true
+        } catch (x: Exception) { stopCam(); false }
+    }
+
+    private fun stopCam() {
+        val (cap, hp, vs, vt) = synchronized(lock) {
+            listOf<Any?>(capturer, vhelper, vsrc, vtrack).also { capturer = null; vhelper = null; vsrc = null; vtrack = null }
+        }
+        set { it.copy(cam = false) }
+        videos.value = videos.value - me
+        for (p in peers.values) applyVideo(p)
+        Engine.scope.launch {
+            try { (cap as? CameraVideoCapturer)?.stopCapture() } catch (e: Exception) { }
+            try { (cap as? CameraVideoCapturer)?.dispose() } catch (e: Exception) { }
+            try { (vt as? VideoTrack)?.dispose() } catch (e: Exception) { }
+            try { (vs as? VideoSource)?.dispose() } catch (e: Exception) { }
+            try { (hp as? SurfaceTextureHelper)?.dispose() } catch (e: Exception) { }
+        }
+    }
+
+    /** Camera on / off (ask for the CAMERA permission first). At most max_cam cameras at once, the server decides. */
+    fun toggleCam() {
+        val r = state.value.room ?: return
+        if (state.value.phase != GPhase.ACTIVE) return
+        Engine.scope.launch {
+            if (state.value.cam) {
+                stopCam()
+                try { update(parseRoom(Api.gcall("act", JSONObject().put("id", r.id).put("cam", false)).getJSONObject("room"))) } catch (e: Exception) { }
+                return@launch
+            }
+            if (!videoOn()) { toast(ERRS["gcall_video_off"] ?: ""); return@launch }
+            if (!camAllowed()) { toast("برای روشن کردن دوربین باید اجازهٔ دوربین بدهید"); return@launch }
+            try {
+                update(parseRoom(Api.gcall("act", JSONObject().put("id", r.id).put("cam", true)).getJSONObject("room")))
+            } catch (e: Exception) { toast(errText(e)); return@launch }
+            if (!camOn()) {
+                toast("دوربین روشن نشد")
+                try { update(parseRoom(Api.gcall("act", JSONObject().put("id", r.id).put("cam", false)).getJSONObject("room"))) } catch (e: Exception) { }
+            }
+        }
+    }
+
+    /** Front / back camera. */
+    fun switchCam() {
+        val cap = synchronized(lock) { capturer } ?: return
+        try {
+            cap.switchCamera(object : CameraVideoCapturer.CameraSwitchHandler {
+                override fun onCameraSwitchDone(front: Boolean) { set { it.copy(front = front) } }
+                override fun onCameraSwitchError(e: String?) { toast("دوربین دیگری پیدا نشد") }
+            })
+        } catch (e: Exception) { }
+    }
+
+    fun pin(u: String) = set { it.copy(pin = if (it.pin == u) "" else u) }
+
+    /** What this connection sends on its video line: my camera, if it is on and the other app shows video. */
+    private fun applyVideo(p: Peer) {
+        val t = p.vt ?: return
+        val track = synchronized(lock) { vtrack }?.takeIf { p.v }
+        try {
+            t.sender.setTrack(track, false)
+            if (track != null) {
+                val prm = t.sender.parameters
+                prm.encodings.firstOrNull()?.let { it.maxBitrateBps = GROUP_KBPS * 1000; t.sender.setParameters(prm) }
+            }
+        } catch (e: Exception) { }
     }
 
     private fun update(r: GRoom) {
@@ -317,6 +445,8 @@ object GroupCall {
     private fun cleanup() {
         val list = peers.values.toList()
         peers.clear()
+        stopCam()
+        videos.value = emptyMap()
         val (t, src) = synchronized(lock) { Pair(atrack, asrc).also { atrack = null; asrc = null } }
         Engine.scope.launch {
             for (p in list) { try { p.pc.dispose() } catch (e: Exception) { } }
@@ -420,7 +550,7 @@ object GroupCall {
         } catch (e: Exception) { }
     }
 
-    private fun peer(u: String): Peer {
+    private fun peer(u: String, offerer: Boolean = false): Peer {
         peers[u]?.let { return it }
         val t = turn ?: throw IllegalStateException("no turn")
         val servers = listOf(PeerConnection.IceServer.builder(t.urls).setUsername(t.user).setPassword(t.cred).createIceServer())
@@ -436,6 +566,8 @@ object GroupCall {
         val p = Peer(pc)
         holder[0] = p
         atrack?.let { pc.addTrack(it, listOf("g0")) }
+        // 1.23: the offer always has a video line (an older app answers it but gets nothing)
+        if (offerer) p.vt = pc.addTransceiver(MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO, RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.SEND_RECV))
         peers[u] = p
         return p
     }
@@ -458,6 +590,7 @@ object GroupCall {
         }
         override fun onTrack(transceiver: RtpTransceiver) {
             val tr = transceiver.receiver.track()
+            if (tr is VideoTrack) { videos.value = videos.value + (u to tr); return }
             if (tr is AudioTrack) {
                 holder[0]?.track = tr
                 try { tr.setVolume((volume.value[u] ?: 1f).toDouble()) } catch (e: Exception) { }
@@ -477,15 +610,16 @@ object GroupCall {
     private suspend fun offerTo(u: String) {
         if (state.value.phase != GPhase.ACTIVE) return
         try {
-            val p = peer(u)
+            val p = peer(u, true)
             val o = create(p.pc, true)
             setDesc(p.pc, o, true)
-            send(u, "offer", JSONObject().put("sdp", o.description))
+            send(u, "offer", JSONObject().put("sdp", o.description).put("v", 1))
         } catch (e: Exception) { }
     }
 
     private fun dropPeer(u: String) {
         val p = peers.remove(u) ?: return
+        videos.value = videos.value - u
         Engine.scope.launch { try { p.pc.dispose() } catch (e: Exception) { } }
         set { it.copy(levels = it.levels - u) }
     }
@@ -509,17 +643,25 @@ object GroupCall {
                         if (bad) dropPeer(u)
                     }
                     val p = peer(u)
+                    p.v = j.optInt("v") == 1
                     setDesc(p.pc, SessionDescription(SessionDescription.Type.OFFER, j.optString("sdp")), false)
                     p.remoteSet = true
+                    if (p.v && p.vt == null) {
+                        p.vt = p.pc.transceivers.firstOrNull { it.mediaType == MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO }
+                        p.vt?.setDirection(RtpTransceiver.RtpTransceiverDirection.SEND_RECV)
+                    }
+                    applyVideo(p)
                     flush(p)
                     val a = create(p.pc, false)
                     setDesc(p.pc, a, true)
-                    send(u, "answer", JSONObject().put("sdp", a.description))
+                    send(u, "answer", JSONObject().put("sdp", a.description).put("v", 1))
                 }
                 "answer" -> {
                     val p = peers[u] ?: return
                     setDesc(p.pc, SessionDescription(SessionDescription.Type.ANSWER, j.optString("sdp")), false)
                     p.remoteSet = true
+                    p.v = j.optInt("v") == 1
+                    applyVideo(p)
                     flush(p)
                 }
                 "ice" -> {
@@ -587,7 +729,8 @@ object GroupCall {
         "gcall_full" to "تماس پر است", "gcall_busy" to "الان تماس‌های گروهی زیادی در جریان است؛ کمی بعد دوباره امتحان کنید",
         "not_invited" to "شما به این تماس دعوت نشده‌اید", "no_such_call" to "این تماس تمام شده است",
         "not_allowed" to "فقط با مخاطبان خودتان می‌توانید تماس بگیرید", "too_many" to "تعداد نفرات بیش از حد مجاز است",
-        "gcall_video_off" to "تماس تصویری گروهی هنوز فعال نیست", "no_users" to "کسی انتخاب نشده",
+        "gcall_video_off" to "ویدیو گروهی در این سرور خاموش است", "no_users" to "کسی انتخاب نشده",
+        "gcall_video_full" to "ظرفیت ویدیو پر است؛ وقتی کسی دوربینش را خاموش کند می‌توانید روشن کنید",
         "not_host" to "فقط شروع‌کنندهٔ تماس این کار را می‌تواند بکند", "no_such_user" to "این کاربر پیدا نشد"
     )
 
