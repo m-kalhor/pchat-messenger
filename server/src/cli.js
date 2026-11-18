@@ -39,10 +39,14 @@ if (cmd === 'add') {
   // 1.18: the authenticator phone is lost: sign in to the panel with the password alone, then turn it on again
   require('./totp').disable();
   console.log('Admin panel second factor (authenticator code) is OFF. Turn it on again in the panel: «حساب مدیر».');
+} else if (cmd === 'devices-off') {
+  // 1.24: a phone with the «سپن مدیر» app was lost: remove every paired phone (their open sessions end too)
+  const n = require('./admindevices').removeAll();
+  console.log(`Removed ${n} paired admin phone(s). Pair again from the app after signing in with the password.`);
 } else if (cmd === 'adminuser') {
   if (!name || !/^[a-z0-9_.\-]{3,32}$/.test(name)) { console.error('Admin username: 3-32 chars of a-z, 0-9, _ . -'); process.exit(1); }
   setSetting('admin_user', name);
   console.log(`Admin panel username: ${name}`);
 } else {
-  console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw  |  msgadmin adminuser <name>  |  msgadmin totp-off');
+  console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw  |  msgadmin adminuser <name>  |  msgadmin totp-off  |  msgadmin devices-off');
 }

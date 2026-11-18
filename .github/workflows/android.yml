@@ -37,13 +37,21 @@ jobs:
           fi
       - name: Build release APK
         run: ./gradlew assembleRelease --stacktrace
-      - name: Check the APK is signed and not debuggable
+      - name: Check the APKs are signed and not debuggable
         run: |
-          APK=app/build/outputs/apk/release/app-release.apk
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BT/apksigner" verify --verbose --print-certs "$APK" | grep -E "Verified using|Signer #1 certificate DN|SHA-256"
-          if "$BT/aapt" dump badging "$APK" | grep -q "application-debuggable"; then echo "::error::release APK is debuggable"; exit 1; fi
+          for APK in app/build/outputs/apk/release/app-release.apk admin/build/outputs/apk/release/admin-release.apk; do
+            echo "== $APK"
+            "$BT/apksigner" verify --verbose --print-certs "$APK" | grep -E "Verified using|Signer #1 certificate DN|SHA-256"
+            if "$BT/aapt" dump badging "$APK" | grep -q "application-debuggable"; then echo "::error::$APK is debuggable"; exit 1; fi
+            "$BT/aapt" dump badging "$APK" | grep -E "^package:"
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: sepan-release-apk
           path: android/app/build/outputs/apk/release/*.apk
+      # 1.24: «سپن مدیر» (admin panel app), a separate small APK only for the admin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sepan-admin-apk
+          path: android/admin/build/outputs/apk/release/*.apk

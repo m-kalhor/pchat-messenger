@@ -62,6 +62,56 @@ select{background:#0f1720;color:var(--text);border:1px solid var(--line);border-
 .srt td.n{direction:ltr;text-align:right}.srt tr.tot td{font-weight:bold;border-top:2px solid var(--line)}
 .bar{height:4px;background:var(--pri);border-radius:2px;margin-top:3px;min-width:1px}
 .tag{font-size:11px;background:#3a1d22;color:#ff8b8b;border-radius:6px;padding:1px 6px;margin-right:4px}
+.only-m{display:none}
+/* 1.24: phones (and the «سپن مدیر» app): bottom tab bar, tables as cards, finger-sized controls */
+.bnav{position:fixed;left:0;right:0;bottom:0;z-index:7;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+.bnav button{flex:1;background:none;border:0;color:var(--mut);padding:7px 2px 6px;font-size:11px;min-height:56px;display:flex;flex-direction:column;align-items:center;gap:2px;cursor:pointer}
+.bnav button i{font-style:normal;font-size:20px;line-height:1}
+.bnav button.on{color:var(--pri)}
+.sheet{position:fixed;inset:0;z-index:8;background:rgba(0,0,0,.5);display:flex;align-items:flex-end}
+.sheet .in{background:var(--card);width:100%;border-radius:16px 16px 0 0;padding:10px 12px calc(16px + env(safe-area-inset-bottom))}
+.sheet .in button{display:flex;width:100%;align-items:center;gap:12px;background:none;border:0;color:var(--text);font-size:16px;padding:14px 10px;border-radius:10px;text-align:right;cursor:pointer}
+.sheet .in button.on{background:#1d3550;color:#fff}
+.sheet .in button i{font-style:normal;font-size:20px;width:28px;text-align:center}
+.devs .dv{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid var(--line)}
+.devs .dv:last-child{border-bottom:0}.devs .dv .nm{flex:1;min-width:0}
+@media(max-width:760px){
+  body{font-size:15px}
+  header{padding:10px 12px;padding-top:calc(10px + env(safe-area-inset-top))}
+  header h1{font-size:16px}
+  main{padding:10px 10px 150px}
+  .card{padding:12px;border-radius:12px;margin-bottom:10px}
+  .card[style*="max-width"]{max-width:none!important}
+  .only-m{display:initial}
+  button.pri,button.red,button.grn,button.sec{min-height:44px;padding:10px 14px;font-size:15px}
+  input[type=text],input[type=password],input[type=number],input:not([type]),select,textarea{min-height:44px;font-size:16px;min-width:0!important;max-width:100%}
+  input[type=checkbox]{width:24px;height:24px}
+  .row{gap:10px}.row>input,.row>select{flex:1 1 180px}
+  .row>span[style*="width:1"]{width:100%!important}
+  .kv{display:grid;grid-template-columns:1fr 1fr;gap:8px}.kv div{padding:8px}
+  .grid{grid-template-columns:1fr}
+  .cell{width:40px;height:38px}
+  .seg button{padding:10px 12px;font-size:14px}
+  .urow{padding:12px 8px}
+  .savebar{bottom:calc(56px + env(safe-area-inset-bottom));padding:8px 10px}
+  .savebar:not(.on){display:none}
+  .savebar .in{flex-wrap:wrap}.savebar .cnt{flex-basis:100%}
+  .savebar .in button{flex:1}
+  table.cards,table.cards tbody,table.cards tr,table.cards td{display:block;width:100%}
+  table.cards tr:first-child{display:none}
+  table.cards tr{border:1px solid var(--line);border-radius:10px;padding:6px 12px;margin-bottom:10px;background:#0f1720}
+  table.cards tr.tot{border-color:var(--pri)}
+  table.cards td{border:0;padding:7px 0;white-space:normal;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:8px;min-height:40px}
+  table.cards td::before{content:attr(data-label);color:var(--mut);font-size:13px}
+  table.cards td.ttl{font-weight:bold;font-size:16px;border-bottom:1px solid var(--line);margin-bottom:4px}
+  table.cards td.ttl::before,table.cards td.act::before{display:none}
+  table.cards td.act{justify-content:flex-start}
+  table.cards td.act button{flex:1 1 40%}
+  table.cards td input:not([type=checkbox]){flex:1 1 60%}
+  table.cards td .bar{flex-basis:100%}
+  #login{margin:8vh 12px}
+  #login input{width:100%}
+}
 </style>
 </head>
 <body>
@@ -69,6 +119,20 @@ select{background:#0f1720;color:var(--text);border:1px solid var(--line);border-
 <script>
 (function(){
 var csrf=null,S=null,tab='users',timer=null,admin=null;
+// 1.24: the «سپن مدیر» Android app adds this bridge (fingerprint sign-in, pairing); absent in a browser
+var APP=window.SepanAdmin||null;
+var MQ=window.matchMedia?matchMedia('(max-width:760px)'):null;
+function mobile(){return !!(MQ&&MQ.matches);}
+if(MQ&&MQ.addEventListener)MQ.addEventListener('change',function(){if(csrf&&S)render();});
+try{var t0=localStorage.getItem('adm_tab');if(t0)tab=t0;}catch(e){}
+// tables become one card per row on phones: each cell gets its column title as a label
+function cardify(tbl){
+  tbl.classList.add('cards');
+  var rows=tbl.querySelectorAll('tr');if(!rows.length)return tbl;
+  var heads=[].map.call(rows[0].children,function(c){return c.textContent.replace(/[▲▼]/g,'').trim();});
+  for(var i=1;i<rows.length;i++){[].forEach.call(rows[i].children,function(td,j){if(!td.hasAttribute('data-label'))td.setAttribute('data-label',heads[j]||'');});}
+  return tbl;
+}
 var app=document.getElementById('app');
 
 function h(tag,attrs){
@@ -94,7 +158,7 @@ async function api(method,path,body){
   if(!r.ok){if(r.status===401&&path!=='/login'){csrf=null;showLogin();}throw new Error(j.error||('HTTP '+r.status));}
   return j;
 }
-var ERR={ugroups_off:'ساخت گروه توسط کاربران خاموش است',bad_ugroup_settings:'مقدار نامعتبر (سقف هر کاربر ۰ تا ۵۰، اعضای گروه ۲ تا ۱۰۰۰، اعضای کانال ۲ تا ۵۰۰۰)',chans_off:'ساخت کانال توسط کاربران خاموش است',no_such_group:'این گروه دیگر نیست',not_member:'این کاربر عضو گروه نیست',bad_role:'نقش نامعتبر',bad_gcall_settings:'مقدار نامعتبر (حداکثر نفرات ۲ تا ۸، دوربین ۲ تا ۴، تماس هم‌زمان ۱ تا ۵۰)',bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری، رمز یا کد اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۵ دقیقه صبر کنید',bad_code:'کد اشتباه است یا وقتش گذشته؛ کد تازه را بزنید',bad_password_or_code:'رمز یا کد اشتباه است',totp_not_started:'دوباره از «فعال کردن» شروع کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_sms_provider:'سرویس‌دهندهٔ پیامک ناشناخته است',bad_sms_token:'توکن API نامعتبر است',bad_sms_from:'شمارهٔ خط ارسال فقط رقم (با + در ابتدا)',bad_sms_pattern:'کد الگو فقط حروف لاتین، رقم، - و _',bad_sms_param:'نام متغیر فقط حروف لاتین، رقم و _',sms_no_credit:'این سرویس‌دهنده نمایش اعتبار ندارد',sms_foreign_number:'پیامک فقط به شماره‌های ایران فرستاده می‌شود',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'تنظیمات پیامک کامل نیست',timeout:'سرور به سرویس پیامک نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
+var ERR={ugroups_off:'ساخت گروه توسط کاربران خاموش است',bad_ugroup_settings:'مقدار نامعتبر (سقف هر کاربر ۰ تا ۵۰، اعضای گروه ۲ تا ۱۰۰۰، اعضای کانال ۲ تا ۵۰۰۰)',chans_off:'ساخت کانال توسط کاربران خاموش است',no_such_group:'این گروه دیگر نیست',not_member:'این کاربر عضو گروه نیست',bad_role:'نقش نامعتبر',bad_gcall_settings:'مقدار نامعتبر (حداکثر نفرات ۲ تا ۸، دوربین ۲ تا ۴، تماس هم‌زمان ۱ تا ۵۰)',bad_call_settings:'مقدار نامعتبر (پینگ ۱۰۰ تا ۵۰۰۰، افت ۱ تا ۵۰، بیت‌ریت ۰ تا ۲۰۰۰۰)',bad_login:'نام کاربری، رمز یا کد اشتباه است',bad_password:'رمز اشتباه است',rate_limited:'تلاش زیاد؛ ۱۵ دقیقه صبر کنید',bad_code:'کد اشتباه است یا وقتش گذشته؛ کد تازه را بزنید',bad_password_or_code:'رمز یا کد اشتباه است',totp_not_started:'دوباره از «فعال کردن» شروع کنید',admin_password_not_set:'رمز ادمین تنظیم نشده (msgadmin adminpw)',invalid_username:'نام کاربری نامعتبر است',user_exists:'این کاربر وجود دارد',name_exists:'این نام تکراری است',bad_name:'نام نامعتبر است',invalid_cron:'عبارت cron نامعتبر است',bad_current_password:'رمز فعلی اشتباه است',bad_admin_username:'نام کاربری مدیر باید ۳ تا ۳۲ حرف از a-z ، 0-9 ، _ . - باشد',weak_password:'رمز جدید باید دست‌کم ۸ نویسه باشد',no_such_user:'این کاربر دیگر وجود ندارد',bad_pair:'ارتباط نامعتبر',bad_phone:'شمارهٔ موبایل نامعتبر است (فقط رقم، ۷ تا ۱۵ رقم)',duplicate_phone:'یک شمارهٔ موبایل برای دو کاربر ثبت شده',bad_sms_provider:'سرویس‌دهندهٔ پیامک ناشناخته است',bad_sms_token:'توکن API نامعتبر است',bad_sms_from:'شمارهٔ خط ارسال فقط رقم (با + در ابتدا)',bad_sms_pattern:'کد الگو فقط حروف لاتین، رقم، - و _',bad_sms_param:'نام متغیر فقط حروف لاتین، رقم و _',sms_no_credit:'این سرویس‌دهنده نمایش اعتبار ندارد',sms_foreign_number:'پیامک فقط به شماره‌های ایران فرستاده می‌شود',not_an_apk:'این فایل APK نیست',too_large:'فایل بیش از ۲۰۰ مگابایت است',bad_category:'این دسته وجود ندارد',bad_text:'متن خیلی بلند است',sms_not_configured:'تنظیمات پیامک کامل نیست',timeout:'سرور به سرویس پیامک نرسید (پایان مهلت)',bad_sticker:'تصویر پذیرفته نشد (فقط عکس ثابت تا ۵۱۲×۵۱۲)',sticker_too_large:'حجم تصویر زیاد است',pack_full:'پک پر است (۵۰۰)',bad_title:'نام پک را بنویسید',bad_device_key:'کلید گوشی نامعتبر است',device_exists:'این گوشی قبلاً ثبت شده',too_many_devices:'حداکثر ۱۰ گوشی؛ یکی را حذف کنید',pair_needs_fresh_login:'برای ثبت گوشی دوباره با رمز وارد شوید',device_unknown:'این گوشی دیگر ثبت نیست',bad_limit:'عدد خارج از محدوده است',no_such_pack:'این پک دیگر نیست',not_zip:'فایل zip خوانده نشد'};
 function msg2(e){return e?(ERR[e]||e):'';}
 function msg(e){return ERR[e.message]||e.message;}
 function fmtB(n){if(n<1024)return n.toFixed(0)+' B';if(n<1048576)return (n/1024).toFixed(1)+' KB';if(n<1073741824)return (n/1048576).toFixed(1)+' MB';return (n/1073741824).toFixed(2)+' GB';}
@@ -149,12 +213,14 @@ window.addEventListener('beforeunload',function(ev){if(csrf&&dirty()){ev.prevent
 
 async function showLogin(){
   clearInterval(timer);bar=null;
+  // 1.24: in the «سپن مدیر» app a paired phone signs in with its fingerprint / screen lock instead
+  if(APP){try{if(APP.paired()){APP.unlock();app.replaceChildren(h('div',{id:'login',class:'card'},h('h3',null,'در حال باز کردن…')));return;}}catch(x){}}
   var un=h('input',{type:'text',placeholder:'نام کاربری',value:'admin',autocomplete:'username',style:'direction:ltr'});
   var pw=h('input',{type:'password',placeholder:'رمز',autocomplete:'current-password'}),er=h('div',{class:'err'});
   // 1.18: with the second factor on, the 6-digit code from the authenticator app as well
   var need=false;try{need=!!(await api('GET','/login-info')).totp;}catch(e){}
   var code=h('input',{type:'text',inputmode:'numeric',autocomplete:'one-time-code',maxlength:'6',placeholder:'کد ۶ رقمی برنامهٔ Authenticator',style:'direction:ltr;text-align:center;letter-spacing:4px'});
-  var go=async function(){er.textContent='';try{var j=await api('POST','/login',{username:un.value,password:pw.value,code:need?code.value:undefined});csrf=j.csrf;admin=j.username;start();}catch(e){er.textContent=msg(e);code.value='';}};
+  var go=async function(){er.textContent='';try{var j=await api('POST','/login',{username:un.value,password:pw.value,code:need?code.value:undefined});csrf=j.csrf;admin=j.username;start();if(APP)try{APP.loggedIn();}catch(x){}}catch(e){er.textContent=msg(e);code.value='';}};
   pw.addEventListener('keydown',function(ev){if(ev.key==='Enter'){if(need&&!code.value)code.focus();else go();}});
   code.addEventListener('keydown',function(ev){if(ev.key==='Enter')go();});
   app.replaceChildren(h('div',{id:'login',class:'card'},h('h3',null,'ورود به پنل مدیریت'),un,h('div',{style:'height:8px'}),pw,
@@ -170,14 +236,29 @@ async function reload(){S=await api('GET','/state');prune();render();}
 function render(){
   clearInterval(timer);
   var tabs=[['users','کاربران'],['cats','دسته‌ها و گروه‌ها'],['links','ارتباط کاربران'],['login','ورود، پیامک و تماس'],['stk','استیکرها'],['ugr','گروه‌ها و کانال‌های کاربران'],['use','مصرف کاربران'],['mon','منابع سرور'],['bak','پشتیبان‌گیری'],['acct','حساب مدیر']];
-  var nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){tab=t[0];render();}},t[1]);}));
+  if(!tabs.some(function(t){return t[0]===tab;}))tab='users';
+  function go(t){tab=t;try{localStorage.setItem('adm_tab',t);}catch(e){}render();scrollTo(0,0);}
+  var nav;
+  if(mobile()){
+    // four tabs used most + «بیشتر» for the rest
+    var ICON={users:'👥',cats:'🗂',links:'🔗',login:'🔐',stk:'😀',ugr:'💬',use:'📊',mon:'📈',bak:'💾',acct:'👤'};
+    var SHORT={users:'کاربران',mon:'سرور',use:'مصرف',login:'ورود و پیامک'};
+    var main4=['users','mon','use','login'];
+    var more=function(){
+      var sh=h('div',{class:'sheet',onclick:function(e){if(e.target===sh)sh.remove();}},h('div',{class:'in'},
+        tabs.filter(function(t){return main4.indexOf(t[0])<0;}).map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){sh.remove();go(t[0]);}},h('i',null,ICON[t[0]]),t[1]);})));
+      document.body.appendChild(sh);};
+    nav=h('div',{class:'bnav'},main4.map(function(k){return h('button',{class:k===tab?'on':'',onclick:function(){go(k);}},h('i',null,ICON[k]),SHORT[k]);}),
+      h('button',{class:main4.indexOf(tab)<0?'on':'',onclick:more},h('i',null,main4.indexOf(tab)<0?ICON[tab]:'☰'),main4.indexOf(tab)<0?tabs.filter(function(t){return t[0]===tab;})[0][1].split(' ')[0]:'بیشتر'));
+  }else nav=h('nav',null,tabs.map(function(t){return h('button',{class:t[0]===tab?'on':'',onclick:function(){go(t[0]);}},t[1]);}));
   var box=h('main');
   var cnt=h('span',{class:'cnt'}),save=h('button',{class:'grn',onclick:saveAll},'ذخیرهٔ همهٔ تغییرات');
   var undo=h('button',{class:'sec',onclick:function(){if(!confirm('همهٔ تغییرات ذخیره‌نشده لغو شود؟'))return;P={users:{},cats:{},links:{},backup:null};render();}},'لغو تغییرات');
   bar={el:h('div',{class:'savebar'},h('div',{class:'in'},cnt,undo,save)),cnt:cnt,save:save,undo:undo};
   app.replaceChildren(
-    h('header',null,h('h1',null,'پنل مدیریت سپن'),h('span',{class:'mut'},admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},links:{},backup:null};showLogin();}},'خروج')),
-    nav,smsAlert,box,bar.el);
+    h('header',null,h('h1',null,mobile()?(tabs.filter(function(t){return t[0]===tab;})[0][1]):'پنل مدیریت سپن'),h('span',{class:'mut'},mobile()?'':admin||''),h('button',{class:'sec',onclick:async function(){if(!confirmDiscard())return;try{await api('POST','/logout');}catch(e){}csrf=null;P={users:{},cats:{},links:{},backup:null};if(APP){try{APP.loggedOut();}catch(x){}return;}showLogin();}},APP?'قفل':'خروج')),
+    smsAlert,box,bar.el,nav);
+  if(!mobile())app.insertBefore(nav,smsAlert);
   ({users:users,cats:cats,links:links,login:loginTab,stk:stickersTab,ugr:ugroupsTab,use:usageTab,mon:monitor,bak:backups,acct:account})[tab](box);
   checkSms();
   updateBar();
@@ -186,7 +267,7 @@ function render(){
 var smsAlert=h('div');
 async function checkSms(){
   try{var A=await api('GET','/auth');
-    smsAlert.replaceChildren(A.ready&&A.status.down?h('div',{class:'card',style:'margin:0 18px 14px;border-color:var(--red);background:#3a1d22'},
+    smsAlert.replaceChildren(A.ready&&A.status.down?h('div',{class:'card',style:'margin:'+(mobile()?'10px 10px 0':'0 18px 14px')+';border-color:var(--red);background:#3a1d22'},
       '⚠️ ارسال پیامک ناموفق است ('+msg2(A.status.last_error.error)+' — '+fmtDate(A.status.last_error.t)+'). کاربران می‌توانند با کد از دستگاه دیگرشان یا با «کد ورود» از همین پنل (زبانهٔ کاربران) وارد شوند.'):'');
   }catch(e){}
 }
@@ -233,11 +314,11 @@ function users(box){
       x.addEventListener('change',function(){pendUser(u.username,'categories',ids());td.className=x.checked!==(u.categories.indexOf(c.id)>=0)?'chg':'';});
       return td;});
     return h('tr',null,
-      h('td',{title:u.bio||''},h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null,u.bio?h('div',{class:'mut',style:'font-size:12px;white-space:normal;max-width:220px'},u.bio):null),
+      h('td',{title:u.bio||'',class:'ttl'},h('span',{class:'dot'+(u.online?' on':'')}),u.username,u.disabled?h('span',{class:'mut'},' (غیرفعال)'):null,u.bio?h('div',{class:'mut',style:'font-size:12px;white-space:normal;max-width:220px'},u.bio):null),
       h('td',null,name),h('td',null,ph),cells,
       h('td',{title:'عیب‌یابی تماس: پینگ و مسیر در تماس‌های این کاربر (همان لحظه ذخیره می‌شود)'},diagBox(u)),
       h('td',{title:'انتخاب مسیر اتصال در تماس برای این کاربر (همان لحظه ذخیره می‌شود؛ در تماس بعدی اثر می‌کند)'},routeBox(u)),
-      h('td',null,
+      h('td',{class:'act'},
         h('button',{class:'pri',title:'کد یک‌بارمصرف ۱۰ دقیقه‌ای برای ورود، وقتی پیامک نمی‌رسد و دستگاه دیگری وارد نیست',onclick:guard(async function(){var j=await api('POST','/users/'+u.username+'/logincode');
           alert('کد ورود '+u.username+': '+j.code+'\n\nتا ۱۰ دقیقه و فقط یک بار معتبر است. کاربر در صفحهٔ ورود '+(j.phone?'شمارهٔ موبایلش ('+j.phone+')':'نام کاربری‌اش ('+u.username+')')+' را می‌زند و بعد «کد را دارم» و همین کد را وارد می‌کند. کد را فقط حضوری یا تلفنی به خود او بدهید.');})},'کد ورود'),' ',
         h('button',{class:'sec',onclick:guard(async function(){if(!confirm('رمز جدید برای '+u.username+' ساخته شود؟'))return;var j=await api('POST','/users/'+u.username+'/reset');prompt('رمز جدید '+u.username+':',j.password);await reload();})},'ریست رمز'),' ',
@@ -246,7 +327,7 @@ function users(box){
   });
   box.appendChild(h('div',{class:'card'},h('h3',null,'کاربران ('+S.users.length+')'),
     h('div',{class:'mut',style:'margin-bottom:8px'},'نام نمایشی، موبایل (برای ورود با پیامک؛ هر شماره فقط برای یک کاربر) و عضویت در دسته‌ها با دکمهٔ «ذخیرهٔ همهٔ تغییرات» پایین صفحه ثبت می‌شود. ریست رمز، غیرفعال‌سازی و حذف همان لحظه انجام می‌شوند.'),
-    h('table',null,head,rows)));
+    cardify(h('table',null,head,rows))));
 }
 
 // ---------------- categories ----------------
@@ -262,7 +343,7 @@ function cats(box){
     return h('tr',null,h('td',null,r),h('td',null,c.count),h('td',{class:'mut',style:'white-space:normal'},members||'—'),
       h('td',null,h('button',{class:'red',onclick:guard(async function(){if(!confirm('دسته «'+c.name+'» حذف شود؟ گروه آن برای همه بسته می‌شود.'))return;await api('POST','/categories/'+c.id+'/delete');await reload();})},'حذف')));
   });
-  box.appendChild(h('div',{class:'card'},h('table',null,h('tr',null,h('th',null,'نام'),h('th',null,'اعضا'),h('th',null,'لیست اعضا'),h('th',null,'')),rows)));
+  box.appendChild(h('div',{class:'card'},cardify(h('table',null,h('tr',null,h('th',null,'نام'),h('th',null,'اعضا'),h('th',null,'لیست اعضا'),h('th',null,'')),rows))));
 }
 
 // ---------------- who can reach whom (always both ways) ----------------
@@ -462,6 +543,7 @@ function usageTab(box){
   var tbl=h('table',{class:'srt'});
   box.appendChild(h('div',{class:'card'},kv,note));
   box.appendChild(h('div',{class:'card'},h('div',{class:'row'},search,reload,csvBtn),tbl));
+  setTimeout(function(){search.parentNode.insertBefore(sortSel,reload);},0);
   var D=null;
   var fa=function(n){return Number(n||0).toLocaleString('fa-IR');};
   var dur=function(s){s=Math.round(s||0);if(!s)return '—';var hh=Math.floor(s/3600),m=Math.floor(s%3600/60);return hh?fa(hh)+' ساعت '+fa(m)+' دقیقه':m?fa(m)+' دقیقه':fa(s)+' ثانیه';};
@@ -508,13 +590,16 @@ function usageTab(box){
       return h('th',{class:U.sort===c[0]?'on':'',title:'مرتب‌سازی',onclick:function(){if(U.sort===c[0])U.dir=-U.dir;else{U.sort=c[0];U.dir=c[0]==='username'?1:-1;}draw();}},c[1],U.sort===c[0]?(U.dir<0?' ▼':' ▲'):'');
     }));
     var list=rows();
-    var trs=list.map(function(r){return h('tr',null,COLS.map(function(c,i){return h('td',{class:i&&c[0]!=='calls'?'n':'',title:c[3]?c[3](r):''},c[2](r));}));});
+    var trs=list.map(function(r){return h('tr',null,COLS.map(function(c,i){return h('td',{class:i?(c[0]!=='calls'?'n':''):'ttl',title:c[3]?c[3](r):''},c[2](r));}));});
     var sum=function(k){return list.reduce(function(a,r){return a+(r[k]||0);},0);};
     var t=h('tr',{class:'tot'},h('td',null,'جمع ('+fa(list.length)+' کاربر)'),h('td',{class:'n'},fa(sum('sent'))),h('td',{class:'n'},fa(sum('sent7'))),h('td',{class:'n'},fa(sum('sent30'))),h('td',{class:'n'},fa(sum('received'))),
       h('td',{class:'n'},fa(sum('files'))),h('td',{class:'n'},fmtB(sum('files_bytes'))),h('td',{class:'n'},fmtB(sum('storage'))),h('td',{class:'n'},fmtB(sum('traffic'))),h('td',{class:'n'},fmtB(sum('traffic30'))),
       h('td',{class:'n'},fa(sum('calls_out'))),h('td',{class:'n'},dur(sum('call_secs'))),h('td',{class:'n'},fmtB(sum('turn'))),h('td',{class:'n'},fa(sum('devices'))),h('td',{class:'n'},fa(sum('requests'))),h('td',{class:'n'},fa(sum('blocked_by'))),h('td'),h('td'));
     tbl.replaceChildren.apply(tbl,[head].concat(trs.length?trs:[h('tr',null,h('td',{colspan:COLS.length,class:'mut'},'کاربری پیدا نشد'))],[t]));
+    t.firstChild.className='ttl';cardify(tbl);
+    sortSel.value=U.sort;
   }
+  var sortSel=h('select',{class:'only-m',onchange:function(){U.sort=sortSel.value;U.dir=U.sort==='username'?1:-1;draw();}},COLS.map(function(c){return h('option',{value:c[0]},'مرتب‌سازی: '+c[1]);}));
   function csv(){
     if(!D)return;
     var cols=['username','display_name','phone','disabled','sent','sent_group','sent7','sent30','received','files','files_bytes','text_bytes','avatar_bytes','stickers_bytes','storage','up','down','traffic','traffic30','calls_out','calls_in','call_secs','turn','turn30','devices','requests','blocked_by','last_seen','created'];
@@ -538,7 +623,7 @@ function usageTab(box){
       h('div',null,'ترافیک کاربران',h('b',null,fmtB(all('traffic')))),
       h('div',null,'تماس‌ها',h('b',null,fa(all('calls_out'))+' · '+dur(all('call_secs')/2))),
       h('div',null,'ترافیک رله تماس',h('b',null,fmtB(all('turn')))),
-      top&&top.storage?h('div',null,'بیشترین فضا',h('b',null,(top.display_name||top.username)+' · '+fmtB(top.storage))):null);
+      top&&top.storage?h('div',null,'بیشترین فضا',h('b',null,(top.display_name||top.username)+' · '+fmtB(top.storage))):'');
     note.replaceChildren(
       'پیام‌ها پس از ۹۰ روز و فایل‌ها پس از ۳۰ روز خودکار از سرور پاک می‌شوند؛ این جدول وضعیت فعلی سرور را نشان می‌دهد. ',
       'ترافیک و تماس‌ها '+(D.since?'از '+day(new Date(D.since+'T00:00:00Z').getTime()):'از همین نسخه')+' شمرده می‌شوند. ',
@@ -780,9 +865,9 @@ async function backups(box){
   var trs=B.list.map(function(b){
     var del=h('button',{class:'red',onclick:guard(async function(){if(!confirm('حذف شود؟'))return;await api('POST','/backup/delete',{name:b.name});await render();})},'حذف');
     var dl=h('a',{href:'/admin/api/backup/download/'+b.name,style:'color:#6cb4ff'},'دانلود');
-    return h('tr',null,h('td',{style:'direction:ltr;text-align:left'},b.name),h('td',null,fmtB(b.size)),h('td',null,fmtDate(b.mtime)),h('td',null,dl,'  ',del));
+    return h('tr',null,h('td',{class:'ttl',style:'direction:ltr;text-align:left'},b.name),h('td',null,fmtB(b.size)),h('td',null,fmtDate(b.mtime)),h('td',{class:'act'},dl,'  ',del));
   });
-  var table=h('table',null,h('tr',null,h('th',null,'فایل'),h('th',null,'حجم'),h('th',null,'تاریخ'),h('th',null,'')),trs);
+  var table=cardify(h('table',null,h('tr',null,h('th',null,'فایل'),h('th',null,'حجم'),h('th',null,'تاریخ'),h('th',null,'')),trs));
   box.appendChild(h('div',{class:'card'},
     h('div',{class:'row'},h('h3',{style:'margin:0;flex:1'},'پشتیبان‌ها ('+B.list.length+')'),run),
     table,
@@ -808,6 +893,33 @@ function account(box){
     }},'به‌روزرسانی حساب'),er,
     h('div',{class:'mut',style:'margin-top:8px'},'این بخش برای امنیت با رمز فعلی و دکمهٔ جداگانه ثبت می‌شود. اگر رمز را فراموش کردید، روی سرور «msgadmin adminpw» را اجرا کنید.')));
   totpCard(box);
+  devicesCard(box);
+}
+// 1.24: phones paired with the «سپن مدیر» app (fingerprint / screen-lock sign-in) and the app itself
+async function devicesCard(box){
+  var card=h('div',{class:'card devs',style:'max-width:480px'});box.appendChild(card);
+  var D,A=null,me=null;
+  try{D=await api('GET','/devices');A=(await api('GET','/adminapp')).app;me=await api('GET','/session');}catch(e){return;}
+  var ago=function(t){var d=Math.floor((Date.now()-t)/86400e3);return d<1?'امروز':d+' روز پیش';};
+  var list=D.devices.map(function(d){
+    return h('div',{class:'dv'},h('div',{class:'nm'},h('b',null,d.name),d.id===D.current?h('span',{class:'tag',style:'background:#1d3550;color:#9fd0ff'},'همین گوشی'):null,
+      h('div',{class:'mut',style:'font-size:12px'},'آخرین ورود '+ago(d.last_used)+(d.last_ip?' · '+d.last_ip:'')+' · ثبت '+new Date(d.created).toLocaleDateString('fa-IR')+' · اعتبار تا '+new Date(d.expires).toLocaleDateString('fa-IR'))),
+      h('button',{class:'red',onclick:guard(async function(){if(!confirm('«'+d.name+'» از دستگاه‌های مدیر حذف شود؟ آن گوشی همان لحظه از پنل خارج می‌شود.'))return;await api('POST','/devices/remove',{id:d.id});render();})},'حذف'));
+  });
+  var file=h('input',{type:'file',accept:'.apk,application/vnd.android.package-archive'}),up=h('span');
+  card.append(h('h3',null,'دستگاه‌های مدیر (اپ «سپن مدیر»)'),
+    h('div',{class:'mut',style:'margin-bottom:6px'},'گوشی‌هایی که با اثر انگشت یا قفل گوشی، بدون رمز وارد پنل می‌شوند. هر گوشی اگر '+D.expire_days+' روز استفاده نشود خودبه‌خود حذف می‌شود. تغییر رمز پنل همهٔ گوشی‌ها را حذف می‌کند. اگر گوشی گم شد: همین‌جا حذفش کنید یا روی سرور «msgadmin devices-off».'),
+    list.length?list:h('div',{class:'mut',style:'padding:8px 0'},'هنوز گوشی‌ای ثبت نشده است.'),
+    list.length>1?h('div',{class:'row',style:'margin-top:8px'},h('button',{class:'sec',onclick:guard(async function(){if(!confirm('همهٔ گوشی‌ها حذف شوند؟'))return;await api('POST','/devices/remove',{all:true});render();})},'حذف همه')):null,
+    APP&&me&&me.can_pair&&!D.current?h('div',{class:'row',style:'margin-top:8px'},h('button',{class:'pri',onclick:function(){try{if(APP.pairNow)APP.pairNow();else APP.loggedIn();}catch(x){}}},'ثبت همین گوشی')):null,
+    h('h3',{style:'margin-top:16px'},'فایل اپ «سپن مدیر»'),
+    h('div',{style:'margin-bottom:8px'},A?['نسخهٔ '+(A.name||'؟')+' — '+fmtB(A.size)+'  ',h('a',{href:'/admin/api/adminapp/download',style:'color:#6cb4ff'},'دانلود و نصب روی گوشی')]:h('span',{class:'mut'},'هنوز روی سرور نیست')),
+    APP?null:h('div',{class:'row'},file,h('button',{class:'pri',onclick:async function(){
+      if(!file.files[0])return;up.textContent='در حال بارگذاری…';
+      try{var r=await fetch('/admin/api/adminapp',{method:'POST',credentials:'same-origin',headers:{'X-CSRF':csrf||'','Content-Type':'application/octet-stream'},body:file.files[0]});
+        var j={};try{j=await r.json();}catch(e){}
+        if(!r.ok)throw new Error(j.error||('HTTP '+r.status));up.textContent='✓';render();}catch(e){up.textContent='✗ '+msg(e);}}},'بارگذاری نسخهٔ تازه'),up),
+    h('div',{class:'mut',style:'white-space:normal'},'این فایل فقط برای مدیر است و در صفحهٔ دانلود عمومی نیست. اپ هر بار باز شود نسخهٔ تازهٔ این فایل را پیشنهاد می‌دهد.'));
 }
 // 1.18: second factor for the panel (Google Authenticator, Microsoft Authenticator, Aegis, ...)
 async function totpCard(box){
