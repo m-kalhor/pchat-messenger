@@ -81,7 +81,7 @@ object Updater {
         val body = "نسخهٔ ${u.name} آماده است. برای به‌روزرسانی بزنید. پیام‌ها و تنظیمات پاک نمی‌شوند."
         val n = NotificationCompat.Builder(ctx, Prefs.messageChannel(ctx))
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setContentTitle("⬆️ نسخهٔ تازهٔ سپن آمده است")
+            .setContentTitle("⬆️ نسخهٔ تازهٔ ${BuildConfig.APP_NAME} آمده است")
             .setContentText(body)
             .setStyle(NotificationCompat.BigTextStyle().bigText(body))
             .setAutoCancel(true)
@@ -179,7 +179,7 @@ fun UpdateDialog(u: AppUpdate, onClose: () -> Unit) {
         val f = file
         if (f != null) {
             if (!Updater.canInstall(ctx)) {
-                Toast.makeText(ctx, "اجازهٔ «نصب برنامه‌های ناشناس» را برای سپن روشن کنید و برگردید، بعد «نصب» را بزنید", Toast.LENGTH_LONG).show()
+                Toast.makeText(ctx, "اجازهٔ «نصب برنامه‌های ناشناس» را برای ${BuildConfig.APP_NAME} روشن کنید و برگردید، بعد «نصب» را بزنید", Toast.LENGTH_LONG).show()
                 Updater.openInstallPermission(ctx)
             } else {
                 try { Updater.install(ctx, f) } catch (e: Exception) { err = "صفحهٔ نصب باز نشد" }
@@ -188,7 +188,7 @@ fun UpdateDialog(u: AppUpdate, onClose: () -> Unit) {
     }
     AlertDialog(
         onDismissRequest = { if (!busy) onClose() },
-        title = { Text("نسخهٔ تازهٔ سپن") },
+        title = { Text("نسخهٔ تازهٔ ${BuildConfig.APP_NAME}") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("نسخهٔ ${u.name} آماده است" + (if (u.size > 0) " (${U.size(u.size)})" else "") + ". نسخهٔ فعلی شما ${Updater.installedName(ctx)} است.", fontSize = 14.sp)

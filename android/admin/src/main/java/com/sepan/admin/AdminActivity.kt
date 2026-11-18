@@ -140,7 +140,7 @@ class AdminActivity : Activity() {
         }
         val icon = TextView(this).apply { text = "🛡"; textSize = 56f; gravity = Gravity.CENTER }
         val title = TextView(this).apply {
-            text = "سپن مدیر"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
+            text = "${BuildConfig.APP_NAME} مدیر"; textSize = 24f; setTextColor(Color.WHITE); gravity = Gravity.CENTER
             setTypeface(typeface, Typeface.BOLD); setPadding(0, dp(8), 0, dp(4))
         }
         status = TextView(this).apply {
@@ -291,7 +291,7 @@ class AdminActivity : Activity() {
     private fun authenticate(cb: (Boolean) -> Unit) {
         if (Build.VERSION.SDK_INT >= 29) {
             val b = BiometricPrompt.Builder(this)
-                .setTitle("سپن مدیر")
+                .setTitle("${BuildConfig.APP_NAME} مدیر")
                 .setSubtitle("ورود به پنل مدیریت")
             if (Build.VERSION.SDK_INT >= 30) b.setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL)
             else @Suppress("DEPRECATION") b.setDeviceCredentialAllowed(true)
@@ -306,7 +306,7 @@ class AdminActivity : Activity() {
     private fun confirmCredential(cb: (Boolean) -> Unit) {
         val kg = getSystemService(KeyguardManager::class.java)
         @Suppress("DEPRECATION")
-        val i = kg?.createConfirmDeviceCredentialIntent("سپن مدیر", "ورود به پنل مدیریت")
+        val i = kg?.createConfirmDeviceCredentialIntent("${BuildConfig.APP_NAME} مدیر", "ورود به پنل مدیریت")
         if (i == null) { cb(false); return }
         confirmCb = cb
         startActivityForResult(i, REQ_CONFIRM)
@@ -359,7 +359,7 @@ class AdminActivity : Activity() {
                     hideLock(); loadPanel(true)
                     checkUpdate()
                 } else if (forget) {
-                    AlertDialog.Builder(this).setTitle("سپن مدیر").setMessage(result).setPositiveButton("باشه", null).show()
+                    AlertDialog.Builder(this).setTitle("${BuildConfig.APP_NAME} مدیر").setMessage(result).setPositiveButton("باشه", null).show()
                     hideLock(); loadPanel(true)
                 } else showLock(result!!)
             }
@@ -433,7 +433,7 @@ class AdminActivity : Activity() {
             runOnUiThread {
                 if (updateOffered || isFinishing) return@runOnUiThread
                 updateOffered = true
-                AlertDialog.Builder(this).setTitle("نسخهٔ تازهٔ سپن مدیر")
+                AlertDialog.Builder(this).setTitle("نسخهٔ تازهٔ ${BuildConfig.APP_NAME} مدیر")
                     .setMessage("نسخهٔ " + app.optString("name") + " آماده است (" + (app.optLong("size") / 1024 / 1024) + " مگابایت). به‌روز شود؟")
                     .setPositiveButton("به‌روزرسانی") { _, _ -> downloadUpdate(app.optString("name")) }
                     .setNegativeButton("بعداً", null).show()
@@ -445,7 +445,7 @@ class AdminActivity : Activity() {
     private fun downloadUpdate(name: String?) {
         if (!packageManager.canRequestPackageInstalls()) {
             AlertDialog.Builder(this).setTitle("اجازهٔ نصب")
-                .setMessage("یک بار اجازه دهید «سپن مدیر» نسخهٔ تازهٔ خودش را نصب کند، بعد برگردید و دوباره بزنید.")
+                .setMessage("یک بار اجازه دهید «${BuildConfig.APP_NAME} مدیر» نسخهٔ تازهٔ خودش را نصب کند، بعد برگردید و دوباره بزنید.")
                 .setPositiveButton("تنظیمات") { _, _ -> try { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) } catch (e: Exception) { } }
                 .setNegativeButton("بعداً", null).show()
             return
@@ -453,7 +453,7 @@ class AdminActivity : Activity() {
         val cookie = panelCookie()
         val f = File(shareDir(), "sepan-admin.apk")
         val pd = ProgressDialog(this).apply {
-            setTitle("دانلود سپن مدیر" + (if (name.isNullOrEmpty()) "" else " $name")); setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
+            setTitle("دانلود ${BuildConfig.APP_NAME} مدیر" + (if (name.isNullOrEmpty()) "" else " $name")); setProgressStyle(ProgressDialog.STYLE_HORIZONTAL)
             max = 100; setCancelable(false); show()
         }
         Thread {

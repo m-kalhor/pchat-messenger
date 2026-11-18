@@ -21,7 +21,8 @@ const totp = require('./totp');
 const devices = require('./admindevices');
 const { qrSvg } = require('./web');
 
-const HTML = fs.readFileSync(path.join(__dirname, 'admin.html'));
+let HTML = null; // read on first use with this server's app name (1.25)
+const adminHtml = () => HTML || (HTML = require('./brand').brand(fs.readFileSync(path.join(__dirname, 'admin.html'))));
 const sessions = new Map(); // token -> { csrf, ts }
 // 1.18: wrong sign-ins lock out only where they come from: one address after IP_MAX misses, its network
 // (IPv4 /24, IPv6 /64) after NET_MAX, each for LOCK_MS after the last miss. There is no lock for everybody,
@@ -174,7 +175,7 @@ async function route(ctx, req, res, secure) {
       'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store',
       'Content-Security-Policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     });
-    return res.end(HTML);
+    return res.end(adminHtml());
   }
   if (!p.startsWith('/admin/api/')) return json(res, 404, { error: 'not_found' });
   const sub = p.slice('/admin/api'.length);

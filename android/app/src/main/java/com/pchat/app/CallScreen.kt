@@ -259,7 +259,7 @@ private fun RouteMenu(s: CallState, modifier: Modifier) {
             Modifier.size(40.dp).clip(CircleShape)
                 .background(if (shown && s.peerRoute) Color(0x663390EC) else Color(0x33FFFFFF))
                 .clickable {
-                    if (!s.peerRoute) Toast.makeText(ctx, "طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست", Toast.LENGTH_SHORT).show()
+                    if (!s.peerRoute) Toast.makeText(ctx, "طرف مقابل نسخهٔ قدیمی ${BuildConfig.APP_NAME} را دارد؛ تغییر مسیر ممکن نیست", Toast.LENGTH_SHORT).show()
                     else Prefs.setRoutePanel(!shown)
                 },
             contentAlignment = Alignment.Center

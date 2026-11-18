@@ -224,7 +224,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             val findable by Engine.findable.collectAsState()
             SwitchRow(
                 "پیدا شدن با شمارهٔ موبایل",
-                "کسانی که شمارهٔ شما را دارند می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به هیچ‌کس نشان داده نمی‌شود.",
+                "کسانی که شمارهٔ شما را دارند می‌توانند شما را در ${BuildConfig.APP_NAME} پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به هیچ‌کس نشان داده نمی‌شود.",
                 findable
             ) { v -> scope.launch { Engine.setFindable(v)?.let { android.widget.Toast.makeText(ctx, it, android.widget.Toast.LENGTH_SHORT).show() } } }
             val allowReq by Engine.allowRequests.collectAsState()
@@ -254,7 +254,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             SettingRow("فضای استفاده‌شده", (usage?.let { U.size(it) } ?: "در حال محاسبه…") + " · پاک کردن فایل‌های ذخیره‌شده") { confirmClear = true }
 
             // ---- 1.9: in-app update ----
-            SectionTitle("دربارهٔ سپن")
+            SectionTitle("دربارهٔ ${BuildConfig.APP_NAME}")
             SettingRow("به‌روزرسانی برنامه", "نسخهٔ فعلی: " + Updater.installedName(ctx) + (if (checking) " · در حال بررسی…" else " · بررسی نسخهٔ تازه")) {
                 if (!checking) {
                     checking = true

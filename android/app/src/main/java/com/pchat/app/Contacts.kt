@@ -82,7 +82,7 @@ fun AddContactDialog(onClose: () -> Unit, onOpen: (String) -> Unit = {}) {
             val (list, err) = Engine.lookup(nums)
             busy = false
             if (err != null) msg = err
-            else { found = list; if (list.isNullOrEmpty()) msg = "هیچ‌کدام از مخاطبان گوشی (یا کسی که پیدا شدن با شماره را روشن گذاشته) در سپن نیست." }
+            else { found = list; if (list.isNullOrEmpty()) msg = "هیچ‌کدام از مخاطبان گوشی (یا کسی که پیدا شدن با شماره را روشن گذاشته) در ${BuildConfig.APP_NAME} نیست." }
         }
     }
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -113,7 +113,7 @@ fun AddContactDialog(onClose: () -> Unit, onOpen: (String) -> Unit = {}) {
                 }
                 found?.let { list ->
                     if (list.isNotEmpty()) item {
-                        Text("در سپن هستند", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp))
+                        Text("در ${BuildConfig.APP_NAME} هستند", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 10.dp))
                     }
                     items(list, key = { "f:" + it.username }) { f ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -144,7 +144,7 @@ fun AddContactDialog(onClose: () -> Unit, onOpen: (String) -> Unit = {}) {
                     busy = false
                     when {
                         err != null -> msg = err
-                        list.isNullOrEmpty() -> msg = "کسی با این شماره در سپن پیدا نشد (یا پیدا شدن با شماره را خاموش کرده)."
+                        list.isNullOrEmpty() -> msg = "کسی با این شماره در ${BuildConfig.APP_NAME} پیدا نشد (یا پیدا شدن با شماره را خاموش کرده)."
                         else -> found = list
                     }
                 }

@@ -47,6 +47,33 @@ if (cmd === 'add') {
   if (!name || !/^[a-z0-9_.\-]{3,32}$/.test(name)) { console.error('Admin username: 3-32 chars of a-z, 0-9, _ . -'); process.exit(1); }
   setSetting('admin_user', name);
   console.log(`Admin panel username: ${name}`);
+} else if (cmd === 'setup') {
+  // 1.25: the installer (sepan-setup.sh) writes its answers as JSON on stdin (secrets never on the command line)
+  let a;
+  try { a = JSON.parse(require('node:fs').readFileSync(0, 'utf8')); } catch { console.error('setup: JSON on stdin expected'); process.exit(1); }
+  const out = [];
+  if (a.app_name !== undefined) { setSetting('app_name', String(a.app_name).trim().slice(0, 30)); out.push('app name'); }
+  if (a.admin_user) {
+    if (!/^[a-z0-9_.\-]{3,32}$/.test(a.admin_user)) { console.error('Admin username: 3-32 chars of a-z, 0-9, _ . -'); process.exit(1); }
+    setSetting('admin_user', a.admin_user); out.push('admin user');
+  }
+  if (a.admin_pass) {
+    if (String(a.admin_pass).length < 8) { console.error('Admin password: at least 8 characters'); process.exit(1); }
+    setSetting('admin_pass', hashPassword(String(a.admin_pass))); out.push('admin password');
+  }
+  if (typeof a.open_signup === 'boolean') { setSetting('open_signup', a.open_signup ? '1' : '0'); out.push('signup'); }
+  if (typeof a.group_calls === 'boolean') { setSetting('gcall_on', a.group_calls ? '1' : '0'); out.push('group calls'); }
+  if (a.sms && a.sms.provider) {
+    try { require('./sms').update(a.sms.provider, a.sms.values || {}); setSetting('sms_enabled', '1'); out.push('sms'); }
+    catch (e) { console.error('SMS settings: ' + e.message); process.exit(1); }
+  }
+  console.log('Saved: ' + (out.join(', ') || 'nothing'));
+} else if (cmd === 'sms-test') {
+  // 1.25: one test code to the given number with the configured provider (used by the installer)
+  require('./sms').send(String(name || ''), String(100000 + require('node:crypto').randomInt(900000)))
+    .then(() => console.log('SMS SENT'), (e) => { console.error('SMS FAILED: ' + e.message); process.exit(1); });
+} else if (cmd === 'license') {
+  process.exitCode = require('./license').cli(process.argv.slice(3));
 } else {
   console.log('Usage: msgadmin add|reset|del <username> [display name]  |  msgadmin list  |  msgadmin adminpw  |  msgadmin adminuser <name>  |  msgadmin totp-off  |  msgadmin devices-off');
 }

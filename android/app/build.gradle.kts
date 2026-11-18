@@ -23,12 +23,28 @@ val serverPort = serverProp("pchat.serverPort").toIntOrNull()
 // SEPAN_KEYSTORE_B64 secret; without it (local builds) the usual per-machine debug key is used.
 val sepanKeystore = System.getenv("SEPAN_KEYSTORE")?.let { file(it) }?.takeIf { it.isFile }
 
+// 1.25: an app for another customer's server (built by the "Customer APK" workflow from the installer's build code):
+//   -Ppchat.appName=NAME   name under the icon and inside the app (default «سپن»)
+//   -Ppchat.appId=ID       package com.pchat.app.ID, so several customers' apps can sit side by side on one phone
+//   -Ppchat.iconPng=FILE   own launcher icon (a square PNG), else the Sepan icon
+// The server certificate the app pins is res/raw/server_cert.pem (the workflow puts the customer's there).
+fun optProp(name: String): String? = (findProperty(name) as String?)?.takeIf { it.isNotBlank() } ?: localProps.getProperty(name)?.takeIf { it.isNotBlank() }
+val appName = optProp("pchat.appName") ?: "سپن"
+val appIdSuffix = optProp("pchat.appId")?.also { require(Regex("^[a-z][a-z0-9]{1,19}$").matches(it)) { "pchat.appId: 2-20 of a-z, 0-9" } }
+val iconPng = optProp("pchat.iconPng")?.let { file(it) }?.also { require(it.isFile) { "pchat.iconPng not found: $it" } }
+val iconRes: File = layout.buildDirectory.dir("generated/iconres").get().asFile
+val copyIcon by tasks.registering(Copy::class) {
+    if (iconPng != null) from(iconPng) { rename { "ic_launcher_custom.png" } }
+    into(File(iconRes, "drawable-nodpi"))
+}
+fun kotlinString(s: String) = "\"" + s.replace("\\", "\\\\").replace("\"", "\\\"").replace("$", "\\$") + "\""
+
 android {
     namespace = "com.pchat.app"
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.pchat.app"
+        applicationId = if (appIdSuffix != null) "com.pchat.app.$appIdSuffix" else "com.pchat.app"
         minSdk = 26
         targetSdk = 35
         versionCode = 31
@@ -36,7 +52,13 @@ android {
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "SERVER_PORT", "$serverPort")
+        buildConfigField("String", "APP_NAME", kotlinString(appName))
+        manifestPlaceholders["appLabel"] = appName
+        manifestPlaceholders["appIcon"] = if (iconPng != null) "@drawable/ic_launcher_custom" else "@mipmap/ic_launcher"
+        manifestPlaceholders["appIconRound"] = if (iconPng != null) "@drawable/ic_launcher_custom" else "@mipmap/ic_launcher_round"
     }
+
+    sourceSets["main"].res.srcDir(iconRes)
 
     signingConfigs {
         if (sepanKeystore != null) create("sepan") {
@@ -83,6 +105,8 @@ android {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
 }
+
+tasks.named("preBuild") { dependsOn(copyIcon) }
 
 dependencies {
     implementation(libs.androidx.core.ktx)

@@ -82,9 +82,30 @@ function cleanBio(s) {
   return String(s || '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 70);
 }
 
+/* global __SEPAN_PACKAGED__, __SEPAN_K2__, __SEPAN_M2__ */
+/**
+ * 1.25: a second, independent look at the activation code of the packaged server (see license.js) before
+ * a new account is made: a genuine code must be present and its user limit not reached. Nothing in the source tree.
+ */
+function seatOk() {
+  if (typeof __SEPAN_PACKAGED__ === 'undefined' || __SEPAN_PACKAGED__ !== true) return true;
+  try {
+    const nc = require('node:crypto');
+    const code = require('node:fs').readFileSync(process.env.LICENSE_FILE || require('node:path').join(process.env.DATA_DIR || '/opt/messenger/data', 'license.txt'), 'utf8').trim().split('.');
+    const raw = Buffer.from(__SEPAN_K2__.map((x, i) => x ^ __SEPAN_M2__[(i * 7 + 3) % __SEPAN_M2__.length]));
+    const key = nc.createPublicKey({ key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), raw]), format: 'der', type: 'spki' });
+    if (code.length !== 3 || !nc.verify(null, Buffer.from(code[0] + '.' + code[1]), key, Buffer.from(code[2], 'base64url'))) return false;
+    const lic = JSON.parse(Buffer.from(code[1], 'base64url').toString('utf8'));
+    if (lic.exp && Date.now() > lic.exp) return false;
+    const max = +lic.users || 0;
+    return !max || db.prepare('SELECT COUNT(*) AS n FROM users').get().n < max;
+  } catch { return false; }
+}
+
 function createUser(username, display, catIds) {
   if (!NAME_RE.test(username) || username === 'all') throw new Error('invalid_username');
   if (q.user.get(username)) throw new Error('user_exists');
+  if (!seatOk()) throw new Error('user_limit');
   const pw = genPw();
   db.prepare('INSERT INTO users(username,pass,display_name,created) VALUES(?,?,?,?)').run(username, hashPassword(pw), cleanDisplay(display) || null, Date.now());
   setUserCategories(username, catIds || []);

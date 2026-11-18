@@ -346,6 +346,7 @@ object Engine {
             null
         } catch (e: Api.HttpError) {
             when (e.error) {
+                "user_limit" -> "ثبت‌نام فعلاً ممکن نیست؛ با مدیر سرور تماس بگیرید"
                 "user_exists" -> "این نام کاربری گرفته شده؛ نام دیگری انتخاب کنید"
                 "invalid_username" -> "نام کاربری: ۲ تا ۲۰ حرف انگلیسی کوچک، رقم یا _ (فقط رقم نباشد)"
                 "bad_ticket" -> { signupTicket = null; "زمان ثبت‌نام گذشت؛ دوباره کد بگیرید" }

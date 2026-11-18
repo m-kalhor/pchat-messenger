@@ -182,7 +182,7 @@ fun LoginScreen() {
             Text("✉", color = Color.White, fontSize = 44.sp)
         }
         Spacer(Modifier.height(20.dp))
-        Text(if (signupStep) "ساخت حساب تازه" else "ورود به سپن", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Text(if (signupStep) "ساخت حساب تازه" else "ورود به ${BuildConfig.APP_NAME}", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(6.dp))
         Text(
             when {
@@ -397,7 +397,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 colors = Look.barColors(),
                 title = {
                     Column {
-                        Text("سپن", fontWeight = FontWeight.Bold)
+                        Text("${BuildConfig.APP_NAME}", fontWeight = FontWeight.Bold)
                         Text(if (connected) "متصل" else "در حال اتصال…", fontSize = 12.sp, color = Look.barSub)
                     }
                 },
@@ -501,7 +501,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
             val extra = phoneMatches.filter { it.username !in inList }
             if (extra.isNotEmpty() || !contactsGranted) item(key = "phone_contacts_header") {
                 Text(
-                    "مخاطبان گوشی در سپن", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
+                    "مخاطبان گوشی در ${BuildConfig.APP_NAME}", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f)).padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
@@ -512,7 +512,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                 ) {
                     Text("📇", fontSize = 22.sp)
                     Spacer(Modifier.width(12.dp))
-                    Text("ببینید کدام مخاطبان گوشی‌تان سپن دارند", fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    Text("ببینید کدام مخاطبان گوشی‌تان ${BuildConfig.APP_NAME} دارند", fontSize = 14.sp, modifier = Modifier.weight(1f))
                     Text("اجازه", color = MaterialTheme.colorScheme.primary)
                 }
             }
@@ -539,8 +539,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     }
     if (askContacts) AlertDialog(
         onDismissRequest = { askContacts = false; Engine.contactsAsked = true },
-        title = { Text("مخاطبان شما در سپن") },
-        text = { Text("سپن می‌تواند ببیند کدام‌یک از مخاطبان گوشی‌تان سپن را نصب کرده‌اند تا آن‌ها را این‌جا ببینید. شماره‌ها فقط روی سرور مقایسه می‌شوند و نگه داشته نمی‌شوند.", fontSize = 14.sp) },
+        title = { Text("مخاطبان شما در ${BuildConfig.APP_NAME}") },
+        text = { Text("${BuildConfig.APP_NAME} می‌تواند ببیند کدام‌یک از مخاطبان گوشی‌تان ${BuildConfig.APP_NAME} را نصب کرده‌اند تا آن‌ها را این‌جا ببینید. شماره‌ها فقط روی سرور مقایسه می‌شوند و نگه داشته نمی‌شوند.", fontSize = 14.sp) },
         confirmButton = { TextButton(onClick = { askContacts = false; Engine.contactsAsked = true; contactsPerm.launch(Manifest.permission.READ_CONTACTS) }) { Text("اجازه می‌دهم") } },
         dismissButton = { TextButton(onClick = { askContacts = false; Engine.contactsAsked = true }) { Text("بعداً") } }
     )

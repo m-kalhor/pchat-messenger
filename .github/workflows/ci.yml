@@ -20,7 +20,7 @@ jobs:
         with:
           node-version: 22
       - name: Check shell scripts parse
-        run: for f in server/*.sh; do bash -n "$f"; done
+        run: for f in server/*.sh deploy/installer/*.sh; do bash -n "$f"; done
       - name: Run tests
         run: npm test
 

@@ -1,0 +1,75 @@
+name: Package
+
+# 1.25: the protected server package for new servers (sepan-setup.sh + one obfuscated executable) and the
+# owner's Windows approval tool. Every run first builds a copy with a throwaway test key and runs the whole
+# server test suite against that obfuscated executable, so a broken build never reaches a customer.
+on:
+  push:
+    branches: [main]
+    paths: ["server/**", "tools/**", "deploy/installer/**", "package.json", ".github/workflows/package.yml"]
+  pull_request:
+    paths: ["server/**", "tools/**", "deploy/installer/**", "package.json", "test/**", ".github/workflows/package.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build tools
+        working-directory: tools/package
+        run: npm ci --no-audit --no-fund
+      - name: Installer parses
+        run: bash -n deploy/installer/sepan-setup.sh && bash -n server/domain.sh
+
+      - name: Test build (throwaway key)
+        run: |
+          T="$RUNNER_TEMP/testkey"; mkdir -p "$T"
+          SEPAN_LICENSE_DIR="$T" node tools/license/sepan-license.js keygen | tail -1 > "$T/pub.txt"
+          node tools/package/build.mjs --pubkey "$T/pub.txt" --out "$RUNNER_TEMP/testdist" --name sepan-test
+          BIN="$PWD/build/sepan-test/sepan-test/app/sepan-server"
+          "$BIN" version
+          if "$BIN" license status; then echo "::error::runs without activation"; exit 1; fi
+          REQ=$("$BIN" license request)
+          SEPAN_LICENSE_DIR="$T" node tools/license/sepan-license.js sign --request "$REQ" --yes | grep '^SA1\.' > "$T/license.txt"
+          LICENSE_FILE="$T/license.txt" "$BIN" license status
+          echo "SEPAN_TEST_BIN=$BIN" >> "$GITHUB_ENV"
+          echo "SEPAN_TEST_LICENSE=$T/license.txt" >> "$GITHUB_ENV"
+          # a changed web file must stop it
+          cp build/sepan-test/sepan-test/app/web/app.css "$T/app.css"; echo "/* x */" >> build/sepan-test/sepan-test/app/web/app.css
+          if LICENSE_FILE="$T/license.txt" "$BIN" license status; then echo "::error::tampered file not detected"; exit 1; fi
+          cp "$T/app.css" build/sepan-test/sepan-test/app/web/app.css
+      - name: All server tests against the obfuscated executable
+        run: npm test
+
+      - name: Release build (owner's public key)
+        id: rel
+        run: |
+          if [ ! -f tools/license/public-key.txt ]; then
+            echo "::warning::tools/license/public-key.txt is missing: run make-key.bat on the owner's computer and commit the public key. No release package built."
+            exit 0
+          fi
+          node tools/package/build.mjs --out dist
+          echo "built=1" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: steps.rel.outputs.built == '1'
+        with:
+          name: sepan-server-package
+          path: dist/sepan-server-*.tar.gz
+          compression-level: 0
+
+      - name: Windows approval tool
+        run: |
+          sudo apt-get install -y osslsigncode >/dev/null
+          node tools/license/build-exe.mjs --out dist/sepan-license-win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sepan-license-windows
+          path: dist/sepan-license-win/

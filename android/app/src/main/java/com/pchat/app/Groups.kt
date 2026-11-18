@@ -314,7 +314,7 @@ fun GroupInfoScreen(convo: String, onClose: () -> Unit, onOpenUser: (String) -> 
                                 Row {
                                     TextButton(onClick = { clipboard.setText(AnnotatedString(link)); Toast.makeText(ctx, "لینک کپی شد", Toast.LENGTH_SHORT).show() }) { Text("کپی") }
                                     TextButton(onClick = {
-                                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "دعوت به $w «${g.name}» در سپن:\n$link")
+                                        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, "دعوت به $w «${g.name}» در ${BuildConfig.APP_NAME}:\n$link")
                                         ctx.startActivity(Intent.createChooser(send, "فرستادن لینک دعوت"))
                                     }) { Text("اشتراک") }
                                     TextButton(onClick = { op("لینک تازه ساخته شد؛ لینک قبلی دیگر کار نمی‌کند") { Api.ugroupOp("/${g.id}/invite") } }) { Text("لینک تازه") }

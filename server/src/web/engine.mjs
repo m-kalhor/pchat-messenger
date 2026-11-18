@@ -181,6 +181,7 @@ export async function signup(ticket, username, displayName) {
   try { await finishLogin(await api.signup(ticket, username.trim().toLowerCase(), displayName.trim(), DEVICE), ''); return null; }
   catch (e) {
     const err = e instanceof api.HttpError ? e.body.error : null;
+    if (err === 'user_limit') return 'ثبت‌نام فعلاً ممکن نیست؛ با مدیر سرور تماس بگیرید';
     if (err === 'user_exists') return 'این نام کاربری گرفته شده؛ نام دیگری انتخاب کنید';
     if (err === 'invalid_username') return 'نام کاربری: ۲ تا ۲۰ حرف انگلیسی کوچک، رقم یا _ (فقط رقم نباشد)';
     if (err === 'bad_ticket') return 'زمان ثبت‌نام گذشت؛ دوباره کد بگیرید';
