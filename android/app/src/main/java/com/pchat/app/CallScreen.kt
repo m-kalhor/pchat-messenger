@@ -42,6 +42,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
@@ -154,7 +155,15 @@ fun CallScreen() {
 
     val status = when (s.phase) {
         CallPhase.INCOMING -> if (s.video) "تماس تصویری ورودی" else "تماس صوتی ورودی"
-        CallPhase.OUTGOING -> "در حال زنگ زدن…"
+        // 1.26: the other side is on another call
+        CallPhase.OUTGOING -> when (s.busy) {
+            1 -> "در حال مکالمه است"
+            2 -> {
+                val sec = ((now - s.waitFrom) / 1000).toInt().coerceAtLeast(0)
+                "در انتظار… %02d:%02d".format(sec / 60, sec % 60)
+            }
+            else -> "در حال زنگ زدن…"
+        }
         CallPhase.CONNECTING -> "در حال اتصال…"
         CallPhase.ACTIVE -> {
             val sec = ((now - s.startedAt) / 1000).toInt().coerceAtLeast(0)
@@ -184,6 +193,14 @@ fun CallScreen() {
             Text(Engine.nameOf(s.peer), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
             Text(status, color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
             // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
+            if (s.phase == CallPhase.OUTGOING && s.busy != 0) {
+                Text(
+                    if (s.busy == 1) "اگر منتظر بمانید، وقتی مکالمه‌اش تمام شد تماس خودکار برقرار می‌شود"
+                    else "وقتی مکالمه‌اش تمام شد، تماس خودکار برقرار می‌شود",
+                    color = Color(0xFFFFCC80), fontSize = 13.sp, textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 32.dp, vertical = 6.dp)
+                )
+            }
             if (s.canRoute && s.phase == CallPhase.ACTIVE && s.routeNote.isNotEmpty()) Text(s.routeNote, color = Color(0xFFFFCC80), fontSize = 13.sp)
         }
         if (showLocal) {
@@ -198,6 +215,11 @@ fun CallScreen() {
             if (s.phase == CallPhase.INCOMING) {
                 RoundBtn("✖", "رد", Color(0xFFE53935)) { CallManager.decline() }
                 RoundBtn("📞", "پاسخ", Color(0xFF43A047)) { accept() }
+            } else if (s.phase == CallPhase.OUTGOING && s.busy == 1) {
+                RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
+                RoundBtn("⏳", "منتظر می‌مانم", Color(0xFF3390EC)) { CallManager.waitForPeer() }
+            } else if (s.phase == CallPhase.OUTGOING && s.busy == 2) {
+                RoundBtn("✖", "لغو انتظار", Color(0xFFE53935)) { CallManager.hangup() }
             } else {
                 RoundBtn(if (s.muted) "🔇" else "🎤", "بی‌صدا", if (s.muted) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { CallManager.toggleMute() }
                 // 1.9: with a Bluetooth headset the button cycles phone → speaker → headset

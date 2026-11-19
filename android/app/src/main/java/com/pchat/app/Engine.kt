@@ -60,6 +60,7 @@ object Engine {
     const val CH_MSG = "msgs"
     const val CH_SVC = "svc"
     const val CH_CALL = "calls"
+    const val CH_WAIT = "call_wait"
     private const val CALL_NOTIF_ID = 77
 
     lateinit var app: Context
@@ -163,6 +164,8 @@ object Engine {
             nm.createNotificationChannel(NotificationChannel(CH_MSG, "پیام‌ها", NotificationManager.IMPORTANCE_HIGH))
             nm.createNotificationChannel(NotificationChannel(CH_SVC, "اتصال", NotificationManager.IMPORTANCE_MIN))
             nm.createNotificationChannel(NotificationChannel(CH_CALL, "تماس", NotificationManager.IMPORTANCE_HIGH).apply { setSound(null, null) })
+            // 1.26: «X منتظر تماس با شماست» while I'm on another call: shown, but no sound or vibration
+            nm.createNotificationChannel(NotificationChannel(CH_WAIT, "در انتظار تماس", NotificationManager.IMPORTANCE_DEFAULT).apply { setSound(null, null); enableVibration(false) })
         }
     }
 
@@ -1063,6 +1066,28 @@ object Engine {
     }
 
     fun cancelCallNotification() { NotificationManagerCompat.from(app).cancel(CALL_NOTIF_ID) }
+
+    /** 1.26: someone waits until my other call is over; their call comes by itself once I'm free. */
+    fun postWaitNotification(peer: String) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) return
+        val i = Intent(app, MainActivity::class.java).apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
+        val pi = PendingIntent.getActivity(app, 7702, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val n = NotificationCompat.Builder(app, CH_WAIT)
+            .setSmallIcon(android.R.drawable.sym_call_missed)
+            .setContentTitle(nameOf(peer) + " منتظر تماس با شماست")
+            .setContentText("وقتی مکالمه‌تان تمام شد، تماسش خودکار می‌آید")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setSilent(true)
+            .setAutoCancel(true)
+            .setContentIntent(pi)
+            .build()
+        try { NotificationManagerCompat.from(app).notify(waitNotifId(peer), n) } catch (e: SecurityException) { }
+    }
+
+    fun cancelWaitNotification(peer: String) { NotificationManagerCompat.from(app).cancel(waitNotifId(peer)) }
+    private fun waitNotifId(peer: String) = 78_000 + (peer.hashCode() and 0xFFF)
 
     // ---------------- conversations ----------------
 

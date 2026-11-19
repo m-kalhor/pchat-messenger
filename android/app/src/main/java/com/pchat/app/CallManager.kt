@@ -71,7 +71,10 @@ data class CallState(
     val netModes: List<String> = emptyList(), // the modes this server offers
     val routing: Boolean = false,      // a path change is under way
     val path: String = "",             // the path in use now, e.g. «مستقیم · UDP»
-    val routeNote: String = ""
+    val routeNote: String = "",
+    // 1.26: the other side is on another call (GSM, another messenger or Sepan): 1 = asking «wait / hang up», 2 = waiting
+    val busy: Int = 0,
+    val waitFrom: Long = 0L
 )
 
 open class SdpAdapter : SdpObserver {
@@ -127,6 +130,15 @@ object CallManager {
     @Volatile private var guardUntil = 0L
     private var pathJob: Job? = null
     private var peerPref = "auto"
+    // 1.26 caller side: the other side is on another call and we wait until they are free
+    private const val WAIT_MS = 5 * 60_000L
+    private var waitDeadline = 0L      // a re-call after sig_free keeps the first wait's 5-minute limit
+    private var rewaitCall = ""        // callId of that re-call: a busy answer goes straight back to waiting
+    // 1.26 callee side: people I told «busy» (callId -> peer, time) and the ones waiting for me to be free
+    private class Waiter(val peer: String, val callId: String, val until: Long)
+    private val busySent = HashMap<String, Pair<String, Long>>()
+    private val waiters = ArrayList<Waiter>()
+    private var freeJob: Job? = null
     val ROUTE_NAMES = linkedMapOf("auto" to "خودکار", "direct" to "مستقیم (UDP)", "udp" to "سرور · UDP", "tcp" to "سرور · TCP", "tls" to "سرور · TLS")
 
     private class Res(
@@ -141,7 +153,10 @@ object CallManager {
 
     // ------------------------------------------------------------ public actions
 
-    fun startCall(peer: String, video: Boolean) {
+    fun startCall(peer: String, video: Boolean) = startCall(peer, video, false)
+
+    /** [recall]: 1.26, the automatic call again once the busy person is free (keeps the wait limit). */
+    private fun startCall(peer: String, video: Boolean, recall: Boolean) {
         val id = UUID.randomUUID().toString().take(12)
         // 1.9.2: someone who never logged in has no key yet, so the invite cannot be encrypted.
         // Say so up front instead of starting (and instantly tearing down) a call.
@@ -155,6 +170,7 @@ object CallManager {
         }
         synchronized(lock) {
             if (state.value.phase != CallPhase.IDLE) return
+            if (recall) rewaitCall = id else { rewaitCall = ""; waitDeadline = 0L }
             state.value = CallState(CallPhase.OUTGOING, peer, video, id, incoming = false, speaker = video, note = "در حال برقراری تماس…")
         }
         CallTones.stop()
@@ -166,7 +182,7 @@ object CallManager {
                 val p = createPeer(f, video)
                 val offer = createOffer(p)
                 setLocal(p, offer)
-                val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description).put("relay", 1).put("route", 1))
+                val delivered = sendSignal(peer, "sig_invite", JSONObject().put("callId", id).put("video", video).put("sdp", offer.description).put("relay", 1).put("route", 1).put("wait", 1))
                 if (!delivered) { endCall("کاربر الان آنلاین نیست", false, CallTones.Tone.UNREACHABLE); return@launch }
                 // 1.9.2: the foreground service starts only once the invite really reached the peer.
                 // Starting it earlier and stopping it a few ms later (peer offline) crashed the app with
@@ -231,6 +247,14 @@ object CallManager {
         }
     }
 
+    /** 1.26: «منتظر می‌مانم» on the busy screen. */
+    fun waitForPeer() {
+        val s = state.value
+        if (s.phase != CallPhase.OUTGOING || s.busy != 1) return
+        waitDeadline = System.currentTimeMillis() + WAIT_MS
+        enterWait(s.callId)
+    }
+
     fun decline() { endCall("", true) }
     fun hangup() { endCall("", true) }
 
@@ -263,7 +287,7 @@ object CallManager {
         val j = try { JSONObject(plain) } catch (e: Exception) { return }
         val callId = j.optString("callId")
         when (kind) {
-            "sig_invite" -> onInvite(from, callId, j.optBoolean("video"), j.optString("sdp"), j.optInt("relay") == 1, j.optInt("route") == 1)
+            "sig_invite" -> onInvite(from, callId, j.optBoolean("video"), j.optString("sdp"), j.optInt("relay") == 1, j.optInt("route") == 1, j.optInt("wait") == 1)
             "sig_accept" -> onAccepted(from, callId, j.optString("sdp"), j.optInt("relay") == 1, j.optInt("route") == 1, j.optString("route_pref", "auto"))
             "sig_route" -> { val m = j.optString("mode"); if (matches(from, callId) && !state.value.incoming && ROUTE_NAMES.containsKey(m)) Engine.scope.launch { restartTo(m, null) } }
             "sig_relay" -> if (matches(from, callId) && !state.value.incoming) Engine.scope.launch { switchToRelay() }
@@ -273,10 +297,15 @@ object CallManager {
             }
             "sig_reanswer" -> if (matches(from, callId)) onReanswer(callId, j.optString("sdp"))
             "sig_ice" -> onRemoteIce(callId, IceCandidate(j.optString("mid"), j.optInt("idx"), j.optString("cand")))
-            "sig_reject" -> if (matches(from, callId)) {
+            // 1.26: busy person: ask «wait / hang up»; they wait → I tell them when I'm free → they call again
+            "sig_busy" -> if (matches(from, callId) && !state.value.incoming && state.value.phase == CallPhase.OUTGOING) onBusy(callId)
+            "sig_wait" -> onWait(from, callId)
+            "sig_free" -> if (matches(from, callId) && state.value.busy == 2) recall()
+            // while we wait, a ring that timed out or was turned down on another device of theirs doesn't end the wait
+            "sig_reject" -> if (matches(from, callId) && state.value.busy == 0) {
                 endCall(if (j.optString("reason") == "busy") "طرف مقابل در تماس دیگری است" else "تماس رد شد", false, CallTones.Tone.BUSY)
             }
-            "sig_hangup" -> if (matches(from, callId)) endCall("تماس پایان یافت", false)
+            "sig_hangup" -> { dropWaiter(from, callId); if (matches(from, callId)) endCall("تماس پایان یافت", false) }
             // 1.19: the other side added people: this call moves into their group call
             "sig_upgrade" -> if (matches(from, callId) && j.optString("room").isNotEmpty()) {
                 endCall("", false, silent = true)
@@ -290,10 +319,12 @@ object CallManager {
         return s.phase != CallPhase.IDLE && s.peer == from && s.callId == callId
     }
 
-    private fun onInvite(from: String, callId: String, video: Boolean, sdp: String, relay: Boolean, route: Boolean) {
+    private fun onInvite(from: String, callId: String, video: Boolean, sdp: String, relay: Boolean, route: Boolean, wait: Boolean) {
         if (callId.isEmpty() || sdp.isEmpty()) return
+        // 1.26: on a phone call or another messenger's call, answer «busy» instead of ringing (setting «نمایش در حال مکالمه»)
+        val other = synchronized(lock) { state.value.phase == CallPhase.IDLE } && !GroupCall.active() && Prefs.showBusy && phoneInCall()
         val busy = synchronized(lock) {
-            if (state.value.phase != CallPhase.IDLE || GroupCall.active()) true
+            if (state.value.phase != CallPhase.IDLE || GroupCall.active() || other) true
             else {
                 offerSdp = sdp
                 peerRelay = relay
@@ -302,8 +333,19 @@ object CallManager {
             }
         }
         if (busy) {
+            // the same call again (another device of mine got it first) is not «busy»
+            if (synchronized(lock) { state.value.peer == from && state.value.callId == callId }) return
             Engine.scope.launch {
-                try { sendSignal(from, "sig_reject", JSONObject().put("callId", callId).put("reason", "busy")) } catch (e: Exception) { }
+                try {
+                    if (wait) {
+                        synchronized(lock) {
+                            val now = System.currentTimeMillis()
+                            busySent.entries.removeAll { now - it.value.second > 60_000L }
+                            busySent[callId] = Pair(from, now)
+                        }
+                        sendSignal(from, "sig_busy", JSONObject().put("callId", callId))
+                    } else sendSignal(from, "sig_reject", JSONObject().put("callId", callId).put("reason", "busy"))
+                } catch (e: Exception) { }
             }
             return
         }
@@ -312,12 +354,95 @@ object CallManager {
         armTimeout(45_000L, "تماس بی‌پاسخ ماند")
     }
 
+    // ------------------------------------------------------------ 1.26: busy / wait
+
+    /**
+     * Is the phone on another call? Android tells no app «WhatsApp is in a call», but every app can read the
+     * phone's audio mode: a GSM call (in call / ringing) or any messenger's voice or video call (in communication)
+     * changes it. Our own call audio, still set up for a moment after a call, doesn't count.
+     */
+    private fun phoneInCall(): Boolean {
+        if (AudioRouter.isActive) return false
+        val m = try { app.getSystemService(AudioManager::class.java)?.mode ?: return false } catch (e: Exception) { return false }
+        if (m == AudioManager.MODE_IN_CALL || m == AudioManager.MODE_IN_COMMUNICATION || m == AudioManager.MODE_RINGTONE) return true
+        if (Build.VERSION.SDK_INT >= 30 && m == AudioManager.MODE_CALL_SCREENING) return true
+        if (Build.VERSION.SDK_INT >= 33 && (m == AudioManager.MODE_CALL_REDIRECT || m == AudioManager.MODE_COMMUNICATION_REDIRECT)) return true
+        return false
+    }
+
+    /** Caller: the other side said «busy». */
+    private fun onBusy(callId: String) {
+        if (rewaitCall == callId && System.currentTimeMillis() < waitDeadline) { enterWait(callId); return }
+        cancelTimeout()
+        CallTones.stop()
+        CallTones.play(CallTones.Tone.BUSY)
+        state.value = state.value.copy(busy = 1, note = "")
+        armTimeout(15_000L, Engine.nameOf(state.value.peer) + " در حال مکالمه بود")
+    }
+
+    private fun enterWait(callId: String) {
+        val s = state.value
+        if (s.callId != callId || s.phase != CallPhase.OUTGOING) return
+        CallTones.stop()
+        state.value = s.copy(busy = 2, waitFrom = waitDeadline - WAIT_MS)
+        Engine.scope.launch { try { sendSignal(s.peer, "sig_wait", JSONObject().put("callId", callId)) } catch (e: Exception) { } }
+        armTimeout((waitDeadline - System.currentTimeMillis()).coerceAtLeast(1000L), Engine.nameOf(s.peer) + " هنوز در حال مکالمه است", CallTones.Tone.UNREACHABLE)
+    }
+
+    /** Caller: they are free now: call again by ourselves (a new call, their phone rings as usual). */
+    private fun recall() {
+        val s = state.value
+        endCall("", false, silent = true, log = false)
+        main.postDelayed({ if (state.value.phase == CallPhase.IDLE && !GroupCall.active()) startCall(s.peer, s.video, true) }, 300L)
+    }
+
+    /** Callee: someone I told «busy» waits for me. */
+    private fun onWait(from: String, callId: String) {
+        synchronized(lock) {
+            val b = busySent.remove(callId) ?: return
+            if (b.first != from || System.currentTimeMillis() - b.second > 60_000L) return
+            waiters.removeAll { it.peer == from }
+            waiters.add(Waiter(from, callId, System.currentTimeMillis() + WAIT_MS + 30_000L))
+        }
+        Engine.postWaitNotification(from)
+        startFreeWatch()
+    }
+
+    private fun dropWaiter(from: String, callId: String) {
+        val gone = synchronized(lock) { waiters.removeAll { it.peer == from && it.callId == callId } }
+        if (gone) Engine.cancelWaitNotification(from)
+    }
+
+    /** Callee: once I'm free for 2 seconds, tell the first one waiting (the next one only after that call). */
+    private fun startFreeWatch() {
+        synchronized(lock) { if (freeJob?.isActive == true) return }
+        val job = Engine.scope.launch {
+            var freeFor = 0
+            while (true) {
+                delay(1000)
+                val now = System.currentTimeMillis()
+                val expired = synchronized(lock) { waiters.filter { it.until < now }.also { waiters.removeAll(it) } }
+                expired.forEach { Engine.cancelWaitNotification(it.peer) }
+                val first = synchronized(lock) { waiters.firstOrNull() } ?: break
+                val free = synchronized(lock) { state.value.phase == CallPhase.IDLE } && !GroupCall.active() && !phoneInCall()
+                freeFor = if (free) freeFor + 1 else minOf(freeFor, 0)
+                if (freeFor >= 2) {
+                    synchronized(lock) { waiters.remove(first) }
+                    Engine.cancelWaitNotification(first.peer)
+                    try { sendSignal(first.peer, "sig_free", JSONObject().put("callId", first.callId)) } catch (e: Exception) { }
+                    freeFor = -8 // give their call a few seconds to arrive before freeing the next one
+                }
+            }
+        }
+        synchronized(lock) { freeJob = job }
+    }
+
     private fun onAccepted(from: String, callId: String, sdp: String, relay: Boolean, route: Boolean, pref: String) {
         val p = synchronized(lock) {
             if (!matches(from, callId) || state.value.phase != CallPhase.OUTGOING) return
             peerRelay = relay
             peerPref = if (ROUTE_NAMES.containsKey(pref)) pref else "auto"
-            state.value = state.value.copy(peerRoute = route)
+            state.value = state.value.copy(peerRoute = route, busy = 0)
             pc
         } ?: return
         cancelTimeout()
@@ -833,7 +958,7 @@ object CallManager {
      * [tone]: 1.13 tone to play as the call ends (busy, unreachable…). Left null, a call that was connected
      * ends with the short end tone and one that never connected ends silently.
      */
-    fun endCall(note: String, sendHangup: Boolean, tone: CallTones.Tone? = null, silent: Boolean = false) {
+    fun endCall(note: String, sendHangup: Boolean, tone: CallTones.Tone? = null, silent: Boolean = false, log: Boolean = true) {
         val snap = synchronized(lock) {
             val cur = state.value
             if (cur.phase == CallPhase.IDLE) return
@@ -871,7 +996,7 @@ object CallManager {
             val sec = ((System.currentTimeMillis() - cur.startedAt) / 1000).toInt()
             "📞 تماس $kindText — %02d:%02d".format(sec / 60, sec % 60)
         } else if (cur.incoming) "📞 تماس $kindText بی‌پاسخ" else "📞 تماس $kindText لغو شد / بی‌پاسخ"
-        Engine.addCallLog(cur.peer, text, !cur.incoming)
+        if (log) Engine.addCallLog(cur.peer, text, !cur.incoming)
 
         val endTone = if (silent) null else tone ?: if (cur.startedAt > 0L) CallTones.Tone.END else null
         if (endTone != null) {

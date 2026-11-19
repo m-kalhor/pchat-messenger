@@ -29,6 +29,8 @@ object AudioRouter {
     private val main = Handler(Looper.getMainLooper())
     private var am: AudioManager? = null
     private var active = false
+    /** 1.26: our own call audio is set up (so the phone's «in communication» mode is ours) */
+    val isActive: Boolean get() = active
     private var wantSpeaker = false
     private var picked: AudioRoute? = null
     private var current = AudioRoute.EARPIECE

@@ -175,10 +175,14 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ 🔔 بالای همان گفتگو را بزنید.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
 
-            // ---- calls (1.15, only users the admin allowed to choose the call path) ----
+            // ---- calls ----
+            SectionTitle("تماس")
+            // 1.26: a Sepan caller sees «busy» (and may wait) while I'm on a phone call or another messenger's call
+            var showBusy by remember { mutableStateOf(Prefs.showBusy) }
+            SwitchRow("نمایش «در حال مکالمه»", "وقتی با تلفن یا پیام‌رسان دیگری صحبت می‌کنید، تماس‌گیرندهٔ ${BuildConfig.APP_NAME} به‌جای زنگ خوردن می‌بیند که مشغولید و می‌تواند منتظر بماند", showBusy) { Prefs.showBusy = it; showBusy = it }
+            // 1.15: only users the admin allowed to choose the call path
             val canRoute by Engine.callRoute.collectAsState()
             if (canRoute) {
-                SectionTitle("تماس")
                 Text("مسیر پیش‌فرض تماس: تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
                 val cr by Prefs.callRoute.collectAsState()

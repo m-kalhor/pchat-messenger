@@ -47,8 +47,8 @@ android {
         applicationId = if (appIdSuffix != null) "com.pchat.app.$appIdSuffix" else "com.pchat.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 31
-        versionName = "1.23.0"
+        versionCode = 32
+        versionName = "1.26.0"
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "SERVER_PORT", "$serverPort")
