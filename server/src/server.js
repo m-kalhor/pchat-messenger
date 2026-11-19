@@ -198,6 +198,9 @@ const msgJson = (m, reactions, namer) => ({
 /** An edit or delete-for-everyone of message m, as clients receive it (seq orders all changes). */
 const changeJson = (seq, kind, m) => (kind === 'del'
   ? { seq, kind, id: m.id, from: m.sender, target: m.target }
+  : kind === 'clear'
+  // 1.27: the whole private chat was deleted for both sides: every message up to id `upto` and local lines (calls) up to `ts`
+  ? { seq, kind, id: m.id, from: m.sender, target: m.target, upto: Number(m.payload) || 0, ts: m.ts }
   : { seq, kind, id: m.id, from: m.sender, target: m.target, payload: m.payload, edited: m.edited });
 setInterval(() => { for (const set of clients.values()) for (const r of set) r.write(': ping\n\n'); }, 15000);
 // keeps "last seen" right even if the server stops without the users going offline first
@@ -522,7 +525,7 @@ function pushData(m, tr, request) {
 function replayChanges(user, since, msgSince) {
   const gk = core.groupsOf(user).map((g) => g.gkey);
   const sql = `SELECT c.seq AS seq, c.kind AS ckind, m.* FROM msg_changes c JOIN messages m ON m.id=c.msg_id
-    WHERE c.seq>? AND m.id<=? AND (m.target=? OR m.sender=?${gk.length ? ` OR m.target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY c.seq LIMIT 2000`;
+    WHERE c.seq>? AND (m.id<=? OR c.kind='clear') AND (m.target=? OR m.sender=?${gk.length ? ` OR m.target IN (${gk.map(() => '?').join(',')})` : ''}) ORDER BY c.seq LIMIT 2000`;
   return db.prepare(sql).all(since, msgSince, user, user, ...gk).map((r) => changeJson(r.seq, r.ckind, r));
 }
 
@@ -1121,6 +1124,40 @@ async function route(req, res) {
     const ch = changeJson(seq, kind, q.msg.get(m.id));
     for (const u of new Set(msgAudience(m))) emit(u, 'change', ch);
     return send(res, 200, { ok: true, seq, edited: kind === 'edit' ? t : null });
+  }
+  // ---- 1.27: delete a whole private chat for both sides ----
+  // Every message between the two (both directions) is removed from the server, and a 'clear' change tells
+  // both people's devices to empty the chat (also lines that live only on the device, like call logs).
+  if (p === '/api/clear-chat' && req.method === 'POST') {
+    const b = await readJson(req, 2048);
+    const peer = String(b.peer || '').toLowerCase();
+    if (!peer || peer === user || peer === 'all' || /^g:/.test(peer) || !core.q.user.get(peer)) return send(res, 404, { error: 'no_such_user' });
+    if (limited('clearchat:' + user, 20)) return send(res, 429, { error: 'rate_limited' });
+    addFail('clearchat:' + user);
+    const t = now();
+    const ids = db.prepare(`SELECT id FROM messages WHERE ((sender=? AND target=?) OR (sender=? AND target=?)) AND deleted=0 AND kind NOT LIKE 'sig_%'`)
+      .all(user, peer, peer, user).map((r) => r.id);
+    const upto = Number(db.prepare(`SELECT COALESCE(MAX(id),0) AS m FROM messages WHERE ((sender=? AND target=?) OR (sender=? AND target=?)) AND kind NOT LIKE 'sig_%'`)
+      .get(user, peer, peer, user).m);
+    let mid = 0, seq = 0;
+    db.exec('BEGIN');
+    try {
+      for (const id of ids) {
+        q.delMsg.run(id);
+        db.prepare('DELETE FROM msg_history WHERE msg_id=?').run(id);
+        q.delReacts.run(id);
+      }
+      q.delPin.run(core.convoKey(user, peer));
+      // a marker row (never delivered as a message) that the change points at; its payload is `upto`
+      mid = Number(q.addMsg.run(user, peer, 'sig_clear', String(upto), null, t, 0).lastInsertRowid);
+      db.prepare('UPDATE messages SET deleted=1 WHERE id=?').run(mid);
+      seq = Number(q.addChange.run(mid, 'clear', t).lastInsertRowid);
+      db.exec('COMMIT');
+    } catch (e) { db.exec('ROLLBACK'); throw e; }
+    const ch = changeJson(seq, 'clear', q.msg.get(mid));
+    emit(user, 'change', ch);
+    emit(peer, 'change', ch);
+    return send(res, 200, { ok: true, seq, upto, removed: ids.length });
   }
   if (p === '/api/history' && req.method === 'GET') {
     const m = q.msg.get(Number(url.searchParams.get('id')));

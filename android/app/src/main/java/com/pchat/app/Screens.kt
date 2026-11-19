@@ -353,6 +353,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
         pinned.mapNotNull { p -> all.firstOrNull { it.convo == p } } + all.filter { it.convo !in pinned }
     }
     var rowMenu by remember { mutableStateOf<String?>(null) }
+    var clearFor by remember { mutableStateOf<String?>(null) }
+    clearFor?.let { c -> ClearChatDialog(c, onClose = { clearFor = null }) { clearFor = null } }
     var menu by remember { mutableStateOf(false) }
     var addContact by remember { mutableStateOf(false) }
     var showRequests by remember { mutableStateOf(false) }
@@ -491,6 +493,8 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                         rowMenu = null
                         if (!Prefs.togglePinned(r.convo)) Toast.makeText(ctx, "حداکثر ${Prefs.MAX_PINNED} گفتگو را می‌شود سنجاق کرد", Toast.LENGTH_SHORT).show()
                     })
+                    // 1.27
+                    DropdownMenuItem(text = { Text("🗑  حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { rowMenu = null; clearFor = r.convo })
                 }
                 }
                 HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))

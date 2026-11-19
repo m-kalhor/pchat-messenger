@@ -365,6 +365,11 @@ object Api {
         exec(req("/api/delete").post(JSONObject().put("id", id).toString().toRequestBody(JSON)).build())
     }
 
+    /** 1.27: deletes the whole private chat with [peer] for both sides. */
+    fun clearChat(peer: String) {
+        exec(req("/api/clear-chat").post(JSONObject().put("peer", peer).toString().toRequestBody(JSON)).build())
+    }
+
     /** Earlier versions of my edited message: (payload encrypted for me only, time it was replaced). */
     fun history(id: Long): List<Pair<String, Long>> {
         val a = JSONObject(exec(req("/api/history?id=$id").get().build())).getJSONArray("versions")

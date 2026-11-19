@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.26.0';
+const VERSION = '1.27.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -156,6 +156,36 @@ function confirmBox(title, text, okLabel, danger = false) {
       h('div', { class: 'dialog' }, h('h3', null, title), h('p', null, text),
         h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(false) }, 'انصراف'),
           h('button', { class: 'btn' + (danger ? ' danger' : ''), onclick: () => close(true) }, okLabel))));
+    document.body.append(v);
+  });
+}
+
+/**
+ * 1.27 «حذف گفتگو»: empties the whole chat on this device; in a private chat «برای X هم پاک شود» also deletes it
+ * on the other person's devices and on the server. Resolves true when the chat was deleted.
+ */
+function clearChatDialog(convo) {
+  return new Promise((resolve) => {
+    const group = E.isGroup(convo);
+    const both = !group && convo !== S.me;
+    const cb = h('input', { type: 'checkbox' });
+    const err = h('p', { class: 'err hidden' });
+    const close = (r) => { v.remove(); resolve(r); };
+    const ok = h('button', { class: 'btn danger', onclick: async () => {
+      if (both && cb.checked) {
+        ok.disabled = true; ok.textContent = 'در حال حذف…';
+        const e = await E.clearChatForBoth(convo);
+        if (e) { ok.disabled = false; ok.textContent = 'حذف'; err.textContent = e; err.classList.remove('hidden'); return; }
+      } else await E.clearChatLocal(convo);
+      close(true);
+    } }, 'حذف');
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v && !ok.disabled) close(false); } },
+      h('div', { class: 'dialog' }, h('h3', null, 'حذف گفتگو'),
+        h('p', null, group ? `همهٔ پیام‌ها، فایل‌ها و تماس‌های «${E.titleOf(convo)}» از این دستگاه پاک می‌شود. عضویت شما سر جایش می‌ماند.`
+          : `همهٔ پیام‌ها، فایل‌ها و تماس‌های گفتگو با «${E.titleOf(convo)}» از این دستگاه پاک می‌شود و برنمی‌گردد.`),
+        both ? h('label', { class: 'pick' }, cb, h('span', null, 'برای ' + E.nameOf(convo) + ' هم پاک شود')) : null,
+        err,
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => { if (!ok.disabled) close(false); } }, 'انصراف'), ok)));
     document.body.append(v);
   });
 }
@@ -789,7 +819,8 @@ function ListScreen() {
           h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, '📌') : null)));
       const wasLong = onLongPress(row, () => {
         const pinned = pinnedChats().includes(s.convo);
-        sheet(E.titleOf(s.convo), [{ label: pinned ? 'برداشتن سنجاق از بالای فهرست' : '📌 سنجاق به بالای فهرست', run: () => { togglePinChat(s.convo); render(); } }]);
+        sheet(E.titleOf(s.convo), [{ label: pinned ? 'برداشتن سنجاق از بالای فهرست' : '📌 سنجاق به بالای فهرست', run: () => { togglePinChat(s.convo); render(); } },
+          { label: '🗑 حذف گفتگو', danger: true, run: () => clearChatDialog(s.convo) }]);
       });
       row.addEventListener('click', () => { if (!wasLong()) go('#/c/' + encodeURIComponent(s.convo)); });
       return row;
@@ -951,9 +982,17 @@ function ChatScreen(convo) {
   const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, '✕'), selCount,
     h('button', { class: 'btn sm', onclick: () => {
       const all = S.convos.get(convo) || [];
-      const msgsSel = all.filter((x) => selected.has(x.id));
-      if (msgsSel.length) forwardSheet(msgsSel, () => setSelecting(null));
-    } }, 'فوروارد'));
+      const msgsSel = all.filter((x) => selected.has(x.id) && x.id > 0 && x.type !== 'call');
+      if (msgsSel.length) forwardSheet(msgsSel, () => setSelecting(null)); else toast('تماس‌ها فوروارد نمی‌شوند');
+    } }, 'فوروارد'),
+    // 1.27: delete the selected messages / call lines from this device
+    h('button', { class: 'btn sm danger', onclick: async () => {
+      const all = S.convos.get(convo) || [];
+      const sel = all.filter((x) => selected.has(x.id));
+      if (!sel.length || !(await confirmBox('حذف ' + faNum(sel.length) + ' مورد', 'موارد انتخاب‌شده فقط از این دستگاه پاک می‌شوند.', 'حذف', true))) return;
+      for (const x of sel) E.deleteLocal(x);
+      setSelecting(null);
+    } }, 'حذف'));
   const emojiPanel = h('div', { class: 'emojis hidden' });
   const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, '➤');
   const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, '🎤');
@@ -983,7 +1022,9 @@ function ChatScreen(convo) {
       h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'),
       h('div', { class: 'grow', style: { display: 'flex', gap: '10px', alignItems: 'center' }, onclick: () => go('#/p/' + encodeURIComponent(convo)) }, av, h('div', { style: { minWidth: '0' } }, title, sub)),
       callBtns,
-      h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍')),
+      h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍'),
+      // 1.27: ⋮ › «حذف گفتگو»
+      h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(E.titleOf(convo), [{ label: '🗑 حذف گفتگو', danger: true, run: async () => { if (await clearChatDialog(convo)) go('#/'); } }]) }, '⋮')),
     searchBar, gcBar, pinBar, reqBar, msgs, jump,
     h('div', { class: 'composer' }, selBar, replyBar, recBar, lockBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
   // 1.20: a user group where only admins write, or one the server admin froze
@@ -1193,7 +1234,12 @@ function ChatScreen(convo) {
   }
 
   function bubble(m) {
-    if (m.type === 'call') return h('div', { class: 'call-line' }, '📞 ' + m.text + ' · ' + fmtTime(m.ts));
+    // 1.27: a call line can be selected and deleted (it lives only on this device)
+    if (m.type === 'call') return h('div', { class: 'call-line' + (selected && selected.has(m.id) ? ' sel' : ''), onclick: () => {
+      if (!selected) return sheet(null, [{ label: 'انتخاب', run: () => setSelecting(new Set([m.id])) }, { label: 'حذف از این دستگاه', danger: true, run: () => E.deleteLocal(m) }]);
+      if (selected.has(m.id)) selected.delete(m.id); else selected.add(m.id);
+      if (!selected.size) setSelecting(null); else setSelecting(selected);
+    } }, '📞 ' + m.text + ' · ' + fmtTime(m.ts));
     const big = (m.type === 'text' && !m.replyId && !m.replyText && Emoji.onlyEmojiCount(m.text) > 0) || m.type === 'sticker';
     const prog = S.progress.get(m.id);
     const b = h('div', { class: 'bubble' + (big ? ' emoji' : '') + (m.type === 'sticker' ? ' sticker' : '') },
@@ -2320,16 +2366,21 @@ function CallsScreen() {
       live.map((r) => h('div', { class: 'row' }, avatar(r.group || r.host),
         h('div', { class: 'mid' }, h('div', { class: 'name' }, r.title || E.nameOf(r.host)), h('div', { class: 'prev' }, 'تماس گروهی · ' + faNum(r.parts.length) + ' نفر')),
         h('button', { class: 'btn sm', onclick: () => GC.join(r.id) }, 'پیوستن'))),
-      logs.length ? h('div', { class: 'section' }, 'اخیر') : null,
+      logs.length ? h('div', { class: 'section', style: { display: 'flex' } }, h('span', { class: 'grow' }, 'اخیر'),
+        // 1.27
+        h('button', { class: 'linkbtn danger', onclick: async () => { if (await confirmBox('پاک کردن تاریخچهٔ تماس', 'همهٔ تماس‌ها از این فهرست و از داخل چت‌ها پاک می‌شوند (فقط روی این دستگاه).', 'پاک کردن همه', true)) E.clearCallLogs(); } }, 'پاک کردن همه')) : null,
       logs.slice(0, 200).map((m) => {
         const missed = /از دست رفته|بی‌پاسخ/.test(m.text || '');
         const group = E.isGroup(m.convo);
-        return h('div', { class: 'row' }, avatar(m.convo, 'sm'),
-          h('div', { class: 'mid', onclick: () => go('#/c/' + encodeURIComponent(m.convo)) },
+        const row = h('div', { class: 'row' }, avatar(m.convo, 'sm'),
+          h('div', { class: 'mid', onclick: () => { if (!wasLong()) go('#/c/' + encodeURIComponent(m.convo)); } },
             h('div', { class: 'name' + (missed ? ' missed' : '') }, E.titleOf(m.convo)),
             h('div', { class: 'prev' }, (m.mine ? '↗ ' : '↙ ') + (m.text || '') + ' · ' + fmtListTime(m.ts))),
           group ? h('button', { class: 'icon', title: 'تماس گروهی', onclick: () => groupCall(m.convo) }, '📞')
             : h('button', { class: 'icon', title: 'تماس', onclick: () => Call.startCall(m.convo, false) }, '📞'));
+        // 1.27: long-press / right-click › «حذف از تاریخچه»
+        const wasLong = onLongPress(row, () => sheet(E.titleOf(m.convo), [{ label: 'حذف از تاریخچه', danger: true, run: () => E.deleteLocal(m) }]));
+        return row;
       }),
       !logs.length && !live.length ? h('div', { class: 'empty' }, 'هنوز تماسی ندارید. با دکمهٔ 📞+ با یک یا چند نفر تماس بگیرید.') : null);
   });
@@ -2454,6 +2505,17 @@ function renderCall(c) {
     callTick = setInterval(() => renderCall(Call.C), 1000);
   }
   const remoteVideo = c.remote && c.remote.getVideoTracks().length > 0;
+  // 1.27: the other person's photo fills the screen (their colour and initial without one), under the video
+  let bg = callEl.querySelector('.call-bg');
+  if (!bg) { bg = h('div', { class: 'call-bg' }); callEl.prepend(bg); }
+  const photo = E.avatarUrl(c.peer);
+  const bgKey = c.peer + '|' + (photo || '');
+  if (bg.dataset.k !== bgKey) {
+    bg.dataset.k = bgKey;
+    bg.style.backgroundImage = photo ? `url("${photo}")` : `linear-gradient(${colorFor(c.peer)}, rgba(0, 0, 0, .55)), linear-gradient(${colorFor(c.peer)}, ${colorFor(c.peer)})`;
+    bg.textContent = photo ? '' : initials(E.nameOf(c.peer));
+  }
+  bg.style.visibility = remoteVideo ? 'hidden' : 'visible';
   let rv = callEl.querySelector('video.remote');
   if (!rv) { rv = h('video', { class: 'remote', autoplay: true, playsInline: true }); callEl.append(rv); }
   if (rv.srcObject !== c.remote) { rv.srcObject = c.remote; if (c.remote) rv.play().catch(() => { }); }
@@ -2483,7 +2545,7 @@ function renderCall(c) {
   else if (c.phase === 'incoming') status = c.video ? 'تماس تصویری ورودی' : 'تماس صوتی ورودی';
   // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
   const routeLine = c.canRoute && c.phase === 'active' && c.note ? h('div', { class: 'route-now' }, c.note) : null;
-  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status), busyLine, routeLine);
+  const info = h('div', { class: 'info' }, h('h2', null, E.nameOf(c.peer)), h('div', null, status), busyLine, routeLine);
   const btn = (label, cls, fn, title) => h('button', { class: 'cb ' + cls, title, onclick: fn }, label);
   const ctrls = c.phase === 'incoming'
     ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.decline, 'رد'), btn(c.video ? '🎥' : '📞', 'green', Call.accept, 'پاسخ'))

@@ -45,6 +45,7 @@ export const groups = () => call('GET', '/api/groups');
 export const setPubkey = (pubkey) => call('POST', '/api/pubkey', { pubkey });
 export const editMessage = (id, payload, prev) => call('POST', '/api/edit', { id, payload, prev });
 export const deleteMessage = (id) => call('POST', '/api/delete', { id });
+export const clearChat = (peer) => call('POST', '/api/clear-chat', { peer }); // 1.27
 export const messageHistory = (id) => call('GET', '/api/history?id=' + id);
 export const setProfile = (display_name, bio) => call('POST', '/api/profile', { display_name, bio });
 export const uploadAvatar = (webp) => call('POST', '/api/avatar', webp, { 'content-type': 'image/webp' });
