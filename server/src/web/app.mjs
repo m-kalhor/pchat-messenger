@@ -11,7 +11,7 @@ import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 
-const VERSION = '1.24.0';
+const VERSION = '1.26.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -2475,14 +2475,22 @@ function renderCall(c) {
   rv.onclick = tapSmall(true);
   if (lv && localVideo) lv.onclick = tapSmall(false);
   let status = c.note;
+  // 1.26: the other side is on another call
+  if (c.phase === 'outgoing' && c.busy === 1) status = 'در حال مکالمه است';
+  else if (c.phase === 'outgoing' && c.busy === 2) { const s = Math.max(0, Math.floor((Date.now() - c.waitFrom) / 1000)); status = 'در انتظار… ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+  const busyLine = c.phase === 'outgoing' && c.busy ? h('div', { class: 'route-now' }, c.busy === 1 ? 'اگر منتظر بمانید، وقتی مکالمه‌اش تمام شد تماس خودکار برقرار می‌شود' : 'وقتی مکالمه‌اش تمام شد، تماس خودکار برقرار می‌شود') : null;
   if (c.phase === 'active') { const s = Math.floor((Date.now() - c.startedAt) / 1000); status = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
   else if (c.phase === 'incoming') status = c.video ? 'تماس تصویری ورودی' : 'تماس صوتی ورودی';
   // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
   const routeLine = c.canRoute && c.phase === 'active' && c.note ? h('div', { class: 'route-now' }, c.note) : null;
-  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status), routeLine);
+  const info = h('div', { class: 'info' }, remoteVideo ? null : avatar(c.peer, 'lg'), h('h2', null, E.nameOf(c.peer)), h('div', null, status), busyLine, routeLine);
   const btn = (label, cls, fn, title) => h('button', { class: 'cb ' + cls, title, onclick: fn }, label);
   const ctrls = c.phase === 'incoming'
     ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.decline, 'رد'), btn(c.video ? '🎥' : '📞', 'green', Call.accept, 'پاسخ'))
+    : c.phase === 'outgoing' && c.busy === 1
+    ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.hangup, 'قطع'), h('button', { class: 'btn', onclick: Call.waitForPeer }, '⏳ منتظر می‌مانم'))
+    : c.phase === 'outgoing' && c.busy === 2
+    ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.hangup, 'لغو انتظار'))
     : h('div', { class: 'ctrls' },
       btn(c.muted ? '🔇' : '🎙', c.muted ? 'on' : '', Call.toggleMute, 'قطع صدا'),
       localVideo ? btn(c.camOff ? '🚫' : '📷', c.camOff ? 'on' : '', Call.toggleCamera, 'دوربین') : null,
@@ -2517,6 +2525,8 @@ function renderCall(c) {
   if (S.meInfo.diag && c.phase !== 'incoming') Diag.attach(callEl, c.peer, Call.peerConnection);
 }
 Call.onCall(renderCall);
+// 1.26: someone waits until my other Sepan call is over
+Call.setWaitHook((peer) => toast(E.nameOf(peer) + ' منتظر تماس با شماست؛ بعد از این تماس خودکار زنگ می‌زند'));
 
 // ---------------- start ----------------
 (async () => {

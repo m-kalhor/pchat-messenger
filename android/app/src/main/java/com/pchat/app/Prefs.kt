@@ -53,6 +53,10 @@ object Prefs {
     /** the admins' ping / route text over the call (1.7 diagnostics) is shown */
     val diagText = MutableStateFlow(true)
     fun setDiagText(v: Boolean) { p.edit().putBoolean("diag_text", v).apply(); diagText.value = v }
+    /** 1.26: on a phone call or another messenger's call, a Sepan caller sees «busy» (and may wait) instead of a ring */
+    var showBusy: Boolean
+        get() = p.getBoolean("show_busy", true)
+        set(v) { p.edit().putBoolean("show_busy", v).apply() }
     /** 1.15: the call path every call switches to once connected (auto = none); see CallManager.ROUTE_NAMES */
     val callRoute = MutableStateFlow("auto")
     fun setCallRoute(v: String) { p.edit().putString("call_route", v).apply(); callRoute.value = v }

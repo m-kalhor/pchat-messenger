@@ -15,7 +15,14 @@ export const C = {
   routes: [],               // the modes this server offers
   routing: false,           // a path change is under way
   path: '',                 // the path in use now, e.g. «مستقیم · UDP»
+  // 1.26: the other side is on another call: 1 = asking «wait / hang up», 2 = waiting
+  busy: 0, waitFrom: 0,
 };
+const WAIT_MS = 5 * 60000;
+let waitDeadline = 0, rewaitCall = '';
+// callee side: people I told «busy» (callId -> { peer, at }) and the ones waiting for me to be free
+const busySent = new Map();
+let waiters = [], freeTimer = null;
 export const ROUTE_NAMES = { auto: 'خودکار', direct: 'مستقیم (UDP)', udp: 'سرور · UDP', tcp: 'سرور · TCP', tls: 'سرور · TLS' };
 const ROUTE_KEY = 'sepan_call_route';
 /** 1.15: the path every call of this browser switches to once connected (Settings), 'auto' = none. */
@@ -38,11 +45,12 @@ let ring = null;
 /** The live RTCPeerConnection (the admins' call diagnostics read its stats), or null. */
 export const peerConnection = () => pc;
 
-export async function startCall(peer, video) {
+export async function startCall(peer, video, recall = false) {
   if (C.phase !== 'idle') return;
   const callId = Math.random().toString(16).slice(2, 14);
+  if (recall) rewaitCall = callId; else { rewaitCall = ''; waitDeadline = 0; }
   stopTone(); unlockAudio();
-  set({ phase: 'outgoing', peer, video, callId, incoming: false, muted: false, camOff: false, front: true, note: 'در حال برقراری تماس…', remote: null });
+  set({ phase: 'outgoing', peer, video, callId, incoming: false, muted: false, camOff: false, front: true, note: 'در حال برقراری تماس…', remote: null, busy: 0, waitFrom: 0 });
   try {
     const turn = await api.turn();
     const stream = await media(video);
@@ -50,7 +58,7 @@ export async function startCall(peer, video) {
     createPeer(turn, stream);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    const delivered = await signal('sig_invite', { callId, video, sdp: offer.sdp, relay: 1, route: 1 });
+    const delivered = await signal('sig_invite', { callId, video, sdp: offer.sdp, relay: 1, route: 1, wait: 1 });
     if (!delivered) return end('کاربر الان آنلاین نیست', false, 'unreachable');
     inviteSent = true;
     for (const c of localIce.splice(0)) signal('sig_ice', c).catch(() => { });
@@ -84,6 +92,12 @@ export async function accept() {
   }
 }
 export const decline = () => end('', true);
+/** 1.26: «منتظر می‌مانم» on the busy screen. */
+export function waitForPeer() {
+  if (C.phase !== 'outgoing' || C.busy !== 1) return;
+  waitDeadline = Date.now() + WAIT_MS;
+  enterWait(C.callId);
+}
 export const hangup = () => end('', true);
 
 export function toggleMute() {
@@ -117,15 +131,20 @@ E.setSignalHandler(async (from, kind, enc) => {
   const j = await E.decryptSignal(from, enc);
   if (!j) return;
   const callId = j.callId || '';
-  if (kind === 'sig_invite') onInvite(from, callId, !!j.video, j.sdp || '', !!j.relay, !!j.route);
+  if (kind === 'sig_invite') onInvite(from, callId, !!j.video, j.sdp || '', !!j.relay, !!j.route, !!j.wait);
   else if (kind === 'sig_accept') onAccepted(from, callId, j.sdp || '', !!j.relay, !!j.route, j.route_pref);
   else if (kind === 'sig_route') { if (matches(from, callId) && !C.incoming && ROUTE_NAMES[j.mode]) restartTo(j.mode); }
   else if (kind === 'sig_relay') { if (matches(from, callId) && !C.incoming) switchToRelay(); }
   else if (kind === 'sig_reoffer') { if (matches(from, callId)) onReoffer(callId, j.sdp || '', ROUTE_NAMES[j.mode] ? j.mode : null, ROUTE_NAMES[j.failed] ? j.failed : null); }
   else if (kind === 'sig_reanswer') { if (matches(from, callId)) onReanswer(callId, j.sdp || ''); }
   else if (kind === 'sig_ice') onIce(callId, { candidate: j.cand, sdpMid: j.mid, sdpMLineIndex: j.idx });
-  else if (kind === 'sig_reject') { if (matches(from, callId)) end(j.reason === 'busy' ? 'طرف مقابل در تماس دیگری است' : 'تماس رد شد', false, 'busy'); }
-  else if (kind === 'sig_hangup') { if (matches(from, callId)) end('تماس پایان یافت', false); }
+  // 1.26: busy person: ask «wait / hang up»; they wait → told when free → call again
+  else if (kind === 'sig_busy') { if (matches(from, callId) && !C.incoming && C.phase === 'outgoing') onBusy(callId); }
+  else if (kind === 'sig_wait') onWait(from, callId);
+  else if (kind === 'sig_free') { if (matches(from, callId) && C.busy === 2) recall(); }
+  // while we wait, a ring that timed out or was turned down on another device of theirs doesn't end the wait
+  else if (kind === 'sig_reject') { if (matches(from, callId) && !C.busy) end(j.reason === 'busy' ? 'طرف مقابل در تماس دیگری است' : 'تماس رد شد', false, 'busy'); }
+  else if (kind === 'sig_hangup') { dropWaiter(from, callId); if (matches(from, callId)) end('تماس پایان یافت', false); }
   // 1.19: the other side added people: this call moves into their group call
   else if (kind === 'sig_upgrade') { if (matches(from, callId) && j.room && upgradeHook) { end('', false, 'none'); upgradeHook.join(String(j.room)); } }
 });
@@ -149,11 +168,17 @@ export async function upgradeToGroup(users) {
 let busyHook = () => false;
 export const setBusyHook = (fn) => { busyHook = fn; };
 
-function onInvite(from, callId, video, sdp, relay, route) {
+function onInvite(from, callId, video, sdp, relay, route, wait) {
   if (!callId || !sdp) return;
-  if (C.phase === 'idle' && busyHook()) { sendTo(from, 'sig_reject', { callId, reason: 'busy' }); return; }
-  if (C.phase !== 'idle') {
-    if (!(C.peer === from && C.callId === callId)) sendTo(from, 'sig_reject', { callId, reason: 'busy' });
+  // a browser can't see phone calls or other apps: busy here means a Sepan call (1:1 or group) only
+  if (C.phase !== 'idle' || busyHook()) {
+    if (C.peer === from && C.callId === callId) return;
+    if (wait) {
+      const now = Date.now();
+      for (const [k, v] of busySent) if (now - v.at > 60000) busySent.delete(k);
+      busySent.set(callId, { peer: from, at: now });
+      sendTo(from, 'sig_busy', { callId });
+    } else sendTo(from, 'sig_reject', { callId, reason: 'busy' });
     return;
   }
   offerSdp = sdp;
@@ -168,7 +193,7 @@ async function onAccepted(from, callId, sdp, relay, route, pref) {
   if (!matches(from, callId) || C.phase !== 'outgoing' || !pc) return;
   peerRelay = relay;
   peerPref = ROUTE_NAMES[pref] ? pref : 'auto';
-  set({ peerRoute: route });
+  set({ peerRoute: route, busy: 0 });
   disarm(); stopTone();
   set({ phase: 'connecting', note: 'در حال اتصال…' });
   try {
@@ -188,6 +213,57 @@ async function flushIce(callId) {
   pendingIce = [];
   for (const p of list) { try { await pc.addIceCandidate(p.cand); } catch { } }
 }
+
+// ---------------- 1.26: busy / wait ----------------
+function onBusy(callId) {
+  if (rewaitCall === callId && Date.now() < waitDeadline) { enterWait(callId); return; }
+  disarm(); stopTone(); playTone('busy');
+  set({ busy: 1, note: '' });
+  arm(15000, E.nameOf(C.peer) + ' در حال مکالمه بود');
+}
+function enterWait(callId) {
+  if (C.callId !== callId || C.phase !== 'outgoing') return;
+  stopTone();
+  set({ busy: 2, waitFrom: waitDeadline - WAIT_MS });
+  signal('sig_wait', { callId }).catch(() => { });
+  arm(Math.max(1000, waitDeadline - Date.now()), E.nameOf(C.peer) + ' هنوز در حال مکالمه است', 'unreachable');
+}
+/** They are free now: call again by ourselves (a new call, their phone rings as usual). */
+function recall() {
+  const { peer, video } = C;
+  end('', false, 'none', false);
+  setTimeout(() => { if (C.phase === 'idle' && !busyHook()) startCall(peer, video, true); }, 300);
+}
+/** Callee: someone I told «busy» waits for me. */
+function onWait(from, callId) {
+  const b = busySent.get(callId);
+  busySent.delete(callId);
+  if (!b || b.peer !== from || Date.now() - b.at > 60000) return;
+  waiters = waiters.filter((w) => w.peer !== from);
+  waiters.push({ peer: from, callId, until: Date.now() + WAIT_MS + 30000 });
+  if (waitHook) waitHook(from);
+  startFreeWatch();
+}
+function dropWaiter(from, callId) { waiters = waiters.filter((w) => !(w.peer === from && w.callId === callId)); }
+/** Once free for 2 seconds, tell the first one waiting (the next one only after that call). */
+function startFreeWatch() {
+  if (freeTimer) return;
+  let freeFor = 0;
+  freeTimer = setInterval(() => {
+    const now = Date.now();
+    waiters = waiters.filter((w) => w.until >= now);
+    if (!waiters.length) { clearInterval(freeTimer); freeTimer = null; return; }
+    freeFor = C.phase === 'idle' && !busyHook() ? freeFor + 1 : Math.min(freeFor, 0);
+    if (freeFor >= 2) {
+      const w = waiters.shift();
+      sendTo(w.peer, 'sig_free', { callId: w.callId });
+      freeFor = -8; // give their call a few seconds to arrive before freeing the next one
+    }
+  }, 1000);
+}
+// app.mjs shows «X منتظر تماس با شماست»
+let waitHook = null;
+export const setWaitHook = (fn) => { waitHook = fn; };
 
 // ---------------- WebRTC ----------------
 async function media(video) {
@@ -459,7 +535,7 @@ async function sendTo(peer, kind, body) {
 }
 
 /** tone (1.13): 'busy' / 'unreachable'…; left out, a connected call ends with the short end tone. */
-function end(note, sendHangup, tone) {
+function end(note, sendHangup, tone, log = true) {
   if (C.phase === 'idle') return;
   const { peer, callId, phase, incoming, startedAt } = C;
   if (sendHangup) sendTo(peer, phase === 'incoming' ? 'sig_reject' : 'sig_hangup', { callId });
@@ -473,13 +549,13 @@ function end(note, sendHangup, tone) {
   stopTracks(C.local);
   offerSdp = null; remoteSet = false; pendingIce = []; localIce = [];
   if (wakeLock) { wakeLock.release().catch(() => { }); wakeLock = null; }
-  let log;
+  let text;
   if (phase === 'active') {
     const s = Math.round((Date.now() - startedAt) / 1000);
-    log = `تماس ${C.video ? 'تصویری' : 'صوتی'} (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
-  } else log = incoming ? 'تماس از دست رفته' : 'تماس ناموفق';
-  E.addCallLog(peer, log, !incoming);
-  set({ phase: 'idle', note, local: null, remote: null, callId: '', canRoute: false, peerRoute: false, route: 'auto', routing: false, path: '' });
+    text = `تماس ${C.video ? 'تصویری' : 'صوتی'} (${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')})`;
+  } else text = incoming ? 'تماس از دست رفته' : 'تماس ناموفق';
+  if (log) E.addCallLog(peer, text, !incoming);
+  set({ phase: 'idle', note, local: null, remote: null, callId: '', canRoute: false, peerRoute: false, route: 'auto', routing: false, path: '', busy: 0, waitFrom: 0 });
   if (note) setTimeout(() => { if (C.phase === 'idle' && C.note === note) set({ note: '' }); }, 3500);
 }
 
