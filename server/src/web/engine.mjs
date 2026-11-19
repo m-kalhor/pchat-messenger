@@ -548,6 +548,13 @@ async function handleMsg(o, again) {
 
 /** An edit or a delete-for-everyone of a message we may already have. */
 async function handleChange(o) {
+  // 1.27: the private chat was deleted for both sides (by either person, maybe from another of my devices)
+  if (o.kind === 'clear') {
+    const convo = o.from === S.me ? o.target : o.from;
+    if (convo && !isGroup(convo)) await dropConvo(convo, (m) => (m.id > 0 && m.id <= (o.upto || 0)) || (m.id < 0 && m.status !== 1 && m.ts <= (o.ts || 0)));
+    if (o.seq > S.cseq) { S.cseq = o.seq; await store.kvSet('cseq', S.cseq); }
+    return;
+  }
   const list = S.convos.get(isGroup(o.target) ? o.target : o.from === S.me ? o.target : o.from) || [];
   const m = list.find((x) => x.id === o.id);
   if (m && o.kind === 'del') {
@@ -960,6 +967,37 @@ export function summaries() {
 }
 
 export function deleteLocal(m) { removeLocal(m); store.delMsg(m.id); emit('msg', m); }
+
+// 1.27: «حذف گفتگو»
+async function dropConvo(convo, which) {
+  const list = S.convos.get(convo) || [];
+  const gone = list.filter(which);
+  if (!gone.length) return;
+  const keep = list.filter((m) => !which(m));
+  list.splice(0, list.length, ...keep);
+  for (const m of gone) await store.delMsg(m.id);
+  if (gone.some((m) => S.pins[convo] === m.id)) delete S.pins[convo];
+  emit('msg', gone[0]);
+}
+/** Empties a whole chat on this device (messages, files, call lines). */
+export const clearChatLocal = (convo) => dropConvo(convo, () => true);
+/** Deletes the private chat with peer for both sides; null = done, else the error text. */
+export async function clearChatForBoth(peer) {
+  try { await api.clearChat(peer); } catch (e) { return errText(e); }
+  await clearChatLocal(peer);
+  return null;
+}
+/** The Calls tab's «پاک کردن همه». */
+export async function clearCallLogs() {
+  for (const [convo, list] of S.convos) {
+    const gone = list.filter((m) => m.type === 'call');
+    if (!gone.length) continue;
+    const keep = list.filter((m) => m.type !== 'call');
+    list.splice(0, list.length, ...keep);
+    for (const m of gone) await store.delMsg(m.id);
+  }
+  emit('msg', {});
+}
 
 // ---------------- sending ----------------
 async function encryptFor(convo, plain) {

@@ -28,6 +28,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -35,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 
 /** Pick one or more chats to forward to, like Telegram; «پنهان کردن فرستنده» sends a plain copy. */
 @Composable
@@ -177,5 +179,52 @@ fun SeenByDialog(m: Msg, onClose: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = onClose) { Text("بستن") } }
+    )
+}
+
+/**
+ * 1.27 «حذف گفتگو»: empties the whole chat on this device. In a private chat «برای X هم پاک شود» also
+ * deletes it on the other person's devices and on the server (both people's messages).
+ */
+@Composable
+fun ClearChatDialog(convo: String, onClose: () -> Unit, onDone: () -> Unit) {
+    val scope = rememberCoroutineScope()
+    val both = !Engine.isGroup(convo) && convo != Engine.me
+    var forBoth by remember { mutableStateOf(false) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onClose() },
+        title = { Text("حذف گفتگو") },
+        text = {
+            Column {
+                Text(
+                    if (Engine.isGroup(convo)) "همهٔ پیام‌ها، فایل‌ها و تماس‌های «${Engine.titleOf(convo)}» از این دستگاه پاک می‌شود. عضویت شما سر جایش می‌ماند."
+                    else "همهٔ پیام‌ها، فایل‌ها و تماس‌های گفتگو با «${Engine.titleOf(convo)}» از این دستگاه پاک می‌شود و برنمی‌گردد."
+                )
+                if (both) Row(
+                    Modifier.fillMaxWidth().padding(top = 12.dp).clickable(enabled = !busy) { forBoth = !forBoth },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Checkbox(checked = forBoth, onCheckedChange = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text("برای ${Engine.nameOf(convo)} هم پاک شود")
+                }
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(top = 8.dp)) }
+            }
+        },
+        confirmButton = {
+            TextButton(enabled = !busy, onClick = {
+                if (forBoth) {
+                    busy = true
+                    scope.launch {
+                        val e = Engine.clearChatForBoth(convo)
+                        busy = false
+                        if (e == null) onDone() else error = e
+                    }
+                } else { Engine.clearChatLocal(convo); onDone() }
+            }) { Text(if (busy) "در حال حذف…" else "حذف", color = MaterialTheme.colorScheme.error) }
+        },
+        dismissButton = { TextButton(enabled = !busy, onClick = onClose) { Text("انصراف") } }
     )
 }

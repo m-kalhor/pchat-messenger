@@ -204,6 +204,25 @@ class Db(ctx: Context) : SQLiteOpenHelper(ctx, "pchat.db", null, 6) {
         writableDatabase.execSQL("DELETE FROM messages WHERE id=?", arrayOf<Any>(id))
     }
 
+    /**
+     * 1.27: empties a chat. upto < 0 = everything; otherwise (the other side cleared it for both) server messages
+     * up to id upto and lines that live only here (call logs, failed sends) up to time ts; messages still being sent stay.
+     * Returns the local files of the deleted rows.
+     */
+    fun clearConvo(convo: String, upto: Long = -1, ts: Long = 0): List<String> {
+        val where = if (upto < 0) "convo=?" else "convo=? AND ((id>0 AND id<=?) OR (id<0 AND status<>1 AND ts<=?))"
+        val args: Array<String> = if (upto < 0) arrayOf(convo) else arrayOf(convo, upto.toString(), ts.toString())
+        val files = ArrayList<String>()
+        readableDatabase.rawQuery("SELECT local_path FROM messages WHERE $where AND local_path IS NOT NULL", args).use { c -> while (c.moveToNext()) files.add(c.getString(0)) }
+        writableDatabase.delete("messages", where, args)
+        return files
+    }
+
+    /** 1.27: deletes every call line (the Calls tab's «پاک کردن همه»). */
+    fun clearCallLogs() {
+        writableDatabase.execSQL("DELETE FROM messages WHERE type='call'")
+    }
+
 
     /** 1.19 Calls tab: the latest call entries of every chat. */
     fun callLogs(limit: Int = 200): List<Msg> {

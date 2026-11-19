@@ -7,6 +7,13 @@ import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.runtime.produceState
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -182,9 +189,8 @@ fun CallScreen() {
             // the two views stay where they are; only the pictures they show change places
             VideoView(if (swap) local else remote, swap && s.front, false, Modifier.fillMaxSize())
         } else {
-            Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
-                Avatar(s.peer, false, 120)
-            }
+            // 1.27: the other person's photo fills the screen (or their colour and initial, without a photo)
+            CallBackdrop(s.peer)
         }
         Column(
             Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 28.dp),
@@ -317,4 +323,38 @@ private fun RouteItem(label: String, cur: Boolean, enabled: Boolean, onClick: ()
         modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 8.dp, vertical = 7.dp)
     )
+}
+
+/**
+ * 1.27: the full-screen picture behind a one-to-one call: the other person's profile photo (cropped to fill),
+ * or without one their colour with the first letter of their name. Dark shades at the top and bottom keep the
+ * name, the status and the buttons readable on any photo.
+ */
+@Composable
+private fun CallBackdrop(peer: String) {
+    val users by Engine.users.collectAsState()
+    val ver = users.firstOrNull { it.username == peer }?.avatarVer ?: 0
+    val bmp by produceState<ImageBitmap?>(null, peer, ver) { value = if (ver <= 0) null else Engine.avatarBitmap(peer, ver) }
+    Box(Modifier.fillMaxSize()) {
+        val b = bmp
+        if (b != null) {
+            Image(b, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        } else {
+            val c = U.colorFor(peer)
+            Box(
+                Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(lerp(c, Color.White, 0.12f), lerp(c, Color.Black, 0.55f)))),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(Engine.nameOf(peer).take(1).uppercase(), color = Color.White.copy(alpha = 0.9f), fontSize = 150.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+        Box(
+            Modifier.align(Alignment.TopCenter).fillMaxWidth().fillMaxHeight(0.32f)
+                .background(Brush.verticalGradient(listOf(Color.Black.copy(alpha = 0.6f), Color.Transparent)))
+        )
+        Box(
+            Modifier.align(Alignment.BottomCenter).fillMaxWidth().fillMaxHeight(0.4f)
+                .background(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.7f))))
+        )
+    }
 }

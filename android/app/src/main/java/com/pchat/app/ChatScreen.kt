@@ -60,7 +60,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -183,6 +183,9 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     var forwarding by remember { mutableStateOf<List<Msg>?>(null) }
     var info by remember { mutableStateOf<Msg?>(null) }
     var deleteAll by remember { mutableStateOf<Msg?>(null) }
+    var chatMenu by remember { mutableStateOf(false) }
+    var clearChat by remember { mutableStateOf(false) }
+    var deleteSel by remember { mutableStateOf(false) }
     BackHandler(enabled = selected.isNotEmpty()) { selected.clear() }
     BackHandler(enabled = editing != null) { editing = null; text = "" }
     var viewer by remember { mutableStateOf<Pair<String, Msg>?>(null) }
@@ -478,7 +481,14 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 DropdownMenuItem(text = { Text("بی‌صدا برای همیشه") }, onClick = { muteMenu = false; Prefs.mute(convo, null) })
                             }
                         }
-                        IconButton(onClick = { showKeys = true }) { Icon(Icons.Default.Lock, contentDescription = "امنیت") }
+                        // 1.27: ⋮ › «امنیت» (was its own 🔒 button) and «حذف گفتگو»
+                        Box {
+                            IconButton(onClick = { chatMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "گزینه‌ها") }
+                            DropdownMenu(expanded = chatMenu, onDismissRequest = { chatMenu = false }) {
+                                DropdownMenuItem(text = { Text("🔒  امنیت و اثرانگشت") }, onClick = { chatMenu = false; showKeys = true })
+                                DropdownMenuItem(text = { Text("🗑  حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { chatMenu = false; clearChat = true })
+                            }
+                        }
                     }
                 }
             )
@@ -569,7 +579,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                     onRetry = { Engine.retry(it) },
                                     onDelete = { Engine.deleteLocal(it) },
                                     selecting = selected.isNotEmpty(), selected = it.id in selected,
-                                    onSelect = { if (it.id in selected) selected.remove(it.id) else if (it.id > 0 && it.status == 0) selected.add(it.id) },
+                                    onSelect = { if (it.id in selected) selected.remove(it.id) else if ((it.id > 0 && it.status == 0) || it.type == "call") selected.add(it.id) },
                                     onEdit = { editing = it; replyTo = null; text = it.text; field = TextFieldValue(it.text, TextRange(it.text.length)) },
                                     onForward = { forwarding = listOf(it) },
                                     onInfo = { info = it },
@@ -610,7 +620,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { selected.clear() }) { Icon(Icons.Default.Close, contentDescription = "لغو انتخاب") }
                         Text("${selected.size} پیام انتخاب شد", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                        TextButton(onClick = { forwarding = allMsgs.filter { m -> m.id in selected } }) { Text("فوروارد") }
+                        val fw = allMsgs.filter { m -> m.id in selected && m.id > 0 && m.type != "call" }
+                        if (fw.isNotEmpty()) TextButton(onClick = { forwarding = fw }) { Text("فوروارد") }
+                        // 1.27: delete the selected messages / call lines from this device
+                        TextButton(onClick = { deleteSel = true }) { Text("حذف", color = MaterialTheme.colorScheme.error) }
                     }
                 }
             }
@@ -785,6 +798,21 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         }
     }
     info?.let { MessageInfoDialog(it) { info = null } }
+    if (clearChat) ClearChatDialog(convo, onClose = { clearChat = false }) { clearChat = false; onBack() }
+    if (deleteSel) {
+        val n = selected.size
+        AlertDialog(
+            onDismissRequest = { deleteSel = false },
+            title = { Text("حذف ${U.fa(n)} مورد") },
+            text = { Text("موارد انتخاب‌شده فقط از این دستگاه پاک می‌شوند.") },
+            confirmButton = { TextButton(onClick = {
+                deleteSel = false
+                allMsgs.filter { m -> m.id in selected }.forEach { m -> Engine.deleteLocal(m) }
+                selected.clear()
+            }) { Text("حذف", color = MaterialTheme.colorScheme.error) } },
+            dismissButton = { TextButton(onClick = { deleteSel = false }) { Text("انصراف") } }
+        )
+    }
     deleteAll?.let { m ->
         AlertDialog(
             onDismissRequest = { deleteAll = null },
@@ -881,7 +909,7 @@ fun Bubble(
                 shadowElevation = if (bigEmoji) 0.dp else 1.dp,
                 modifier = Modifier.widthIn(max = 300.dp).combinedClickable(
                     onClick = { if (selecting) onSelect() },
-                    onLongClick = { if (selecting) onSelect() else if (m.type != "call") menu = true }
+                    onLongClick = { if (selecting) onSelect() else menu = true }
                 )
             ) {
                 Column(Modifier.padding(start = if (m.mine || bigEmoji) 10.dp else 16.dp, end = if (m.mine && !bigEmoji) 16.dp else 10.dp, top = 6.dp, bottom = 6.dp)) {
@@ -987,7 +1015,11 @@ fun Bubble(
                     }
                 }
             }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+            // 1.27: a call line can be selected and deleted (it lives only on this device)
+            if (m.type == "call") DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
+                DropdownMenuItem(text = { Text("حذف") }, onClick = { menu = false; onDelete() })
+            } else DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 if (reactable) {
                     val myR = m.reactions[Engine.me]
                     Row(Modifier.padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {

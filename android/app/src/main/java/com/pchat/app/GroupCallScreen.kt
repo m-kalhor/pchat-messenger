@@ -8,7 +8,9 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -271,6 +273,7 @@ private fun SectionHeader(t: String) = Text(
 )
 
 /** «تماس‌ها»: running group calls I may join, then the recent calls of every chat, and «تماس جدید». */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CallsTab(onOpen: (String) -> Unit) {
     val tick by Engine.tick.collectAsState()
@@ -281,6 +284,15 @@ fun CallsTab(onOpen: (String) -> Unit) {
     val logs = remember(tick) { Engine.db.callLogs(200) }
     val live = rooms.values.filter { !(g.room?.id == it.id && g.phase == GPhase.ACTIVE) }.sortedByDescending { it.started }
     val dim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+    var logMenu by remember { mutableStateOf<Long?>(null) }
+    var clearAll by remember { mutableStateOf(false) }
+    if (clearAll) AlertDialog(
+        onDismissRequest = { clearAll = false },
+        title = { Text("پاک کردن تاریخچهٔ تماس") },
+        text = { Text("همهٔ تماس‌ها از این فهرست و از داخل چت‌ها پاک می‌شوند (فقط روی این دستگاه).") },
+        confirmButton = { TextButton(onClick = { clearAll = false; Engine.clearCallLogs() }) { Text("پاک کردن همه", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = { clearAll = false }) { Text("انصراف") } }
+    )
     Box(Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize()) {
             if (live.isNotEmpty()) item(key = "live_h") { SectionHeader("تماس‌های در جریان") }
@@ -295,15 +307,28 @@ fun CallsTab(onOpen: (String) -> Unit) {
                     TextButton(onClick = { mic { GroupCall.join(r.id) } }) { Text("پیوستن", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold) }
                 }
             }
-            item(key = "recent_h") { SectionHeader("اخیر") }
+            item(key = "recent_h") {
+                // 1.27: «پاک کردن همه» beside the header
+                Box {
+                    SectionHeader("اخیر")
+                    if (logs.isNotEmpty()) Text(
+                        "پاک کردن همه", fontSize = 13.sp, color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.align(Alignment.CenterEnd).clickable { clearAll = true }.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+            }
             if (logs.isEmpty()) item(key = "empty") {
                 Text("هنوز تماسی نیست. با «📞+» تماس تازه بگیرید.", color = dim, modifier = Modifier.padding(20.dp))
             }
             items(logs, key = { "log:" + it.id }) { m ->
                 val missed = m.text.contains("بی‌پاسخ") || m.text.contains("از دست رفته")
                 val group = Engine.isGroup(m.convo)
+                Box {
+                DropdownMenu(expanded = logMenu == m.id, onDismissRequest = { logMenu = null }) {
+                    DropdownMenuItem(text = { Text("حذف از تاریخچه", color = MaterialTheme.colorScheme.error) }, onClick = { logMenu = null; Engine.deleteLocal(m) })
+                }
                 Row(
-                    Modifier.fillMaxWidth().clickable { onOpen(m.convo) }.padding(horizontal = 14.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(m.convo) }, onLongClick = { logMenu = m.id }).padding(horizontal = 14.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Avatar(m.convo, false, 44)
@@ -323,6 +348,7 @@ fun CallsTab(onOpen: (String) -> Unit) {
                         "📞", fontSize = 20.sp,
                         modifier = Modifier.clip(CircleShape).clickable { if (group) actions.groupCall(m.convo) else actions.callOne(m.convo) }.padding(8.dp)
                     )
+                }
                 }
             }
         }

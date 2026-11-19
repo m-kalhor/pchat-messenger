@@ -896,6 +896,11 @@ object Engine {
         val id = o.getLong("id")
         when (o.getString("kind")) {
             "del" -> { db.get(id)?.let { pins.value = pins.value.filterValues { v -> v != id } }; db.delete(id) }
+            // 1.27: the private chat was deleted for both sides (by either person, maybe from another of my devices)
+            "clear" -> {
+                val convo = if (o.optString("from") == me) o.optString("target") else o.optString("from")
+                if (convo.isNotEmpty() && !isGroup(convo)) dropConvo(convo, db.clearConvo(convo, o.optLong("upto", 0), o.optLong("ts", 0)))
+            }
             "edit" -> if (db.get(id) != null) {
                 val from = o.getString("from")
                 val pub = if (from == me) null else pubOf(from)
@@ -1122,6 +1127,27 @@ object Engine {
         failures.value = failures.value - m.id
         tick.value++
     }
+
+    /** 1.27: deletes a whole chat from this device (messages, files, call lines). */
+    fun clearChatLocal(convo: String) = dropConvo(convo, db.clearConvo(convo))
+
+    /** 1.27: deletes the private chat with [peer] for both sides; null = done, else the error text. */
+    suspend fun clearChatForBoth(peer: String): String? = withContext(Dispatchers.IO) {
+        try {
+            Api.clearChat(peer)
+            clearChatLocal(peer)
+            null
+        } catch (e: Exception) { errText(e) }
+    }
+
+    private fun dropConvo(convo: String, files: List<String>) {
+        for (f in files) try { File(f).delete() } catch (e: Exception) { }
+        pins.value = pins.value - convo
+        tick.value++
+    }
+
+    /** 1.27: the Calls tab's «پاک کردن همه». */
+    fun clearCallLogs() { db.clearCallLogs(); tick.value++ }
 
     fun sendTyping(convo: String) {
         if (reqOf(convo) == "out" || isChan(convo)) return // no "typing…" to someone who has not accepted yet, nor in a channel
