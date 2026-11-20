@@ -90,10 +90,15 @@ object SystemBars {
 fun PChatTheme(content: @Composable () -> Unit) {
     val theme by Prefs.theme.collectAsState()
     val dark = when (theme) { Prefs.THEME_LIGHT -> false; Prefs.THEME_DARK -> true; else -> isSystemInDarkTheme() }
+    // 1.28: one main colour everywhere (bars, buttons, badges, links), chosen in Settings; Sepan blue by default
+    val acc by Prefs.accent.collectAsState()
+    val a = Look.accent(acc)
     val scheme = if (dark) {
-        darkColorScheme(primary = Color(0xFF5EB5F7), background = Color(0xFF0E1621), surface = Color(0xFF17212B), surfaceVariant = Color(0xFF0E1621))
+        darkColorScheme(primary = a.dark, onPrimary = Color(0xFF0E1621), background = Color(0xFF0E1621), surface = Color(0xFF17212B), surfaceVariant = Color(0xFF0E1621),
+            primaryContainer = a.dark.copy(alpha = 0.22f), onPrimaryContainer = Color.White, secondaryContainer = a.dark.copy(alpha = 0.22f), onSecondaryContainer = Color.White)
     } else {
-        lightColorScheme(primary = Color(0xFF3390EC), background = Color.White, surface = Color.White, surfaceVariant = Color(0xFFDDE6EE))
+        lightColorScheme(primary = a.light, background = Color.White, surface = Color.White, surfaceVariant = Color(0xFFDDE6EE),
+            primaryContainer = a.light.copy(alpha = 0.14f), onPrimaryContainer = Color(0xFF0D2340), secondaryContainer = a.light.copy(alpha = 0.14f), onSecondaryContainer = Color(0xFF0D2340))
     }
     // light bars = dark icons (on a white background); dark bars = white icons
     val activity = LocalContext.current as? ComponentActivity
@@ -108,7 +113,7 @@ fun PChatTheme(content: @Composable () -> Unit) {
             navigationBarStyle = if (darkNav) SystemBarStyle.dark(clear) else SystemBarStyle.light(clear, clear)
         )
     }
-    MaterialTheme(colorScheme = scheme) {
+    MaterialTheme(colorScheme = scheme, typography = remember { Look.typography() }) {
         CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) { content() }
     }
 }

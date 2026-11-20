@@ -37,7 +37,12 @@ object Prefs {
         diagText.value = p.getBoolean("diag_text", true)
         callRoute.value = p.getString("call_route", "auto") ?: "auto"
         routePanel.value = p.getBoolean("route_panel", true)
+        accent.value = p.getInt("accent", 0).coerceIn(0, Look.accents.size - 1)
     }
+
+    /** 1.28: the app's main colour (bars, buttons, badges): an index into Look.accents, 0 = Sepan blue */
+    val accent = MutableStateFlow(0)
+    fun setAccent(v: Int) { p.edit().putInt("accent", v).apply(); accent.value = v }
 
     fun setTheme(v: Int) { p.edit().putInt("theme", v).apply(); theme.value = v }
     fun setTextSize(v: Int) { p.edit().putInt("text_size", v).apply(); textSize.value = v }

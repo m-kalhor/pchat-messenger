@@ -35,22 +35,61 @@ import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.compose.material3.Typography
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 
 /**
  * 1.9: the Telegram-like look: blue top bars, a patterned green-blue chat wallpaper (Sepan's own doodles,
  * the same tile as the web app's wallpaper.svg), green ticks on my bubbles. Dark mode gets a dark version.
  */
 object Look {
-    val headLight = Color(0xFF517DA2)
+    /** 1.28: the main colour the user picks in Settings (light value, dark value); 0 = Sepan blue */
+    class Accent(val name: String, val light: Color, val dark: Color)
+    val accents = listOf(
+        Accent("آبی سپن", Color(0xFF2A73C9), Color(0xFF5EB5F7)),
+        Accent("سبزآبی", Color(0xFF138A72), Color(0xFF4FD1B5)),
+        Accent("بنفش", Color(0xFF7352C7), Color(0xFFB39DFF)),
+        Accent("نارنجی", Color(0xFFD9691A), Color(0xFFFFB066)),
+        Accent("صورتی", Color(0xFFC93A70), Color(0xFFFF8FB8)),
+    )
+    fun accent(i: Int): Accent = accents[i.coerceIn(0, accents.size - 1)]
     val headDark = Color(0xFF17212B)
+    /** the accent on the always-dark call screens */
+    val callAccent: Color get() = accent(Prefs.accent.value).light
+
+    /** 1.28: Vazirmatn, shipped inside the app so every phone shows the same Persian letters */
+    val font = FontFamily(
+        Font(R.font.vazirmatn_regular, FontWeight.Normal),
+        Font(R.font.vazirmatn_medium, FontWeight.Medium),
+        Font(R.font.vazirmatn_medium, FontWeight.SemiBold),
+        Font(R.font.vazirmatn_bold, FontWeight.Bold),
+    )
+    fun typography(): Typography {
+        val t = Typography()
+        fun TextStyle.v() = copy(fontFamily = font)
+        return Typography(
+            displayLarge = t.displayLarge.v(), displayMedium = t.displayMedium.v(), displaySmall = t.displaySmall.v(),
+            headlineLarge = t.headlineLarge.v(), headlineMedium = t.headlineMedium.v(), headlineSmall = t.headlineSmall.v(),
+            titleLarge = t.titleLarge.v(), titleMedium = t.titleMedium.v(), titleSmall = t.titleSmall.v(),
+            bodyLarge = t.bodyLarge.v(), bodyMedium = t.bodyMedium.v(), bodySmall = t.bodySmall.v(),
+            labelLarge = t.labelLarge.v(), labelMedium = t.labelMedium.v(), labelSmall = t.labelSmall.v(),
+        )
+    }
 
     @Composable
     fun dark(): Boolean = MaterialTheme.colorScheme.background.luminance() < 0.5f
 
+    /** the top bar colour: the accent in light mode, the usual dark blue-grey in dark mode */
+    @Composable
+    fun head(): Color = if (dark()) headDark else accent(Prefs.accent.collectAsState().value).light
+
     @OptIn(ExperimentalMaterial3Api::class)
     @Composable
     fun barColors(): TopAppBarColors = TopAppBarDefaults.topAppBarColors(
-        containerColor = if (dark()) headDark else headLight,
+        containerColor = head(),
         titleContentColor = Color.White, navigationIconContentColor = Color.White, actionIconContentColor = Color.White
     )
 
@@ -151,14 +190,14 @@ object Look {
  * 1.9: a chat bubble with a Telegram-like tail on the last bubble of a run. The tail side always keeps
  * [t] of room, so bubbles with and without a tail line up.
  */
-class BubbleShape(private val mine: Boolean, private val tail: Boolean, private val r: Dp = 14.dp, private val t: Dp = 6.dp) : Shape {
+class BubbleShape(private val mine: Boolean, private val tail: Boolean, private val r: Dp = 18.dp, private val t: Dp = 6.dp) : Shape {
     @Suppress("DEPRECATION")
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val rp = with(density) { r.toPx() }
         val tp = with(density) { t.toPx() }
         val left = if (mine) 0f else tp
         val right = if (mine) size.width - tp else size.width
-        val small = if (tail) 0f else with(density) { 4.dp.toPx() }
+        val small = if (tail) 0f else with(density) { 6.dp.toPx() } // 1.28: softer (r 18, 6 inside a run)
         val body = Path().apply {
             addRoundRect(RoundRect(left, 0f, right, size.height,
                 topLeftCornerRadius = CornerRadius(rp), topRightCornerRadius = CornerRadius(rp),

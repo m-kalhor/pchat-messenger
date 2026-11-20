@@ -1,5 +1,21 @@
 package com.pchat.app
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.draw.alpha
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
+import androidx.compose.material.icons.filled.Delete
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -174,6 +190,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val keyboard = LocalSoftwareKeyboardController.current
     val inputFocus = remember { FocusRequester() }
     val inputTouch = remember { MutableInteractionSource() }
+    val haptic = LocalHapticFeedback.current
+    val connected by Engine.connected.collectAsState()
     val inputPressed by inputTouch.collectIsPressedAsState()
     LaunchedEffect(inputPressed) { if (inputPressed) emojiOpen = false }
     BackHandler(enabled = emojiOpen) { emojiOpen = false }
@@ -258,7 +276,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         var lastDay = -1L
         for (m in msgs) {
             val d = U.dayKey(m.ts)
-            if (d != lastDay) { out.add(U.day(m.ts)); lastDay = d }
+            if (d != lastDay) { out.add(U.dayLabel(m.ts)); lastDay = d }
             out.add(m)
         }
         out.reversed()
@@ -447,11 +465,15 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         )
                     } else {
                         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !isGroup || group?.isUser == true) { if (isGroup) showGroupInfo = true else showProfile = true }) {
-                            Avatar(convo, false, 38)
+                            Avatar(convo, false, 40)
                             Spacer(Modifier.width(10.dp))
                             Column {
                                 Text(Engine.titleOf(convo), fontWeight = FontWeight.Bold, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                Text(subtitle, fontSize = 12.sp, color = Look.barSub)
+                                // 1.28: «در حال نوشتن» with three moving dots
+                                if (subtitle.endsWith("در حال نوشتن…")) Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(subtitle.removeSuffix("…"), fontSize = 12.sp, color = Look.barSub, maxLines = 1)
+                                    Spacer(Modifier.width(4.dp)); TypingDots(Color.White, 3)
+                                } else Text(if (!connected) "در حال اتصال…" else subtitle, fontSize = 12.sp, color = Look.barSub, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             }
                         }
                     }
@@ -460,19 +482,19 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     if (searching) {
                         IconButton(onClick = { searching = false; query = "" }) { Icon(Icons.Default.Close, contentDescription = "بستن جستجو") }
                     } else {
-                        IconButton(onClick = { searching = true }) { Icon(Icons.Default.Search, contentDescription = "جستجو") }
+                        IconButton(onClick = { searching = true }) { Icon(SIcons.search, contentDescription = "جستجو") }
                         // 1.19: group voice call (the admin turns it on per group in the panel)
                         if (isGroup && gcfg.on && groups.firstOrNull { it.key == convo }?.call == true) {
-                            IconButton(onClick = { gcalls.groupCall(convo) }) { Icon(Icons.Default.Call, contentDescription = "تماس گروهی") }
+                            IconButton(onClick = { gcalls.groupCall(convo) }) { Icon(SIcons.call, contentDescription = "تماس گروهی") }
                             // 1.23: group video call (the admin turns it on in the panel)
-                            if (gcfg.video) IconButton(onClick = { gcalls.groupCall(convo, true) }) { Text("📹", fontSize = 20.sp) }
+                            if (gcfg.video) IconButton(onClick = { gcalls.groupCall(convo, true) }) { Icon(SIcons.video, contentDescription = "تماس تصویری گروهی") }
                         }
                         if (!isGroup) {
-                            IconButton(onClick = { startCall(convo, false) }) { Icon(Icons.Default.Call, contentDescription = "تماس صوتی") }
-                            IconButton(onClick = { startCall(convo, true) }) { Text("📹", fontSize = 20.sp) }
+                            IconButton(onClick = { startCall(convo, false) }) { Icon(SIcons.call, contentDescription = "تماس صوتی") }
+                            IconButton(onClick = { startCall(convo, true) }) { Icon(SIcons.video, contentDescription = "تماس تصویری") }
                         }
                         Box {
-                            IconButton(onClick = { muteMenu = true }) { Text(if (muted) "🔕" else "🔔", fontSize = 18.sp) }
+                            IconButton(onClick = { muteMenu = true }) { Icon(if (muted) SIcons.bellOff else SIcons.bell, contentDescription = if (muted) "بی‌صدا" else "اعلان") }
                             DropdownMenu(expanded = muteMenu, onDismissRequest = { muteMenu = false }) {
                                 if (muted) DropdownMenuItem(text = { Text("روشن کردن اعلان") }, onClick = { muteMenu = false; Prefs.unmute(convo) })
                                 DropdownMenuItem(text = { Text("بی‌صدا برای ۱ ساعت") }, onClick = { muteMenu = false; Prefs.mute(convo, 3600_000L) })
@@ -483,10 +505,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         }
                         // 1.27: ⋮ › «امنیت» (was its own 🔒 button) and «حذف گفتگو»
                         Box {
-                            IconButton(onClick = { chatMenu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "گزینه‌ها") }
+                            IconButton(onClick = { chatMenu = true }) { Icon(SIcons.more, contentDescription = "گزینه‌ها") }
                             DropdownMenu(expanded = chatMenu, onDismissRequest = { chatMenu = false }) {
-                                DropdownMenuItem(text = { Text("🔒  امنیت و اثرانگشت") }, onClick = { chatMenu = false; showKeys = true })
-                                DropdownMenuItem(text = { Text("🗑  حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { chatMenu = false; clearChat = true })
+                                DropdownMenuItem(leadingIcon = { Icon(SIcons.shield, null) }, text = { Text("امنیت و اثرانگشت") }, onClick = { chatMenu = false; showKeys = true })
+                                DropdownMenuItem(leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, text = { Text("حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { chatMenu = false; clearChat = true })
                             }
                         }
                     }
@@ -495,6 +517,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         }
     ) { pad ->
         Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize().then(Look.chatBackground())) {
+            if (!connected) ConnectingLine() // 1.28
             if (isGroup) GroupCallBar(convo) { id -> gmic { GroupCall.join(id) } }
             if (keyWarn) {
                 Surface(color = MaterialTheme.colorScheme.errorContainer, modifier = Modifier.fillMaxWidth()) {
@@ -544,7 +567,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     Row(Modifier.padding(start = 12.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).height(34.dp).background(MaterialTheme.colorScheme.primary))
                         Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                            Text("📌 پیام پین‌شده", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Text("پیام سنجاق‌شده", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                             Text(pinnedMsg?.let { U.preview(it) } ?: "…", fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         IconButton(onClick = { scope.launch { error = Engine.pinMessage(convo, null) } }) {
@@ -566,7 +589,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 // 1.9: the tail goes on the last bubble of a run (the list is reversed: i - 1 is newer)
                                 val newer = rowsList.getOrNull(i - 1)
                                 val tail = !(newer is Msg && newer.mine == it.mine && newer.sender == it.sender && newer.type != "call")
-                                Bubble(
+                                // 1.28: messages in a run sit close together, a new sender starts with a little gap
+                                val older = rowsList.getOrNull(i + 1)
+                                val first = !(older is Msg && older.mine == it.mine && older.sender == it.sender && older.type != "call" && it.type != "call")
+                                Box(Modifier.animateItem()) { Bubble(first = first,
                                     m = it, group = isGroup && !chan, tail = tail,
                                     views = if (chan) Engine.viewsOf(it, chanViews) else -1,
                                     signer = if (chan && group?.sign == true && it.type != "call") Engine.nameOf(it.sender) else null, progress = progress[it.id], failure = failures[it.id],
@@ -586,12 +612,12 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                     onDeleteAll = { deleteAll = it },
                                     canPin = !modGroup || group?.manages == true,
                                     modDelete = modGroup && group?.manages == true && !it.mine && it.type != "call"
-                                )
+                                ) }
                             } else {
-                                Box(Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                                Box(Modifier.fillMaxWidth().padding(vertical = 8.dp).animateItem(), contentAlignment = Alignment.Center) {
                                     Text(
-                                        it.toString(), fontSize = 12.sp, color = Color.White,
-                                        modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(Color.Black.copy(alpha = 0.35f)).padding(horizontal = 10.dp, vertical = 3.dp)
+                                        it.toString(), fontSize = 12.5.sp, color = Color.White, fontWeight = FontWeight.Medium,
+                                        modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xFF1E3228).copy(alpha = 0.38f)).padding(horizontal = 12.dp, vertical = 3.dp)
                                     )
                                 }
                             }
@@ -600,17 +626,17 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                 }
                 if (!atBottom && results == null) {
                     Box(
-                        Modifier.align(Alignment.BottomEnd).padding(14.dp).size(44.dp).clip(CircleShape)
+                        Modifier.align(Alignment.BottomEnd).padding(14.dp).size(48.dp).shadow(3.dp, CircleShape).clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surface).clickable {
                                 scope.launch { listState.animateScrollToItem(0) }
                             },
                         contentAlignment = Alignment.Center
                     ) {
-                        Text("⬇", fontSize = 20.sp, color = MaterialTheme.colorScheme.primary)
+                        Icon(SIcons.arrowDown, contentDescription = "پایین گفتگو", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f), modifier = Modifier.size(28.dp))
                         if (missed > 0) {
                             Box(
                                 Modifier.align(Alignment.TopEnd).clip(CircleShape).background(MaterialTheme.colorScheme.primary).padding(horizontal = 6.dp, vertical = 1.dp)
-                            ) { Text(missed.toString(), color = Color.White, fontSize = 11.sp) }
+                            ) { Text(U.fa(missed), color = Color.White, fontSize = 11.sp) }
                         }
                     }
                 }
@@ -619,7 +645,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                 Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(horizontal = 8.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(onClick = { selected.clear() }) { Icon(Icons.Default.Close, contentDescription = "لغو انتخاب") }
-                        Text("${selected.size} پیام انتخاب شد", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
+                        Text("${U.fa(selected.size)} پیام انتخاب شد", modifier = Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
                         val fw = allMsgs.filter { m -> m.id in selected && m.id > 0 && m.type != "call" }
                         if (fw.isNotEmpty()) TextButton(onClick = { forwarding = fw }) { Text("فوروارد") }
                         // 1.27: delete the selected messages / call lines from this device
@@ -639,7 +665,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                         Box(Modifier.width(3.dp).height(34.dp).background(MaterialTheme.colorScheme.primary))
                         Column(Modifier.weight(1f).padding(start = 8.dp)) {
-                            Text("✏️ ویرایش پیام", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                            Text("ویرایش پیام", fontSize = 12.sp, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                             Text(e.text, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
                         IconButton(onClick = { editing = null; text = "" }) { Icon(Icons.Default.Close, contentDescription = "لغو ویرایش") }
@@ -672,26 +698,32 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         fontSize = 13.sp, modifier = Modifier.padding(14.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                     )
                 }
-            } else Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+            } else Surface(color = if (emojiOpen) MaterialTheme.colorScheme.surface else Color.Transparent, modifier = Modifier.fillMaxWidth()) {
               Column {
+                // 1.28: a floating round text field (emoji inside on the right, attach inside on the left) and a filled
+                // round voice / send button that swaps between the two with a small animation
                 Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                   val rec = recorder
-                  // 1.13: send / voice button on the right (the start side in RTL), under a right thumb;
-                  // the text field in the middle, emoji/sticker and + on the left
+                  // 1.13: send / voice button on the right (the start side in RTL), under a right thumb
+                  val micMode = rec != null || (text.isBlank() && editing == null && reqState != "out")
+                  val btnColor by animateColorAsState(if (rec != null) Color(0xFFE53935) else MaterialTheme.colorScheme.primary, label = "sendBg")
                   if (rec != null && recLocked) {
-                    IconButton(onClick = { finishRec(true) }) {
-                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال پیام صوتی", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) // 1.13: points right
-                    }
-                  } else if (rec != null || (text.isBlank() && editing == null && reqState != "out")) {
                     Box(
-                        Modifier.size(48.dp).clip(CircleShape)
-                            .background(if (rec != null) Color(0xFFE53935) else Color.Transparent)
+                        Modifier.size(50.dp).shadow(3.dp, CircleShape).clip(CircleShape).background(MaterialTheme.colorScheme.primary)
+                            .clickable { Ui.tick(haptic); finishRec(true) },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(SIcons.send, contentDescription = "ارسال پیام صوتی", tint = Color.White, modifier = Modifier.size(22.dp)) } // 1.13: points right
+                  } else if (micMode) {
+                    Box(
+                        Modifier.size(50.dp).shadow(3.dp, CircleShape).clip(CircleShape)
+                            .background(btnColor)
                             .pointerInput(convo) {
                                 val cancelPx = 90.dp.toPx()
                                 val lockPx = 70.dp.toPx()
                                 awaitEachGesture {
                                     val down = awaitFirstDown()
                                     if (!onRecStart()) return@awaitEachGesture
+                                    Ui.press(haptic)
                                     down.consume()
                                     var result = 1 // 1 = send, 0 = cancel, 2 = locked
                                     while (true) {
@@ -704,31 +736,45 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                         if (-d.y > lockPx) { result = 2; break }
                                         ch.consume()
                                     }
+                                    Ui.tick(haptic)
                                     onRecEnd(result)
                                 }
                             },
                         contentAlignment = Alignment.Center
-                    ) { Text("🎤", fontSize = 22.sp) }
+                    ) {
+                        val pulse by animateFloatAsState(if (rec != null) 1.15f else 1f, label = "micPulse")
+                        Icon(SIcons.mic, contentDescription = "پیام صوتی", tint = Color.White, modifier = Modifier.size(24.dp).scale(pulse))
+                    }
                   } else
-                    IconButton(
-                        enabled = text.isNotBlank(),
-                        onClick = {
-                            val t = text.trim()
-                            val e = editing
-                            if (e != null) {
-                                editing = null; text = ""
-                                if (t != e.text) scope.launch { error = Engine.editMessage(e, t) }
-                            } else {
-                                val r = replyTo
-                                text = ""; replyTo = null
-                                Engine.sendText(convo, t, r)
-                            }
-                        }
-                    ) { Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "ارسال", tint = if (text.isNotBlank()) MaterialTheme.colorScheme.primary else Color.Gray, modifier = Modifier.scale(scaleX = -1f, scaleY = 1f)) } // 1.13: points right, like the send key
+                    Box(
+                        Modifier.size(50.dp).shadow(3.dp, CircleShape).clip(CircleShape).background(btnColor)
+                            .clickable(enabled = text.isNotBlank()) {
+                                val t = text.trim()
+                                val e = editing
+                                if (e != null) {
+                                    editing = null; text = ""
+                                    if (t != e.text) scope.launch { error = Engine.editMessage(e, t) }
+                                } else {
+                                    val r = replyTo
+                                    text = ""; replyTo = null
+                                    Engine.sendText(convo, t, r)
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        // 1.28: the plane pops in when the first letter is typed
+                        val pop = remember { Animatable(0.6f) }
+                        LaunchedEffect(Unit) { pop.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = 500f)) }
+                        Icon(if (editing != null) SIcons.check else SIcons.send, contentDescription = "ارسال", tint = Color.White, modifier = Modifier.size(22.dp).scale(pop.value))
+                    }
+                  Spacer(Modifier.width(6.dp))
                   if (rec != null) {
                     // recording: elapsed time and how to cancel / lock
                     val blink by produceState(1f, rec) { while (true) { delay(500); value = if (value > 0.5f) 0.25f else 1f } }
-                    Row(Modifier.weight(1f).height(56.dp).padding(horizontal = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        Modifier.weight(1f).height(50.dp).clip(RoundedCornerShape(25.dp)).background(MaterialTheme.colorScheme.surface).padding(horizontal = 14.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Box(Modifier.size(10.dp).clip(CircleShape).background(Color(0xFFE53935).copy(alpha = blink)))
                         Spacer(Modifier.width(8.dp))
                         Text(U.dur(recElapsed), fontSize = 16.sp)
@@ -740,7 +786,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         )
                     }
                   } else {
-                    OutlinedTextField(
+                    TextField(
                         // keep the cursor/selection so emoji go where the cursor is; `text` stays the source of truth
                         value = if (field.text == text) field else TextFieldValue(text, TextRange(text.length)),
                         onValueChange = {
@@ -749,22 +795,36 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 field = it; text = it.text
                             }
                         },
-                        placeholder = { Text("پیام…") }, interactionSource = inputTouch,
-                        shape = RoundedCornerShape(22.dp), maxLines = 5, modifier = Modifier.weight(1f).focusRequester(inputFocus)
+                        placeholder = { Text("پیام") }, interactionSource = inputTouch,
+                        shape = RoundedCornerShape(25.dp), maxLines = 5,
+                        colors = TextFieldDefaults.colors(
+                            focusedContainerColor = MaterialTheme.colorScheme.surface, unfocusedContainerColor = MaterialTheme.colorScheme.surface,
+                            focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent, disabledIndicatorColor = Color.Transparent
+                        ),
+                        leadingIcon = {
+                            IconButton(onClick = {
+                                if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
+                                else { keyboard?.hide(); emojiOpen = true }
+                            }) {
+                                Icon(if (emojiOpen) SIcons.keyboard else SIcons.smile, contentDescription = if (emojiOpen) "صفحه‌کلید" else "ایموجی و استیکر",
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f))
+                            }
+                        },
+                        trailingIcon = if (reqState == "out") null else ({
+                            Box {
+                                IconButton(onClick = { attachMenu = true }) {
+                                    Icon(SIcons.attach, contentDescription = "پیوست", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f), modifier = Modifier.rotate(45f))
+                                }
+                                DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
+                                    DropdownMenuItem(leadingIcon = { Icon(SIcons.image, null, tint = Color(0xFF2A73C9)) }, text = { Text("عکس از گالری") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
+                                    DropdownMenuItem(leadingIcon = { Icon(SIcons.camera, null, tint = Color(0xFFE5534B)) }, text = { Text("عکس با دوربین") }, onClick = { attachMenu = false; openCamera() })
+                                    DropdownMenuItem(leadingIcon = { Icon(SIcons.file, null, tint = Color(0xFF7352C7)) }, text = { Text("فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
+                                    DropdownMenuItem(leadingIcon = { Icon(SIcons.location, null, tint = Color(0xFF43A047)) }, text = { Text("موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
+                                }
+                            }
+                        }),
+                        modifier = Modifier.weight(1f).shadow(1.dp, RoundedCornerShape(25.dp)).focusRequester(inputFocus)
                     )
-                    IconButton(onClick = {
-                        if (emojiOpen) { emojiOpen = false; inputFocus.requestFocus(); keyboard?.show() }
-                        else { keyboard?.hide(); emojiOpen = true }
-                    }) { Text(if (emojiOpen) "⌨️" else "😊", fontSize = 22.sp) }
-                    if (reqState != "out") Box {
-                        IconButton(onClick = { attachMenu = true }) { Icon(Icons.Default.Add, contentDescription = "پیوست") }
-                        DropdownMenu(expanded = attachMenu, onDismissRequest = { attachMenu = false }) {
-                            DropdownMenuItem(text = { Text("🖼  عکس از گالری") }, onClick = { attachMenu = false; pickImage.launch("image/*") })
-                            DropdownMenuItem(text = { Text("📷  عکس با دوربین") }, onClick = { attachMenu = false; openCamera() })
-                            DropdownMenuItem(text = { Text("📎  فایل") }, onClick = { attachMenu = false; pickFile.launch("*/*") })
-                            DropdownMenuItem(text = { Text("📍  موقعیت مکانی") }, onClick = { attachMenu = false; shareLocation() })
-                        }
-                    }
                   }
                 }
                 if (emojiOpen && recorder == null) EmojiStickerPanel(onEmoji = { e ->
@@ -857,7 +917,7 @@ private fun ProgressBar(p: Float, modifier: Modifier = Modifier) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun Bubble(
-    m: Msg, group: Boolean, progress: Float?, tail: Boolean = true, failure: String?, pinned: Boolean,
+    m: Msg, group: Boolean, progress: Float?, tail: Boolean = true, failure: String?, pinned: Boolean, first: Boolean = true,
     onImage: (String) -> Unit, onReply: () -> Unit, onPin: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit,
     selecting: Boolean = false, selected: Boolean = false, onSelect: () -> Unit = {}, onEdit: () -> Unit = {},
     onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {},
@@ -890,16 +950,51 @@ fun Bubble(
     var showPack by remember { mutableStateOf<String?>(null) }
     showPack?.let { StickerPackDialog(it) { showPack = null } }
     val stickerGone by Stickers.gone.collectAsState()
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
 
     LaunchedEffect(m.id, m.localPath) {
         if (autoImage || autoVoice) Engine.downloadMedia(m)
     }
 
+    // 1.28: drag a message to the left to answer it (a short buzz when far enough; let go = reply)
+    val swipe = remember(m.id) { Animatable(0f) }
+    val canSwipe = !selecting && m.status == 0 && m.id > 0 && m.type != "call" && m.text != LOCKED_TEXT
+    val trigger = with(density) { 60.dp.toPx() }
+    val maxPull = with(density) { 84.dp.toPx() }
+    Box(Modifier.fillMaxWidth()
+        .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
+        .then(if (selecting) Modifier.clickable(onClick = onSelect) else Modifier)
+        .pointerInput(m.id, canSwipe) {
+            if (!canSwipe) return@pointerInput
+            var armed = false
+            detectHorizontalDragGestures(
+                onDragEnd = {
+                    if (armed) onReply()
+                    armed = false
+                    scope.launch { swipe.animateTo(0f, spring(dampingRatio = 0.7f)) }
+                },
+                onDragCancel = { armed = false; scope.launch { swipe.animateTo(0f) } }
+            ) { ch, d ->
+                val v = (swipe.value + d).coerceIn(-maxPull, 0f)
+                if (v != swipe.value) ch.consume()
+                scope.launch { swipe.snapTo(v) }
+                if (!armed && v <= -trigger) { armed = true; Ui.tick(haptic) } else if (armed && v > -trigger) armed = false
+            }
+        }
+    ) {
+    if (swipe.value < -4f) {
+        val k = (-swipe.value / trigger).coerceIn(0f, 1f)
+        Box(
+            Modifier.align(Alignment.CenterEnd).padding(end = 12.dp).size(32.dp).scale(0.6f + 0.4f * k).alpha(k)
+                .clip(CircleShape).background(Color.Black.copy(alpha = 0.25f)),
+            contentAlignment = Alignment.Center
+        ) { Icon(SIcons.reply, null, tint = Color.White, modifier = Modifier.size(18.dp)) }
+    }
     Row(
         Modifier.fillMaxWidth()
-            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.Transparent)
-            .then(if (selecting) Modifier.clickable(onClick = onSelect) else Modifier)
-            .padding(horizontal = 4.dp, vertical = 2.dp),
+            .offset { IntOffset(swipe.value.roundToInt(), 0) }
+            .padding(start = 4.dp, end = 4.dp, top = if (first) 5.dp else 1.dp, bottom = 1.dp),
         horizontalArrangement = if (m.mine) Arrangement.End else Arrangement.Start
     ) {
         Box {
@@ -909,7 +1004,7 @@ fun Bubble(
                 shadowElevation = if (bigEmoji) 0.dp else 1.dp,
                 modifier = Modifier.widthIn(max = 300.dp).combinedClickable(
                     onClick = { if (selecting) onSelect() },
-                    onLongClick = { if (selecting) onSelect() else menu = true }
+                    onLongClick = { if (selecting) onSelect() else { Ui.press(haptic); menu = true } }
                 )
             ) {
                 Column(Modifier.padding(start = if (m.mine || bigEmoji) 10.dp else 16.dp, end = if (m.mine && !bigEmoji) 16.dp else 10.dp, top = 6.dp, bottom = 6.dp)) {
@@ -983,8 +1078,8 @@ fun Bubble(
                                     Modifier.clip(RoundedCornerShape(12.dp))
                                         .background(if (mineR) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.primary.copy(alpha = 0.14f))
                                         .clickable(enabled = !selecting) { onReactors() }
-                                        .padding(horizontal = 8.dp, vertical = 2.dp)
-                                ) { Text(e + if (us.size > 1) " ${us.size}" else "", fontSize = 14.sp, color = if (mineR) Color.White else fg) }
+                                        .padding(horizontal = 9.dp, vertical = 4.dp)
+                                ) { Text(e + if (us.size > 1) " ${U.fa(us.size)}" else "", fontSize = 14.sp, color = if (mineR) Color.White else fg) }
                             }
                         }
                     }
@@ -993,22 +1088,27 @@ fun Bubble(
                         TextButton(onClick = onRetry) { Text("تلاش دوباره") }
                     }
                     Row(Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-                        if (pinned) Text("📌 ", fontSize = 11.sp)
-                        if (signer != null) Text("✍️ $signer · ", color = sub, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp))
-                        if (views >= 0 && m.id > 0) Text("👁 $views · ", color = sub, fontSize = 11.sp)
+                        if (pinned) Icon(SIcons.pin, null, tint = sub, modifier = Modifier.size(12.dp).padding(end = 2.dp))
+                        if (signer != null) Text("$signer · ", color = sub, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 120.dp))
+                        if (views >= 0 && m.id > 0) {
+                            Icon(SIcons.eye, null, tint = sub, modifier = Modifier.size(13.dp).padding(end = 2.dp))
+                            Text(U.fa(views) + " · ", color = sub, fontSize = 11.sp)
+                        }
                         if (m.edited > 0) {
                             val sameDay = U.dayKey(m.edited) == U.dayKey(m.ts)
                             Text("ویرایش‌شده " + (if (sameDay) "" else U.day(m.edited) + " ") + U.time(m.edited) + " · ", color = sub, fontSize = 11.sp)
                         }
                         Text(U.time(m.ts), color = sub, fontSize = 11.sp)
                         if (m.mine && m.type != "call") {
+                            // 1.28: real tick icons (same colours: grey sent, blue delivered and seen)
+                            val tm = Modifier.padding(start = 3.dp).size(15.dp)
                             when (m.status) {
-                                1 -> Text(" 🕓", color = sub, fontSize = 11.sp)
-                                2 -> Text(" ⚠", color = MaterialTheme.colorScheme.error, fontSize = 11.sp)
+                                1 -> Icon(SIcons.clock, "در حال ارسال", tint = sub, modifier = Modifier.padding(start = 3.dp).size(12.dp))
+                                2 -> Icon(SIcons.error, "ارسال نشد", tint = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 3.dp).size(13.dp))
                                 else -> when (tick) {
-                                    "seen" -> Text(" ✓✓", color = tickBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    "delivered" -> Text(" ✓", color = tickBlue, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    else -> Text(" ✓", color = sub, fontSize = 11.sp)
+                                    "seen" -> Icon(SIcons.doneAll, "دیده شد", tint = tickBlue, modifier = tm)
+                                    "delivered" -> Icon(SIcons.check, "رسید", tint = tickBlue, modifier = tm)
+                                    else -> Icon(SIcons.check, "فرستاده شد", tint = sub, modifier = tm)
                                 }
                             }
                         }
@@ -1026,10 +1126,11 @@ fun Bubble(
                         for (e in Engine.QUICK_REACTIONS) {
                             Box(
                                 Modifier.clip(CircleShape).background(if (e == myR) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f) else Color.Transparent)
-                                    .clickable { menu = false; onReact(if (e == myR) null else e) }.padding(5.dp)
-                            ) { Text(e, fontSize = 21.sp) }
+                                    .clickable { menu = false; onReact(if (e == myR) null else e) }.size(40.dp),
+                                contentAlignment = Alignment.Center
+                            ) { Text(e, fontSize = 22.sp) }
                         }
-                        Box(Modifier.clip(CircleShape).clickable { menu = false; onMoreReactions() }.padding(5.dp)) { Text("➕", fontSize = 18.sp) }
+                        Box(Modifier.size(40.dp).clip(CircleShape).clickable { menu = false; onMoreReactions() }, contentAlignment = Alignment.Center) { Icon(Icons.Default.Add, "واکنش‌های بیشتر") }
                     }
                 }
                 if (m.status == 0) DropdownMenuItem(text = { Text("پاسخ") }, onClick = { menu = false; onReply() })
@@ -1068,6 +1169,7 @@ fun Bubble(
                 )
             }
         }
+    }
     }
 }
 
