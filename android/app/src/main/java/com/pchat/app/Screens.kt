@@ -31,6 +31,19 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.BadgedBox
+import androidx.compose.material3.Badge
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -88,15 +101,16 @@ fun Avatar(name: String, online: Boolean, size: Int = 48) {
     }
     Box(Modifier.size(size.dp)) {
         Box(
-            Modifier.size(size.dp).clip(CircleShape).background(if (group) MaterialTheme.colorScheme.primary else U.colorFor(name)),
+            Modifier.size(size.dp).clip(CircleShape).background(if (group) MaterialTheme.colorScheme.primary.copy(alpha = 0.85f).compositeOver(Color.White) else U.colorFor(name)),
             contentAlignment = Alignment.Center
         ) {
             val b = bmp
             if (b != null) {
                 Image(b, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
             } else {
-                val label = if (g?.isChan == true) "📢" else if (group) "👥" else Engine.nameOf(name).take(1).uppercase()
-                Text(label, color = Color.White, fontSize = (size * 0.42).sp, fontWeight = FontWeight.Bold)
+                // 1.28: simple icons for groups and channels (were 👥 📢)
+                if (group) Icon(if (g?.isChan == true) SIcons.campaign else SIcons.group, null, tint = Color.White, modifier = Modifier.size((size * 0.5).dp))
+                else Text(Engine.nameOf(name).take(1).uppercase(), color = Color.White, fontSize = (size * 0.42).sp, fontWeight = FontWeight.Bold)
             }
         }
         if (online) {
@@ -392,9 +406,16 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
         }
     }
 
+    // 1.28: the «new chat» sheet behind the round ✏ button (the same choices the ⋮ menu had)
+    var newSheet by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    val unreadChats = remember(rows, chatTick) { rows.count { it.unread > 0 && !Prefs.isMuted(it.convo) } }
+    val listState = rememberLazyListState()
+
     SystemBars.HeaderShown()
     Scaffold(
         topBar = {
+          Column {
             TopAppBar(
                 colors = Look.barColors(),
                 title = {
@@ -404,72 +425,112 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     }
                 },
                 actions = {
-                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "منو") }
+                    IconButton(onClick = { menu = true }) { Icon(SIcons.more, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                        DropdownMenuItem(text = { Text("پیام به @نام‌کاربری / افزودن مخاطب") }, onClick = { menu = false; addContact = true })
-                        if (ug.on) DropdownMenuItem(text = { Text("👥 گروه تازه" + if (ug.limit > 0) " (${ug.owned} از ${ug.limit})" else "") }, onClick = { menu = false; newGroup = true })
-                        if (ug.chanOn) DropdownMenuItem(text = { Text("📢 کانال تازه" + if (ug.limit > 0) " (${ug.owned} از ${ug.limit})" else "") }, onClick = { menu = false; newChan = true })
-                        if (ug.on || ug.chanOn) DropdownMenuItem(text = { Text("🔗 پیوستن با لینک دعوت") }, onClick = { menu = false; joinGroup = true })
-                        DropdownMenuItem(text = { Text("درخواست‌ها" + if (incoming.isNotEmpty()) " (${incoming.size})" else "") }, onClick = { menu = false; showRequests = true })
-                        DropdownMenuItem(text = { Text("تنظیمات") }, onClick = { menu = false; onSettings() })
-                        DropdownMenuItem(text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
+                        DropdownMenuItem(leadingIcon = { Icon(SIcons.inbox, null) }, text = { Text("درخواست‌ها" + if (incoming.isNotEmpty()) " (${U.fa(incoming.size)})" else "") }, onClick = { menu = false; showRequests = true })
+                        DropdownMenuItem(leadingIcon = { Icon(SIcons.logout, null) }, text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
                     }
                 }
             )
+            // 1.28: a thin moving line while connecting, readable without reading
+            if (!connected) ConnectingLine()
+          }
+        },
+        floatingActionButton = {
+            if (tab == 0) FloatingActionButton(
+                onClick = { Ui.tick(haptic); newSheet = true },
+                containerColor = MaterialTheme.colorScheme.primary, contentColor = Color.White, shape = RoundedCornerShape(18.dp)
+            ) { Icon(SIcons.edit, contentDescription = "گفتگوی تازه") }
+        },
+        bottomBar = {
+            // 1.28: chats / calls / settings under the thumb (were tabs at the top and a menu item)
+            NavigationBar(containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, modifier = Modifier.drawBehind {
+                drawLine(Color.Gray.copy(alpha = 0.18f), Offset(0f, 0f), Offset(size.width, 0f), 1f)
+            }) {
+                NavigationBarItem(selected = tab == 0, onClick = { if (tab == 0) scope.launch { listState.animateScrollToItem(0) }; tab = 0 }, label = { Text("گفتگوها") }, icon = {
+                    BadgedBox(badge = { if (unreadChats > 0) Badge { Text(U.fa(unreadChats)) } }) { Icon(SIcons.chat, null) }
+                })
+                NavigationBarItem(selected = tab == 1, onClick = { tab = 1 }, label = { Text("تماس‌ها") }, icon = {
+                    BadgedBox(badge = { if (grooms.isNotEmpty()) Badge(containerColor = Color(0xFF43A047)) }) { Icon(SIcons.call, null) }
+                })
+                NavigationBarItem(selected = false, onClick = { onSettings() }, label = { Text("تنظیمات") }, icon = { Icon(SIcons.gear, null) })
+            }
         }
     ) { pad ->
       Column(Modifier.padding(pad).fillMaxSize()) {
-        ChatCallTabs(tab) { tab = it }
-        if (tab == 1) CallsTab(onOpen) else
-        LazyColumn(Modifier.fillMaxSize()) {
+        if (tab == 1) CallsTab(onOpen)
+        // 1.28: grey placeholder rows on a fresh sign-in until the list arrives; a friendly empty screen when there is nothing yet
+        else if (rows.isEmpty() && !connected) SkeletonRows()
+        else LazyColumn(Modifier.fillMaxSize(), state = listState) {
             if (incoming.isNotEmpty()) item(key = "requests") {
                 Row(
-                    Modifier.fillMaxWidth().clickable { showRequests = true }.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                    Modifier.fillMaxWidth().clickable { showRequests = true }.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
                         .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("👋", fontSize = 22.sp)
+                    Icon(SIcons.inbox, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
-                    Text("${incoming.size} درخواست پیام / ارتباط تازه", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
-                    Text("مشاهده", color = MaterialTheme.colorScheme.primary)
+                    Text("${U.fa(incoming.size)} درخواست پیام / ارتباط تازه", fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+                    Text("مشاهده", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
             }
+            if (rows.isEmpty()) item(key = "empty") {
+                EmptyState(
+                    SIcons.chat, "هنوز گفتگویی ندارید",
+                    "مخاطبان گوشی‌تان که ${BuildConfig.APP_NAME} دارند پایین همین صفحه می‌آیند. یا با دکمهٔ ✏ به کسی پیام بدهید.",
+                    action = "گفتگوی تازه", onAction = { newSheet = true }
+                )
+            }
             items(rows, key = { it.convo }) { r ->
-              Column {
+              Column(Modifier.animateItem()) {
                 val online = users.firstOrNull { it.username == r.convo }?.online ?: false
                 val isPinned = r.convo in pinned
                 val draft = remember(chatTick, r.convo) { Prefs.draft(r.convo) }
                 val group = Engine.isGroup(r.convo)
                 val typers = if (group) Engine.typingIn(r.convo, now) else emptyList()
                 val typingNow = if (group) typers.isNotEmpty() else now - (typing[r.convo] ?: 0L) < 4500
+                val mutedRow = remember(chatTick, r.convo) { Prefs.isMuted(r.convo) }
+                val dim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                 Box {
                 Row(
-                    Modifier.fillMaxWidth().combinedClickable(onClick = { onOpen(r.convo) }, onLongClick = { rowMenu = r.convo })
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    Modifier.fillMaxWidth()
+                        .background(if (isPinned) MaterialTheme.colorScheme.primary.copy(alpha = 0.045f) else Color.Transparent)
+                        .combinedClickable(onClick = { onOpen(r.convo) }, onLongClick = { Ui.press(haptic); rowMenu = r.convo })
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Avatar(r.convo, online)
+                    Avatar(r.convo, online, 54)
                     Spacer(Modifier.width(12.dp))
                     Column(Modifier.weight(1f)) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (group && grooms.values.any { it.group == r.convo }) Text("📞 ", fontSize = 13.sp, color = Color(0xFF2E7D32))
-                            Text(Engine.titleOf(r.convo), fontWeight = FontWeight.SemiBold, fontSize = 16.sp, modifier = Modifier.weight(1f),
+                            if (group && grooms.values.any { it.group == r.convo }) {
+                                Icon(SIcons.call, null, tint = Color(0xFF2E7D32), modifier = Modifier.size(15.dp)); Spacer(Modifier.width(4.dp))
+                            }
+                            Text(Engine.titleOf(r.convo), fontWeight = FontWeight.Bold, fontSize = 16.sp, modifier = Modifier.weight(1f),
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (mutedRow) { Icon(SIcons.bellOff, null, tint = dim.copy(alpha = 0.45f), modifier = Modifier.size(14.dp)); Spacer(Modifier.width(4.dp)) }
                             val last = r.last
                             val t = last?.let { Engine.tickOf(it, receipts).also { hideSeen } }
-                            if (t != null) Text(
-                                if (t == "seen") "✓✓ " else "✓ ", fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                                color = if (t == "sent") MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f) else MaterialTheme.colorScheme.primary
+                            if (t != null) Icon(
+                                if (t == "seen") SIcons.doneAll else SIcons.check, null, modifier = Modifier.size(16.dp).padding(end = 2.dp),
+                                tint = if (t == "sent") MaterialTheme.colorScheme.onSurface.copy(alpha = 0.45f) else MaterialTheme.colorScheme.primary
                             )
-                            last?.let { Text(U.time(it.ts), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)) }
+                            last?.let {
+                                Text(U.listTime(it.ts), fontSize = 12.sp,
+                                    color = if (r.unread > 0 && !mutedRow) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                    fontWeight = if (r.unread > 0 && !mutedRow) FontWeight.Bold else FontWeight.Normal)
+                            }
                         }
+                        Spacer(Modifier.height(2.dp))
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            val dim = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                             when {
-                                typingNow -> Text(
-                                    if (group) (if (typers.size == 1) Engine.nameOf(typers[0]) else "${typers.size} نفر") + " در حال نوشتن…" else "در حال نوشتن…",
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f)
-                                )
+                                typingNow -> Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        if (group) (if (typers.size == 1) Engine.nameOf(typers[0]) else "${U.fa(typers.size)} نفر") + " در حال نوشتن" else "در حال نوشتن",
+                                        maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary
+                                    )
+                                    Spacer(Modifier.width(4.dp)); TypingDots(MaterialTheme.colorScheme.primary)
+                                }
                                 draft.isNotBlank() -> Row(Modifier.weight(1f)) {
                                     Text("پیش‌نویس: ", fontSize = 14.sp, color = MaterialTheme.colorScheme.error)
                                     Text(draft.replace('\n', ' '), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim)
@@ -479,25 +540,30 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                                     Text(prev, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim, modifier = Modifier.weight(1f))
                                 }
                             }
-                            if (isPinned && r.unread == 0) Text("📌", fontSize = 13.sp, modifier = Modifier.padding(start = 6.dp))
+                            if (isPinned && r.unread == 0) Icon(SIcons.pin, null, tint = dim.copy(alpha = 0.5f), modifier = Modifier.padding(start = 6.dp).size(16.dp))
                             if (r.unread > 0) {
-                                Box(Modifier.padding(start = 8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary).padding(horizontal = 7.dp, vertical = 2.dp)) {
-                                    Text(r.unread.toString(), color = Color.White, fontSize = 12.sp)
+                                Box(
+                                    Modifier.padding(start = 8.dp).height(22.dp).widthIn(min = 22.dp).clip(RoundedCornerShape(11.dp))
+                                        .background(if (mutedRow) MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f) else MaterialTheme.colorScheme.primary)
+                                        .padding(horizontal = 6.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(U.fa(r.unread), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
                         }
                     }
                 }
                 DropdownMenu(expanded = rowMenu == r.convo, onDismissRequest = { rowMenu = null }) {
-                    DropdownMenuItem(text = { Text(if (isPinned) "برداشتن سنجاق" else "سنجاق به بالای فهرست") }, onClick = {
+                    DropdownMenuItem(leadingIcon = { Icon(SIcons.pin, null) }, text = { Text(if (isPinned) "برداشتن سنجاق" else "سنجاق به بالای فهرست") }, onClick = {
                         rowMenu = null
                         if (!Prefs.togglePinned(r.convo)) Toast.makeText(ctx, "حداکثر ${Prefs.MAX_PINNED} گفتگو را می‌شود سنجاق کرد", Toast.LENGTH_SHORT).show()
                     })
                     // 1.27
-                    DropdownMenuItem(text = { Text("🗑  حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { rowMenu = null; clearFor = r.convo })
+                    DropdownMenuItem(leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, text = { Text("حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { rowMenu = null; clearFor = r.convo })
                 }
                 }
-                HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                HorizontalDivider(Modifier.padding(start = 80.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
               }
             }
             // 1.17: «مخاطبان گوشی در سپن»: members in the phone's contacts who have no chat here yet
@@ -514,32 +580,57 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     Modifier.fillMaxWidth().clickable { contactsPerm.launch(Manifest.permission.READ_CONTACTS) }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text("📇", fontSize = 22.sp)
+                    Icon(SIcons.person, null, tint = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.width(12.dp))
                     Text("ببینید کدام مخاطبان گوشی‌تان ${BuildConfig.APP_NAME} دارند", fontSize = 14.sp, modifier = Modifier.weight(1f))
-                    Text("اجازه", color = MaterialTheme.colorScheme.primary)
+                    Text("اجازه", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
             }
             items(extra, key = { "pc:" + it.username }) { f ->
                 Column {
                     Row(
-                        Modifier.fillMaxWidth().clickable(enabled = !opening) { openMember(f.username) }.padding(horizontal = 14.dp, vertical = 10.dp),
+                        Modifier.fillMaxWidth().clickable(enabled = !opening) { openMember(f.username) }.padding(horizontal = 14.dp, vertical = 9.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Avatar(f.username, users.firstOrNull { it.username == f.username }?.online ?: false)
+                        Avatar(f.username, users.firstOrNull { it.username == f.username }?.online ?: false, 54)
                         Spacer(Modifier.width(12.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(f.name ?: f.displayName ?: f.username, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(f.name ?: f.displayName ?: f.username, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                             Text("@" + f.username + " · \u200E" + f.phone, fontSize = 13.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                         }
-                        Text(if (f.connected) "گفتگو" else "پیام", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp)
+                        Text(if (f.connected) "گفتگو" else "پیام", color = MaterialTheme.colorScheme.primary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
-                    HorizontalDivider(Modifier.padding(start = 74.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                    HorizontalDivider(Modifier.padding(start = 80.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                }
+            }
+            item(key = "fab_room") { Spacer(Modifier.height(84.dp)) }
+        }
+      }
+    }
+    if (newSheet) ModalBottomSheet(onDismissRequest = { newSheet = false }) {
+        @Composable fun SheetRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, sub: String?, onClick: () -> Unit) {
+            Row(
+                Modifier.fillMaxWidth().clickable { newSheet = false; onClick() }.padding(horizontal = 20.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(Modifier.size(42.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)), contentAlignment = Alignment.Center) {
+                    Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
+                }
+                Spacer(Modifier.width(14.dp))
+                Column {
+                    Text(title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+                    if (sub != null) Text(sub, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                 }
             }
         }
-      }
+        Column(Modifier.padding(bottom = 24.dp)) {
+            Text("گفتگوی تازه", fontWeight = FontWeight.Bold, fontSize = 18.sp, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
+            SheetRow(SIcons.person, "پیام به @نام‌کاربری", "یا افزودن مخاطب با نام کاربری") { addContact = true }
+            if (ug.on) SheetRow(SIcons.group, "گروه تازه", if (ug.limit > 0) "${U.fa(ug.owned)} از ${U.fa(ug.limit)}" else null) { newGroup = true }
+            if (ug.chanOn) SheetRow(SIcons.campaign, "کانال تازه", if (ug.limit > 0) "${U.fa(ug.owned)} از ${U.fa(ug.limit)}" else null) { newChan = true }
+            if (ug.on || ug.chanOn) SheetRow(SIcons.link, "پیوستن با لینک دعوت", null) { joinGroup = true }
+        }
     }
     if (askContacts) AlertDialog(
         onDismissRequest = { askContacts = false; Engine.contactsAsked = true },

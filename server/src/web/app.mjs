@@ -10,8 +10,9 @@ import * as Voice from './voice.mjs';
 import * as Diag from './diag.mjs';
 import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
+import { ic } from './icons.mjs';
 
-const VERSION = '1.27.0';
+const VERSION = '1.28.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -39,6 +40,19 @@ const setPref = (k, v) => { try { localStorage.setItem('pref_' + k, JSON.stringi
 const faNum = (n) => Number(n).toLocaleString('fa-IR');
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const standalone = () => navigator.standalone === true || matchMedia('(display-mode: standalone)').matches;
+// 1.28: a short tap felt in the hand (phones that allow it), and «less motion» from the system
+const buzz = (ms = 8) => { try { if (navigator.vibrate) navigator.vibrate(ms); } catch { } };
+const lessMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
+/** 1.28: a friendly empty screen: round picture, what is missing, what to do, and a button for it */
+function emptyState(icon, title, text, action, onAction) {
+  return h('div', { class: 'estate' }, h('div', { class: 'eo' }, h('div', { class: 'ei' }, ic(icon, 34))),
+    h('div', { class: 'et' }, title), text ? h('div', { class: 'ex' }, text) : null,
+    action ? h('button', { class: 'btn', onclick: onAction }, action) : null);
+}
+/** grey shimmering rows that stand in for the chat list until it arrives */
+const skeleton = (n = 7) => h('div', { class: 'skel' }, Array.from({ length: n }, (_, i) => h('div', { class: 'srow' }, h('i', { class: 'sav' }),
+  h('div', { class: 'sl' }, h('i', { style: { width: [55, 40, 62, 35, 50, 45, 58][i % 7] + '%' } }), h('i', { style: { width: [80, 70, 50, 75, 60, 82, 66][i % 7] + '%' } })))));
+const typingDots = () => h('span', { class: 'tdots' }, h('i'), h('i'), h('i'));
 
 const DAY = 864e5;
 const startOfDay = (ts) => { const d = new Date(ts); d.setHours(0, 0, 0, 0); return d.getTime(); };
@@ -122,7 +136,8 @@ function avatar(convo, cls = '') {
   el.style.background = colorFor(convo);
   const url = group ? E.groupAvatarUrl(convo) : E.avatarUrl(convo);
   if (url) el.append(h('img', { src: url, alt: '' }));
-  else el.textContent = group ? (E.isChan(convo) ? '📢' : '👥') : initials(E.nameOf(convo));
+  else if (group) el.append(ic(E.isChan(convo) ? 'campaign' : 'group', cls === 'xs' ? 14 : cls === 'sm' ? 22 : cls === 'lg' ? 52 : 26));
+  else el.textContent = initials(E.nameOf(convo));
   return el;
 }
 function avatarWithDot(convo, cls) {
@@ -131,7 +146,7 @@ function avatarWithDot(convo, cls) {
 }
 
 /** grey ✓ = on the server, blue ✓ = on their phone, blue ✓✓ = seen. */
-const tickEl = (t) => (t ? h('span', { class: 'tick ' + t, title: TICK_TEXT[t] }, t === 'seen' ? '✓✓' : '✓') : null);
+const tickEl = (t) => (t ? h('span', { class: 'tick ' + t, title: TICK_TEXT[t] }, ic(t === 'seen' ? 'doneAll' : 'check', 16)) : null);
 
 let toastTimer = null;
 function toast(text, onclick) {
@@ -357,7 +372,7 @@ function infoSheet(m) {
 
 function viewer(url, m) {
   const v = h('div', { class: 'viewer' },
-    h('div', { class: 'vbar' }, h('button', { class: 'icon', title: 'بستن', onclick: () => v.remove() }, '✕'),
+    h('div', { class: 'vbar' }, h('button', { class: 'icon', title: 'بستن', onclick: () => v.remove() }, ic('close')),
       // 1.12: ⋮ = save to…, save to gallery / share
       m ? h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(null, mediaItems(m)) }, '⋮') : null),
     h('img', { src: url, alt: '' }));
@@ -432,11 +447,18 @@ async function saveMedia(m) {
 }
 
 // ---------------- theme / text size / viewport ----------------
+/** 1.28: the five accent colours, the same as in the Android app */
+const ACCENTS = [['آبی سپن', '#2A73C9'], ['سبزآبی', '#138A72'], ['بنفش', '#7352C7'], ['نارنجی', '#D9691A'], ['صورتی', '#C93A70']];
 function applyLook() {
   const t = pref('theme', 'system');
   if (t === 'system') document.documentElement.removeAttribute('data-theme'); else document.documentElement.dataset.theme = t;
   document.documentElement.style.setProperty('--fs', pref('fontSize', 16) + 'px');
   document.documentElement.classList.toggle('plainbg', !pref('wallpaper', true));
+  // 1.28: accent colour (0 = Sepan blue)
+  const a = pref('accent', 0);
+  if (a) document.documentElement.dataset.accent = a; else document.documentElement.removeAttribute('data-accent');
+  const meta = document.querySelector('meta[name=theme-color]');
+  if (meta) meta.content = ACCENTS[a] ? ACCENTS[a][1] : ACCENTS[0][1];
 }
 applyLook();
 if (window.visualViewport) {
@@ -772,7 +794,7 @@ function KeyScreen(mode) {
   }
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
     h('div', { class: 'bar' },
-      mode === 'change' ? h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/settings') }, '→') : null,
+      mode === 'change' ? h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/settings') }, ic('back')) : null,
       h('h1', null, 'کلید رمزنگاری'),
       mode !== 'change' ? h('button', { class: 'btn sm flat', onclick: () => E.logout() }, 'خروج') : null),
     h('div', { class: 'scroll' }, h('div', { class: 'keybox' }, body)));
@@ -784,15 +806,20 @@ function ListScreen() {
   const conn = h('span', { class: 'conn' });
   const reqBadge = h('span', { class: 'badge hidden' });
   const list = h('div', { class: 'scroll' });
-  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
+  const connLine = h('div', { class: 'connline hidden' });
+  const nav = bottomNav('chats');
+  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' } },
     h('div', { class: 'bar' },
       h('h1', null, 'سپن ', conn),
-      h('button', { class: 'icon', title: 'درخواست‌های ارتباط', onclick: () => go('#/requests') }, '👥', reqBadge),
-      h('button', { class: 'icon', title: 'گفتگوی تازه', onclick: newMenu }, '✏️'),
-      h('button', { class: 'icon', title: 'تنظیمات', onclick: () => go('#/settings') }, '⚙️')),
-    tabsRow('chats'), list);
+      h('button', { class: 'icon', title: 'درخواست‌های ارتباط', onclick: () => go('#/requests') }, ic('personAdd'), reqBadge)),
+    connLine, list,
+    // 1.28: round «گفتگوی تازه» button above the bottom bar
+    h('button', { class: 'fab', title: 'گفتگوی تازه', onclick: () => { buzz(); newMenu(); } }, ic('edit')),
+    nav.el);
   const render = batched(() => {
     conn.textContent = connText();
+    connLine.classList.toggle('hidden', !connText());
+    nav.update();
     const n = S.requests.incoming.length;
     reqBadge.textContent = faNum(n);
     reqBadge.classList.toggle('hidden', !n);
@@ -815,9 +842,10 @@ function ListScreen() {
       const row = h('button', { class: 'row' },
         avatarWithDot(s.convo),
         h('div', { class: 'mid' },
-          h('div', { class: 'top' }, h('div', { class: 'name' }, chan ? '📢 ' : '', E.titleOf(s.convo)), group && GC.roomOf(s.convo) ? h('span', { class: 'gcmark', title: 'تماس گروهی در جریان' }, '📞') : null, tick ? tickEl(tick) : null, h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
-          h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, '📌') : null)));
+          h('div', { class: 'top' }, h('div', { class: 'name' }, chan ? ic('campaign', 16, 'nic') : null, E.titleOf(s.convo)), group && GC.roomOf(s.convo) ? h('span', { class: 'gcmark', title: 'تماس گروهی در جریان' }, ic('call', 16)) : null, tick ? tickEl(tick) : null, h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
+          h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, typing ? typingDots() : null, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, ic('pin', 16)) : null)));
       const wasLong = onLongPress(row, () => {
+        buzz(12);
         const pinned = pinnedChats().includes(s.convo);
         sheet(E.titleOf(s.convo), [{ label: pinned ? 'برداشتن سنجاق از بالای فهرست' : '📌 سنجاق به بالای فهرست', run: () => { togglePinChat(s.convo); render(); } },
           { label: '🗑 حذف گفتگو', danger: true, run: () => clearChatDialog(s.convo) }]);
@@ -826,13 +854,15 @@ function ListScreen() {
       return row;
     });
     const reqRow = n ? h('button', { class: 'row', onclick: () => go('#/requests') },
-      h('div', { class: 'av', style: { background: '#3390ec' } }, '📨'),
+      h('div', { class: 'av', style: { background: 'var(--accent)' } }, ic('inbox', 26)),
       h('div', { class: 'mid' }, h('div', { class: 'top' }, h('div', { class: 'name' }, 'درخواست‌های پیام')),
         h('div', { class: 'sub' }, h('div', { class: 'prev' }, S.requests.incoming.slice(0, 3).map((r) => r.display_name || '@' + r.username).join('، ')), h('span', { class: 'count' }, faNum(n))))) : null;
     fill(list, 
       isIOS && !standalone() ? h('div', { class: 'hint' }, 'برای اینکه سپن مثل یک برنامه باز شود: دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' و بعد ', h('b', null, '«افزودن به صفحهٔ اصلی»'), '.') : null,
       reqRow,
-      rows.length ? rows : h('div', { class: 'empty' }, 'هنوز گفتگویی ندارید. با دکمهٔ ✏️ یک گفتگو شروع کنید.'));
+      rows.length ? rows : !S.lastId && S.conn !== 'online' ? skeleton()
+        : emptyState('chat', 'هنوز گفتگویی ندارید', 'با یکی از مخاطبانتان گفتگو را شروع کنید؛ پیام‌ها سرتاسری رمزنگاری می‌شوند.', 'گفتگوی تازه', newMenu),
+      h('div', { style: { height: '84px' } }));
   });
   render();
   E.refreshRequests().catch(() => { });
@@ -844,8 +874,8 @@ function ContactsScreen() {
   const q = h('input', { type: 'text', placeholder: 'جستجو یا ‎@نام‌کاربری', oninput: () => render(), onkeydown: (e) => { if (e.key === 'Enter' && /^@?[A-Za-z0-9_]{2,20}$/.test(q.value.trim())) openUser(q.value.trim()); } });
   const list = h('div');
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'), h('h1', null, 'مخاطبان'),
-      h('button', { class: 'icon', title: 'افزودن مخاطب', onclick: () => go('#/requests') }, '➕')),
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, ic('back')), h('h1', null, 'مخاطبان'),
+      h('button', { class: 'icon', title: 'افزودن مخاطب', onclick: () => go('#/requests') }, ic('personAdd'))),
     h('div', { class: 'scroll' }, h('div', { class: 'form', style: { paddingBottom: '4px' } }, q), list));
   const render = batched(() => {
     const term = q.value.trim().toLowerCase().replace(/^@/, '');
@@ -864,7 +894,7 @@ function ContactsScreen() {
       users.length ? users.map((u) => row(u.username, (u.online ? 'آنلاین · ' : '') + '@' + u.username + (u.req === 'out' ? ' · در انتظار پذیرفتن' : u.dm ? '' : ' · فقط پاسخ'), () => {
         if (!u.dm && !(S.convos.get(u.username) || []).length) { toast('شروع گفتگو با این کاربر مجاز نیست؛ اگر او پیام بدهد می‌توانید پاسخ دهید'); return; }
         go('#/c/' + encodeURIComponent(u.username));
-      })) : h('div', { class: 'empty' }, 'مخاطبی پیدا نشد. نام کاربری دقیق را با ‎@ بنویسید، یا از دکمهٔ ➕ با شمارهٔ موبایل پیدا کنید.'));
+      })) : emptyState('search', 'مخاطبی پیدا نشد', 'نام کاربری دقیق را با ‎@ بنویسید، یا با شمارهٔ موبایل پیدا کنید.', 'پیدا کردن با شماره', () => go('#/requests')));
   });
   render();
   return { el, update: (k) => { if (k === 'users' || k === 'groups') render(); } };
@@ -899,7 +929,7 @@ function RequestsScreen() {
   }
   const act = async (what, u, accept) => { const r = await E.contactAction(what, u, accept); if (r.error) toast(r.error); };
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, '→'), h('h1', null, 'درخواست‌ها')),
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, ic('back')), h('h1', null, 'درخواست‌ها')),
     h('div', { class: 'scroll' },
       h('form', { class: 'form', onsubmit: add }, h('div', { class: 'field' }, h('label', null, 'پیام به هر کسی با نام کاربری یا شمارهٔ موبایل'), name), msg, btn),
       lists));
@@ -942,10 +972,10 @@ function ChatScreen(convo) {
   const viewsTimer = chan ? setInterval(() => E.refreshViews(convo), 30000) : null;
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
-  const callBtns = group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, '📞'),
-    h('button', { class: 'icon gcbtn gcvid', title: 'تماس تصویری گروهی', onclick: () => groupCall(convo, true) }, '🎥')] : [
-    h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => call(false) }, '📞'),
-    h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => call(true) }, '🎥')];
+  const callBtns = group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, ic('call')),
+    h('button', { class: 'icon gcbtn gcvid', title: 'تماس تصویری گروهی', onclick: () => groupCall(convo, true) }, ic('video'))] : [
+    h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => call(false) }, ic('call')),
+    h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => call(true) }, ic('video'))];
   // 1.19: the green «پیوستن» bar of a group call that is running in this group (like Telegram)
   const gcBar = h('div', { class: 'gcbar hidden' });
   function renderGcBar() {
@@ -967,11 +997,11 @@ function ChatScreen(convo) {
   }
   const reqBar = h('div', { class: 'reqbar hidden' });
   const searchInput = h('input', { type: 'text', placeholder: 'جستجو در گفتگو', oninput: () => { search = searchInput.value.trim(); renderList(); } });
-  const searchBar = h('div', { class: 'searchbar hidden' }, searchInput, h('button', { class: 'icon', onclick: () => { searchBar.classList.add('hidden'); search = ''; searchInput.value = ''; renderList(); } }, '✕'));
+  const searchBar = h('div', { class: 'searchbar hidden' }, searchInput, h('button', { class: 'icon', onclick: () => { searchBar.classList.add('hidden'); search = ''; searchInput.value = ''; renderList(); } }, ic('close')));
   const pinBar = h('div', { class: 'pinbar hidden' });
   const msgs = h('div', { class: 'msgs' });
   const jumpCount = h('span', { class: 'badge hidden' });
-  const jump = h('button', { class: 'jump hidden', title: 'آخرین پیام', onclick: () => { forceBottom = true; msgs.scrollTop = msgs.scrollHeight; } }, '⌄', jumpCount);
+  const jump = h('button', { class: 'jump hidden', title: 'آخرین پیام', onclick: () => { forceBottom = true; msgs.scrollTo({ top: msgs.scrollHeight, behavior: lessMotion() ? 'auto' : 'smooth' }); } }, ic('arrowDown', 26), jumpCount);
 
   const ta = h('textarea', { rows: 1, placeholder: 'پیام', dir: 'auto' });
   const fileIn = h('input', { type: 'file', multiple: true, class: 'hidden' });
@@ -979,7 +1009,7 @@ function ChatScreen(convo) {
   const camIn = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden' });
   const replyBar = h('div', { class: 'replybar hidden' });
   const selCount = h('div', { class: 'grow' });
-  const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, '✕'), selCount,
+  const selBar = h('div', { class: 'selbar hidden' }, h('button', { class: 'icon', title: 'لغو', onclick: () => setSelecting(null) }, ic('close')), selCount,
     h('button', { class: 'btn sm', onclick: () => {
       const all = S.convos.get(convo) || [];
       const msgsSel = all.filter((x) => selected.has(x.id) && x.id > 0 && x.type !== 'call');
@@ -994,15 +1024,15 @@ function ChatScreen(convo) {
       setSelecting(null);
     } }, 'حذف'));
   const emojiPanel = h('div', { class: 'emojis hidden' });
-  const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, '➤');
-  const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, '🎤');
+  const sendBtn = h('button', { class: 'icon send', title: 'ارسال' }, ic('send', 22));
+  const micBtn = h('button', { class: 'icon mic', title: 'پیام صوتی (نگه دارید)' }, ic('mic', 24));
   const recBar = h('div', { class: 'recbar hidden' });
   const attachBtn = h('button', { class: 'icon', title: 'پیوست', onclick: () => sheet(null, [
     { label: '🖼 عکس از گالری', run: () => photoIn.click() },
     { label: '📷 عکس با دوربین', run: () => camIn.click() },
     { label: '📎 فایل', run: () => fileIn.click() },
     { label: '📍 موقعیت مکانی', run: shareLocation },
-  ]) }, '📎');
+  ]) }, ic('attach'));
   async function shareLocation() {
     toast('در حال پیدا کردن موقعیت…');
     let loc;
@@ -1014,19 +1044,21 @@ function ChatScreen(convo) {
     await E.sendLocation(convo, loc, reply);
     setReply(null);
   }
-  const emojiBtn = h('button', { class: 'icon', title: 'شکلک' }, '🙂');
+  const emojiBtn = h('button', { class: 'icon', title: 'شکلک' }, ic('smile'));
   const lockBar = h('div', { class: 'lockbar hidden' });
 
+  const connLine = h('div', { class: 'connline hidden' });
   const el = h('div', { class: 'chat', style: { display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' } },
     h('div', { class: 'bar' },
-      h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'),
+      h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, ic('back')),
       h('div', { class: 'grow', style: { display: 'flex', gap: '10px', alignItems: 'center' }, onclick: () => go('#/p/' + encodeURIComponent(convo)) }, av, h('div', { style: { minWidth: '0' } }, title, sub)),
       callBtns,
-      h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, '🔍'),
+      h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, ic('search')),
       // 1.27: ⋮ › «حذف گفتگو»
-      h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(E.titleOf(convo), [{ label: '🗑 حذف گفتگو', danger: true, run: async () => { if (await clearChatDialog(convo)) go('#/'); } }]) }, '⋮')),
-    searchBar, gcBar, pinBar, reqBar, msgs, jump,
-    h('div', { class: 'composer' }, selBar, replyBar, recBar, lockBar, h('div', { class: 'line' }, sendBtn, micBtn, ta, emojiBtn, attachBtn) /* 1.13: send/mic on the right, emoji + attach on the left */, emojiPanel, fileIn, photoIn, camIn));
+      h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(E.titleOf(convo), [{ label: '🗑 حذف گفتگو', danger: true, run: async () => { if (await clearChatDialog(convo)) go('#/'); } }]) }, ic('more'))),
+    connLine, searchBar, gcBar, pinBar, reqBar, msgs, jump,
+    // 1.13: send/mic on the right; 1.28: the text box, emoji and attach sit in one floating pill
+    h('div', { class: 'composer' }, selBar, replyBar, recBar, lockBar, h('div', { class: 'line' }, sendBtn, micBtn, h('div', { class: 'pill' }, ta, emojiBtn, attachBtn)), emojiPanel, fileIn, photoIn, camIn));
   // 1.20: a user group where only admins write, or one the server admin froze
   function renderLock() {
     const why = group ? E.writeBlock(convo) : '';
@@ -1040,18 +1072,19 @@ function ChatScreen(convo) {
     title.textContent = E.titleOf(convo);
     fill(av, avatarWithDot(convo, 'sm'));
     const c = connText();
-    let s = '', on = false;
+    connLine.classList.toggle('hidden', !c);
+    let s = '', on = false, typing = false;
     if (c) s = c;
-    else if (group && E.typingIn(convo).length) { const t = E.typingIn(convo); s = E.nameOf(t[0]) + (t.length > 1 ? ' و ' + faNum(t.length - 1) + ' نفر دیگر' : '') + ' در حال نوشتن…'; on = true; }
+    else if (group && E.typingIn(convo).length) { const t = E.typingIn(convo); s = E.nameOf(t[0]) + (t.length > 1 ? ' و ' + faNum(t.length - 1) + ' نفر دیگر' : '') + ' در حال نوشتن'; on = true; typing = true; }
     else if (chan) { const g = E.groupOf(convo); s = '📢 کانال' + (g ? ' · ' + faNum(g.count || g.members.length) + ' عضو' : ''); }
     else if (group) {
       const g = S.groups.find((x) => x.key === convo);
       const n = g ? g.members.filter((u) => u !== S.me && E.user(u) && E.user(u).online).length : 0;
       s = g ? faNum(g.members.length) + ' عضو' + (n ? '، ' + faNum(n) + ' آنلاین' : '') : '';
     }
-    else if (Date.now() - (S.typing[convo] || 0) < 4500) { s = 'در حال نوشتن…'; on = true; }
+    else if (Date.now() - (S.typing[convo] || 0) < 4500) { s = 'در حال نوشتن'; on = true; typing = true; }
     else { const u = E.user(convo); s = lastSeenText(u) || '@' + convo; on = !!(u && u.online); }
-    sub.textContent = s;
+    if (typing) fill(sub, typingDots(), s); else sub.textContent = s;
     sub.classList.toggle('on', on);
   }
 
@@ -1082,7 +1115,7 @@ function ChatScreen(convo) {
     const m = id && (S.convos.get(convo) || []).find((x) => x.id === id);
     pinBar.classList.toggle('hidden', !id);
     if (!id) return;
-    fill(pinBar, h('span', null, '📌'), h('div', { class: 'pt' }, h('b', null, 'پیام سنجاق‌شده'), h('span', null, m ? E.preview(m) : 'پیام')));
+    fill(pinBar, h('span', { class: 'pinic' }, ic('pin', 20)), h('div', { class: 'pt' }, h('b', null, 'پیام سنجاق‌شده'), h('span', null, m ? E.preview(m) : 'پیام')));
     pinBar.onclick = () => scrollToMsg(id);
   }
 
@@ -1100,7 +1133,7 @@ function ChatScreen(convo) {
     replyBar.classList.toggle('hidden', !m);
     if (m) {
       fill(replyBar, h('div', { class: 'reply' }, h('div', { class: 'ru' }, '✎ ویرایش پیام'), h('div', { class: 'rx' }, E.preview(m))),
-        h('button', { class: 'icon', onclick: () => { setEditing(null); ta.value = ''; autosize(); } }, '✕'));
+        h('button', { class: 'icon', onclick: () => { setEditing(null); ta.value = ''; autosize(); } }, ic('close')));
       ta.value = m.text; autosize(); ta.focus();
     }
   }
@@ -1111,7 +1144,7 @@ function ChatScreen(convo) {
     replyBar.classList.toggle('hidden', !m);
     if (m) {
       fill(replyBar, h('div', { class: 'reply' }, h('div', { class: 'ru' }, 'پاسخ به ' + (m.mine ? 'خودتان' : E.nameOf(m.sender))), h('div', { class: 'rx' }, E.preview(m))),
-        h('button', { class: 'icon', onclick: () => setReply(null) }, '✕'));
+        h('button', { class: 'icon', onclick: () => setReply(null) }, ic('close')));
       ta.focus();
     }
   }
@@ -1154,8 +1187,8 @@ function ChatScreen(convo) {
         return img;
       }
       if (m.fileId && !fail && prog == null && m.size <= 25 * 1024 * 1024 && pref('autoImages', true)) E.download(m).catch(() => { });
-      return h('div', { class: 'img-ph', style: box, onclick: (e) => { e.stopPropagation(); S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
-        prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '🖼 ' + fmtSize(m.size));
+      return h('div', { class: 'img-ph' + (prog != null ? ' shim' : ''), style: box, onclick: (e) => { e.stopPropagation(); S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
+        prog != null ? h('span', { class: 'ring' }, faNum(Math.round(prog * 100)) + '٪') : fail ? [ic('error', 18), ' ' + fail + ' (دوباره)'] : [ic('download', 20), ' ' + fmtSize(m.size)]);
     }
     if ((m.mime || '').startsWith('video/')) {
       // videos play right here in the chat (1.7), with the browser's own controls (full screen, speed)
@@ -1165,7 +1198,7 @@ function ChatScreen(convo) {
         return vid;
       }
       return h('div', { class: 'img-ph vid-ph', onclick: (e) => { e.stopPropagation(); if (!m.fileId) return; S.failures.delete(m.id); E.download(m).catch(() => { }); renderList(); } },
-        prog != null ? '⏳ ' + faNum(Math.round(prog * 100)) + '٪' : fail ? '⚠️ ' + fail + ' (دوباره)' : '▶ ویدیو · ' + fmtSize(m.size));
+        prog != null ? faNum(Math.round(prog * 100)) + '٪' : fail ? [ic('error', 18), ' ' + fail + ' (دوباره)'] : [ic('play', 26), ' ویدیو · ' + fmtSize(m.size)]);
     }
     return h('div', { class: 'file', onclick: async (e) => {
       e.stopPropagation();
@@ -1174,7 +1207,7 @@ function ChatScreen(convo) {
       S.failures.delete(m.id);
       try { await E.download(m); toast('دانلود شد؛ برای ذخیره دوباره بزنید'); } catch { }
     } },
-    h('div', { class: 'fi' }, url ? '📄' : prog != null ? '⏳' : '⤓'),
+    h('div', { class: 'fi' }, ic(url ? 'file' : prog != null ? 'hourglass' : 'download', 22)),
     h('div', { style: { minWidth: '0' } }, h('div', { class: 'fn' }, m.name || 'file'),
       h('div', { class: 'fs' }, prog != null ? faNum(Math.round(prog * 100)) + '٪ از ' + fmtSize(m.size) : fail && m.status !== 2 ? '⚠️ ' + fail : fmtSize(m.size))));
   }
@@ -1186,7 +1219,8 @@ function ChatScreen(convo) {
     if (!v) return;
     const st = Voice.state(m.id);
     const frac = m.dur ? Math.min(1, st.pos / m.dur) : 0;
-    v.btn.textContent = S.progress.get(m.id) != null ? '⏳' : st.playing ? '❚❚' : '▶';
+    const want = S.progress.get(m.id) != null ? 'hourglass' : st.playing ? 'pause' : 'play';
+    if (v.btn.dataset.ic !== want) { v.btn.dataset.ic = want; fill(v.btn, ic(want, 24)); }
     v.bars.forEach((b, i) => b.classList.toggle('on', (i + 0.5) / v.bars.length <= frac));
     v.time.textContent = fmtDur(st.playing || st.pos ? st.pos : m.dur);
     v.speed.textContent = Voice.getRate() === 1 ? '1×' : Voice.getRate() === 1.5 ? '1.5×' : '2×';
@@ -1221,7 +1255,7 @@ function ChatScreen(convo) {
 
   function locationPart(l) {
     return h('div', { class: 'loc', onclick: (e) => { e.stopPropagation(); openMap(l); } },
-      h('div', { class: 'fi' }, '📍'),
+      h('div', { class: 'fi' }, ic('location', 22)),
       h('div', { style: { minWidth: '0' } }, h('div', { class: 'fn' }, 'موقعیت مکانی'),
         h('div', { class: 'fs ltr' }, E.fmtCoord(l)), l.acc ? h('div', { class: 'fs' }, 'دقت حدود ' + faNum(l.acc) + ' متر') : null));
   }
@@ -1233,13 +1267,44 @@ function ChatScreen(convo) {
       e, us.length > 1 ? h('span', null, faNum(us.length)) : null)));
   }
 
-  function bubble(m) {
+  // 1.28: swipe a message to the left to answer it (like the Android app)
+  function swipeReply(wrap, b, m) {
+    if (!(m.id > 0)) return () => false;
+    let x0 = 0, y0 = 0, dx = 0, on = false, done = false, swiped = 0;
+    wrap.addEventListener('pointerdown', (e) => { if (selected || e.button) return; x0 = e.clientX; y0 = e.clientY; dx = 0; on = true; done = false; });
+    wrap.addEventListener('pointermove', (e) => {
+      if (!on) return;
+      const mx = e.clientX - x0, my = e.clientY - y0;
+      if (!done && Math.abs(my) > 14 && Math.abs(my) > Math.abs(mx)) { on = false; return; }
+      if (mx < -8 && Math.abs(mx) > Math.abs(my)) {
+        done = true;
+        dx = Math.max(-90, mx);
+        b.style.transition = 'none';
+        b.style.transform = 'translateX(' + dx + 'px)';
+        wrap.classList.toggle('swipe', dx < -60);
+      }
+    });
+    const end = () => {
+      if (!on) return;
+      on = false;
+      if (!done) return;
+      b.style.transition = ''; b.style.transform = '';
+      wrap.classList.remove('swipe');
+      if (dx < -60) { buzz(); swiped = Date.now(); setReply(m); }
+    };
+    wrap.addEventListener('pointerup', end);
+    wrap.addEventListener('pointercancel', end);
+    wrap.addEventListener('pointerleave', end);
+    return () => Date.now() - swiped < 400 || (done && Math.abs(dx) > 8);
+  }
+
+  function bubble(m, first) {
     // 1.27: a call line can be selected and deleted (it lives only on this device)
     if (m.type === 'call') return h('div', { class: 'call-line' + (selected && selected.has(m.id) ? ' sel' : ''), onclick: () => {
       if (!selected) return sheet(null, [{ label: 'انتخاب', run: () => setSelecting(new Set([m.id])) }, { label: 'حذف از این دستگاه', danger: true, run: () => E.deleteLocal(m) }]);
       if (selected.has(m.id)) selected.delete(m.id); else selected.add(m.id);
       if (!selected.size) setSelecting(null); else setSelecting(selected);
-    } }, '📞 ' + m.text + ' · ' + fmtTime(m.ts));
+    } }, ic('call', 14), ' ' + m.text + ' · ' + fmtTime(m.ts));
     const big = (m.type === 'text' && !m.replyId && !m.replyText && Emoji.onlyEmojiCount(m.text) > 0) || m.type === 'sticker';
     const prog = S.progress.get(m.id);
     const b = h('div', { class: 'bubble' + (big ? ' emoji' : '') + (m.type === 'sticker' ? ' sticker' : '') },
@@ -1257,15 +1322,18 @@ function ChatScreen(convo) {
       reactionRow(m),
       h('div', { class: 'meta' }, chan && m.id > 0 ? h('span', { title: 'دیده شده' }, '👁 ' + faNum(E.viewsOf(m))) : null,
         chan && m.id > 0 && (E.groupOf(convo) || {}).sign ? h('span', null, '✍️ ' + (m.mine ? 'شما' : E.nameOf(m.sender)) + ' ·') : null,
-        m.mine ? (m.status === 1 ? h('span', null, '🕓') : m.status === 2 ? h('span', null, '⚠️') : tickEl(E.tickOf(m))) : null, m.edited ? h('span', { title: fmtFull(m.edited) }, 'ویرایش‌شده ' + (startOfDay(m.edited) === startOfDay(m.ts) ? '' : fmtDay(m.edited) + ' ') + fmtTime(m.edited) + ' ·') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
+        m.mine ? (m.status === 1 ? h('span', { class: 'tick sent' }, ic('clock', 14)) : m.status === 2 ? h('span', { class: 'tick err' }, ic('error', 14)) : tickEl(E.tickOf(m))) : null, m.edited ? h('span', { title: fmtFull(m.edited) }, 'ویرایش‌شده ' + (startOfDay(m.edited) === startOfDay(m.ts) ? '' : fmtDay(m.edited) + ' ') + fmtTime(m.edited) + ' ·') : null, h('span', null, fmtTime(m.ts)), S.pins[convo] === m.id ? h('span', null, '📌') : null));
     b.dataset.id = m.id;
     const pickable = m.id > 0 && m.status === 0 && !m.locked;
-    return h('div', { class: 'm ' + (m.mine ? 'me' : 'them') + (selected && selected.has(m.id) ? ' sel' : ''), onclick: () => {
+    const wrap = h('div', { class: 'm ' + (m.mine ? 'me' : 'them') + (first ? ' first' : '') + (selected && selected.has(m.id) ? ' sel' : '') + (shownIds && !shownIds.has(m.id) && !(m.mine && m.id > 0) ? ' in' : ''), onclick: () => {
+      if (swipedNow()) return;
       if (!selected) return menu(m);
       if (!pickable) return;
       if (selected.has(m.id)) selected.delete(m.id); else selected.add(m.id);
       if (!selected.size) setSelecting(null); else setSelecting(selected);
-    } }, b);
+    } }, h('span', { class: 'swr' }, ic('reply', 20)), b);
+    const swipedNow = swipeReply(wrap, b, m);
+    return wrap;
   }
 
   function menu(m) {
@@ -1308,6 +1376,7 @@ function ChatScreen(convo) {
   }
 
   let seen = 0;
+  let shownIds = null; // 1.28: ids already on screen; only messages that arrive later slide in
   function renderList(keep) {
     let all = S.convos.get(convo) || [];
     if (search) all = all.filter((m) => (m.type === 'text' ? m.text : E.preview(m)).toLowerCase().includes(search.toLowerCase()));
@@ -1317,13 +1386,19 @@ function ChatScreen(convo) {
     const kids = [];
     voiceEls.clear();
     if (all.length > shown.length) kids.push(h('button', { class: 'btn sm flat', style: { alignSelf: 'center' }, onclick: () => { limit += 150; renderList(true); } }, 'پیام‌های قبلی'));
-    let lastDay = 0;
+    let lastDay = 0, prev = null;
     for (const m of shown) {
       const d = startOfDay(m.ts);
-      if (d !== lastDay) { kids.push(h('div', { class: 'day' }, fmtDay(m.ts))); lastDay = d; }
-      kids.push(bubble(m));
+      let newDay = false;
+      if (d !== lastDay) { kids.push(h('div', { class: 'day' }, fmtDay(m.ts))); lastDay = d; newDay = true; }
+      const first = newDay || !prev || prev.type === 'call' || prev.mine !== m.mine || (!m.mine && prev.sender !== m.sender);
+      kids.push(bubble(m, first));
+      prev = m;
     }
-    if (!all.length) kids.push(h('div', { class: 'empty' }, search ? 'پیامی پیدا نشد' : 'هنوز پیامی نیست. پیام‌ها سرتاسری رمزنگاری می‌شوند 🔒'));
+    if (!all.length) kids.push(search ? emptyState('search', 'پیامی پیدا نشد', 'کلمهٔ دیگری را امتحان کنید.')
+      : h('div', { class: 'hello' }, emptyState('lock', 'هنوز پیامی نیست', 'پیام‌ها سرتاسری رمزنگاری می‌شوند؛ فقط شما و ' + (group ? 'اعضا' : E.nameOf(convo)) + ' می‌خوانید.',
+        !chan && !(group && E.writeBlock(convo)) && E.reqOf(convo) !== 'in' ? 'سلام 👋' : null, () => { forceBottom = true; E.sendText(convo, 'سلام 👋', null); })));
+    shownIds = new Set(shown.map((m) => m.id));
     fill(msgs, ...kids);
     if (fxFlying) { const t = fxTarget(msgs, fxFlying); if (t) t.style.visibility = 'hidden'; }
     if (forceBottom || (atBottom && !keep)) { msgs.scrollTop = msgs.scrollHeight; forceBottom = false; }
@@ -1520,7 +1595,7 @@ function ProfileScreen(convo) {
   const group = E.isGroup(convo);
   const body = h('div');
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, '→'), h('h1', null, group ? (E.isChan(convo) ? 'کانال' : 'گروه') : 'پروفایل')),
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.length > 1 ? history.back() : go('#/') }, ic('back')), h('h1', null, group ? (E.isChan(convo) ? 'کانال' : 'گروه') : 'پروفایل')),
     h('div', { class: 'scroll' }, body));
   const fp = h('div', { class: 'mono' });
   const render = batched(() => {
@@ -1786,6 +1861,12 @@ function SettingsScreen() {
     return c;
   };
   const setting = (label, desc, control) => h('div', { class: 'setting' }, h('div', { class: 'l' }, label, desc ? h('div', { class: 'd' }, desc) : null), control);
+  // 1.28: settings in rounded cards, each with a coloured icon
+  const card = (title, icon, color, ...kids) => h('div', { class: 'scard' }, h('div', { class: 'sh' }, h('span', { class: 'sico', style: { background: color } }, ic(icon, 18)), title), kids);
+  const accentRow = h('div', { class: 'accents' });
+  const renderAccents = () => fill(accentRow, ACCENTS.map(([n, c], i) => h('button', { class: 'acc' + (pref('accent', 0) === i ? ' on' : ''), title: n, 'aria-label': n,
+    onclick: () => { buzz(); setPref('accent', i); applyLook(); renderAccents(); } }, h('span', { style: { background: c } }, pref('accent', 0) === i ? ic('check', 20) : null))));
+  renderAccents();
   // privacy lives on the server (it decides what others get); both switches work both ways
   const privacy = (key, label, desc) => {
     const c = h('input', { type: 'checkbox', checked: !S.privacy[key], onchange: async () => {
@@ -1813,66 +1894,68 @@ function SettingsScreen() {
   renderPush();
 
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, '→'), h('h1', null, 'تنظیمات')),
-    h('div', { class: 'scroll' },
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, ic('back')), h('h1', null, 'تنظیمات')),
+    h('div', { class: 'scroll settings' },
       h('div', { class: 'profile-head' }, avBox, photoIn, h('div', { class: 'u', title: 'کپی لینک', style: { cursor: 'pointer' }, onclick: () => {
         const link = location.origin + '/@' + S.me;
         navigator.clipboard.writeText(link).then(() => toast('لینک شما کپی شد: ' + link), () => toast(link));
-      } }, '@' + S.me + ' 🔗')),
+      } }, '@' + S.me + ' ', ic('link', 16))),
       h('form', { class: 'form', onsubmit: async (e) => {
         e.preventDefault();
         const err = await E.saveProfile(name.value.trim(), bio.value.trim());
         msg.className = err ? 'err' : 'ok'; msg.textContent = err || 'ذخیره شد';
-      } }, h('div', { class: 'field' }, h('label', null, 'نام نمایشی'), name), h('div', { class: 'field' }, h('label', null, 'دربارهٔ من'), bio), msg, h('button', { class: 'btn', type: 'submit' }, 'ذخیرهٔ پروفایل')),
-      h('div', { class: 'section' }, 'ظاهر'),
-      setting('پوسته', null, select('theme', 'system', [['system', 'مثل گوشی'], ['light', 'روشن'], ['dark', 'تیره']], applyLook)),
-      setting('پس‌زمینهٔ طرح‌دار گفتگو', 'اگر خاموش کنید، پس‌زمینه ساده می‌شود', (() => { const c = toggle('wallpaper', true); c.addEventListener('change', applyLook); return c; })()),
-      setting('اندازهٔ متن', null, select('fontSize', 16, [[14, 'کوچک'], [16, 'معمولی'], [18, 'بزرگ'], [20, 'خیلی بزرگ']], applyLook)),
-      h('div', { class: 'section' }, 'استیکر'),
-      setting('استیکرهای من', 'ساختن پک، افزودن عکس یا فایل zip، مرتب‌کردن', h('button', { class: 'btn sm flat', onclick: () => go('#/stickers') }, 'باز کردن')),
-      h('div', { class: 'section' }, 'اعلان‌ها'),
-      setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
-      setting('نمایش افکت استیکر', 'استیکری که با نگه‌داشتن فرستاده شود، تمام‌صفحه می‌آید', toggle('stkFx', true)),
-      pushBox,
+      } }, h('div', { class: 'scard', style: { margin: '0' } }, h('div', { class: 'sh' }, h('span', { class: 'sico', style: { background: '#2A73C9' } }, ic('person', 18)), 'حساب'),
+        h('div', { class: 'form' }, h('div', { class: 'field' }, h('label', null, 'نام نمایشی'), name), h('div', { class: 'field' }, h('label', null, 'دربارهٔ من'), bio), msg, h('button', { class: 'btn', type: 'submit' }, 'ذخیرهٔ پروفایل')))),
+      card('ظاهر', 'palette', '#8E6CD8',
+        setting('رنگ اصلی', null, null), accentRow,
+        setting('پوسته', null, select('theme', 'system', [['system', 'مثل گوشی'], ['light', 'روشن'], ['dark', 'تیره']], applyLook)),
+        setting('پس‌زمینهٔ طرح‌دار گفتگو', 'اگر خاموش کنید، پس‌زمینه ساده می‌شود', (() => { const c = toggle('wallpaper', true); c.addEventListener('change', applyLook); return c; })()),
+        setting('اندازهٔ متن', null, select('fontSize', 16, [[14, 'کوچک'], [16, 'معمولی'], [18, 'بزرگ'], [20, 'خیلی بزرگ']], applyLook))),
+      card('استیکر', 'smile', '#F5A623',
+        setting('استیکرهای من', 'ساختن پک، افزودن عکس یا فایل zip، مرتب‌کردن', h('button', { class: 'btn sm flat', onclick: () => go('#/stickers') }, 'باز کردن'))),
+      card('اعلان‌ها', 'bell', '#E5534B',
+        setting('صدای پیام تازه', 'وقتی سپن باز است', toggle('sound', true)),
+        setting('نمایش افکت استیکر', 'استیکری که با نگه‌داشتن فرستاده شود، تمام‌صفحه می‌آید', toggle('stkFx', true)),
+        pushBox),
       // 1.15: only for users the admin allowed to choose the call path
-      S.meInfo.call_route ? h('div', { class: 'section' }, 'تماس') : null,
-      S.meInfo.call_route ? setting('مسیر پیش‌فرض تماس', 'تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.', (() => {
+      S.meInfo.call_route ? card('تماس', 'call', '#43A047',
+        setting('مسیر پیش‌فرض تماس', 'تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.', (() => {
         const sel = h('select', { onchange: () => Call.setDefaultRoute(sel.value) },
           Object.entries(Call.ROUTE_NAMES).map(([k, v]) => h('option', { value: k, selected: Call.defaultRoute() === k }, v)));
         return sel;
-      })()) : null,
-      h('div', { class: 'section' }, 'حریم خصوصی'),
-      privacy('hide_seen', 'نمایش «دیده شد» (دو تیک آبی)', 'اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.'),
-      setting('پیدا شدن با شمارهٔ موبایل', 'کسانی که شمارهٔ شما را دارند، می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به کسی نشان داده نمی‌شود.', (() => {
-        const c = h('input', { type: 'checkbox', checked: S.privacy.findable !== false, onchange: async () => {
-          c.disabled = true;
-          const e = await E.setPrivacy({ findable: c.checked });
-          c.disabled = false;
-          if (e) { toast(e); c.checked = S.privacy.findable !== false; }
-        } });
-        return c;
-      })()),
-      setting('پیام از کسانی که در مخاطبانم نیستند', 'هر کس نام کاربری شما را بداند می‌تواند تا ۳ پیام متنی بفرستد؛ پیام‌ها در «درخواست‌ها» می‌آیند و شما می‌پذیرید، رد می‌کنید یا مسدود می‌کنید. تماس از غریبه زنگ نمی‌خورد.', (() => {
-        const c = h('input', { type: 'checkbox', checked: S.privacy.allow_requests !== false, disabled: !S.meInfo.requests_on, onchange: async () => {
-          c.disabled = true;
-          const e = await E.setPrivacy({ allow_requests: c.checked });
-          c.disabled = false;
-          if (e) { toast(e); c.checked = S.privacy.allow_requests !== false; }
-        } });
-        return c;
-      })()),
-      privacy('hide_last_seen', 'نمایش آنلاین و آخرین بازدید', 'اگر خاموش کنید، دیگران فقط «اخیراً آنلاین بوده» می‌بینند و شما هم آخرین بازدید دیگران را نمی‌بینید.'),
-      h('div', { class: 'section' }, 'داده و فضا'),
-      setting('دانلود خودکار عکس‌ها و پیام‌های صوتی', 'تا ۲۵ مگابایت', toggle('autoImages', true)),
-      setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن')),
-      h('div', { class: 'section' }, 'امنیت'),
-      setting('رمز ورود', 'رمزی که با نام کاربری وارد می‌شوید؛ بعد از تغییر، دستگاه‌های دیگرتان از حساب خارج می‌شوند', h('button', { class: 'btn sm flat', onclick: passwordBox }, 'تغییر')),
-      setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
-      setting('ورود دستگاه تازه', 'کد یک‌بارمصرف برای ورود روی گوشی یا مرورگر دیگر، بدون پیامک و حتی بدون اینترنت', h('button', { class: 'btn sm flat', onclick: deviceCodeBox }, 'گرفتن کد')),
-      h('div', { class: 'hint' }, 'کد امنیتی شما:', h('br'), myFp),
-      h('div', { class: 'hint' }, 'اثر انگشت گواهی ریشهٔ سپن (SHA-256):', h('br'), caFp, h('br'), h('a', { href: '/setup' }, 'راهنمای نصب گواهی روی آیفون')),
-      h('div', { class: 'section' }, 'دربارهٔ سپن'),
-      setting('نسخهٔ وب', null, h('span', { class: 'd' }, faNum(VERSION.split('.')[0]) + '.' + faNum(VERSION.split('.')[1]) + '.' + faNum(VERSION.split('.')[2]))),
+      })())) : null,
+      card('حریم خصوصی', 'lock', '#2A73C9',
+        privacy('hide_seen', 'نمایش «دیده شد» (دو تیک آبی)', 'اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.'),
+        setting('پیدا شدن با شمارهٔ موبایل', 'کسانی که شمارهٔ شما را دارند، می‌توانند شما را در سپن پیدا کنند و درخواست ارتباط بفرستند. شماره‌تان به کسی نشان داده نمی‌شود.', (() => {
+          const c = h('input', { type: 'checkbox', checked: S.privacy.findable !== false, onchange: async () => {
+            c.disabled = true;
+            const e = await E.setPrivacy({ findable: c.checked });
+            c.disabled = false;
+            if (e) { toast(e); c.checked = S.privacy.findable !== false; }
+          } });
+          return c;
+        })()),
+        setting('پیام از کسانی که در مخاطبانم نیستند', 'هر کس نام کاربری شما را بداند می‌تواند تا ۳ پیام متنی بفرستد؛ پیام‌ها در «درخواست‌ها» می‌آیند و شما می‌پذیرید، رد می‌کنید یا مسدود می‌کنید. تماس از غریبه زنگ نمی‌خورد.', (() => {
+          const c = h('input', { type: 'checkbox', checked: S.privacy.allow_requests !== false, disabled: !S.meInfo.requests_on, onchange: async () => {
+            c.disabled = true;
+            const e = await E.setPrivacy({ allow_requests: c.checked });
+            c.disabled = false;
+            if (e) { toast(e); c.checked = S.privacy.allow_requests !== false; }
+          } });
+          return c;
+        })()),
+        privacy('hide_last_seen', 'نمایش آنلاین و آخرین بازدید', 'اگر خاموش کنید، دیگران فقط «اخیراً آنلاین بوده» می‌بینند و شما هم آخرین بازدید دیگران را نمی‌بینید.')),
+      card('داده و فضا', 'data', '#16A085',
+        setting('دانلود خودکار عکس‌ها و پیام‌های صوتی', 'تا ۲۵ مگابایت', toggle('autoImages', true)),
+        setting('پاک کردن عکس‌ها و فایل‌های ذخیره‌شده', 'پیام‌ها می‌مانند', h('button', { class: 'btn sm flat', onclick: async () => { await E.clearMediaCache(); toast('پاک شد'); } }, 'پاک کردن'))),
+      card('امنیت', 'shield', '#607D8B',
+        setting('رمز ورود', 'رمزی که با نام کاربری وارد می‌شوید؛ بعد از تغییر، دستگاه‌های دیگرتان از حساب خارج می‌شوند', h('button', { class: 'btn sm flat', onclick: passwordBox }, 'تغییر')),
+        setting('رمز کلید', 'کلید رمزنگاری روی سرور با این رمز قفل است', h('button', { class: 'btn sm flat', onclick: () => go('#/keypass') }, 'تغییر')),
+        setting('ورود دستگاه تازه', 'کد یک‌بارمصرف برای ورود روی گوشی یا مرورگر دیگر، بدون پیامک و حتی بدون اینترنت', h('button', { class: 'btn sm flat', onclick: deviceCodeBox }, 'گرفتن کد')),
+        h('div', { class: 'hint' }, 'کد امنیتی شما:', h('br'), myFp),
+        h('div', { class: 'hint' }, 'اثر انگشت گواهی ریشهٔ سپن (SHA-256):', h('br'), caFp, h('br'), h('a', { href: '/setup' }, 'راهنمای نصب گواهی روی آیفون'))),
+      card('دربارهٔ سپن', 'info', '#607D8B',
+        setting('نسخهٔ وب', null, h('span', { class: 'd' }, faNum(VERSION.split('.')[0]) + '.' + faNum(VERSION.split('.')[1]) + '.' + faNum(VERSION.split('.')[2])))),
       h('div', { class: 'actions' }, h('button', { class: 'btn danger', onclick: async () => {
         if (await confirmBox('خروج از حساب', 'پیام‌های ذخیره‌شده روی این دستگاه پاک می‌شوند. خارج می‌شوید؟', 'خروج', true)) E.logout();
       } }, 'خروج از حساب'))));
@@ -2248,7 +2331,7 @@ function StickersScreen() {
       h('div', { class: 'hint' }, 'برای افزودن پک کسی دیگر، روی استیکری که فرستاده بزنید و «نمایش پک» را انتخاب کنید. با نگه داشتن یک استیکر در پنل، به علاقه‌مندی‌ها اضافه یا از آن برداشته می‌شود.'));
   }
   const el = h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.back() }, '→'), h('h1', null, 'استیکرهای من')), body);
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => history.back() }, ic('back')), h('h1', null, 'استیکرهای من')), body);
   render();
   E.refreshStickers().catch(() => { });
   return { el, update: (k) => { if (k === 'stickers') render(); } };
@@ -2283,17 +2366,32 @@ function StickerPackScreen(id) {
       photoIn, filesIn);
   }
   const el = h('div', { style: { display: 'flex', flexDirection: 'column', height: '100%' } },
-    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/stickers') }, '→'), title), body);
+    h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/stickers') }, ic('back')), title), body);
   render();
   return { el, update: (k) => { if (k === 'stickers') render(); } };
 }
 
 // ---------------- call screen (overlay above everything) ----------------
 // ---------------- 1.19: group calls ----------------
-function tabsRow(cur) {
-  return h('div', { class: 'tabs' },
-    h('button', { class: cur === 'chats' ? 'on' : '', onclick: () => go('#/') }, 'گفتگوها'),
-    h('button', { class: cur === 'calls' ? 'on' : '', onclick: () => go('#/calls') }, 'تماس‌ها'));
+/** 1.28: round call buttons with a picture and a caption under them; the green «answer» one pulses */
+const CALL_IC = { '✕': 'callEnd', '📞': 'call', '🎥': 'video', '🎙': 'mic', '🔇': 'micOff', '📷': 'video', '🚫': 'videoOff', '🚫📷': 'videoOff', '🔄': 'flipCamera', '👤+': 'personAdd', '✋': 'hand', '😀': 'smile' };
+function callBtn(label, cls, fn, t) {
+  const b = h('button', { class: 'cb ' + cls + (cls === 'green' ? ' pulse' : ''), title: t, 'aria-label': t, onclick: () => { buzz(); fn(); } }, CALL_IC[label] ? ic(CALL_IC[label], 28) : label);
+  return h('div', { class: 'cbw' }, b, h('span', null, t));
+}
+/** 1.28: bottom bar: chats (with the unread count), calls, settings */
+function bottomNav(cur) {
+  const badge = h('span', { class: 'badge hidden' });
+  const item = (key, icon, label, hash, extra) => h('button', { class: 'bi' + (cur === key ? ' on' : ''), onclick: () => { if (cur !== key) { buzz(); go(hash); } } },
+    h('span', { class: 'bic' }, ic(icon, 24), extra), h('span', { class: 'bl' }, label));
+  const el = h('nav', { class: 'bnav' }, item('chats', 'chat', 'گفتگوها', '#/', badge), item('calls', 'call', 'تماس‌ها', '#/calls'), item('settings', 'gear', 'تنظیمات', '#/settings'));
+  const update = () => {
+    const n = E.summaries().reduce((a, x) => a + (x.unread || 0), 0);
+    badge.textContent = n > 99 ? '+' + faNum(99) : faNum(n);
+    badge.classList.toggle('hidden', !n);
+  };
+  update();
+  return { el, update };
 }
 
 /** Picks people from a list (checkboxes); resolves to the chosen usernames, or null. */
@@ -2352,11 +2450,12 @@ async function newCall() {
 
 function CallsScreen() {
   const list = h('div', { class: 'scroll' });
-  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden' } },
-    h('div', { class: 'bar' }, h('h1', null, 'تماس‌ها'),
-      h('button', { class: 'icon newcall', title: 'تماس جدید', onclick: newCall }, '📞+')),
-    tabsRow('calls'), list);
+  const nav = bottomNav('calls');
+  const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' } },
+    h('div', { class: 'bar' }, h('h1', null, 'تماس‌ها')),
+    list, h('button', { class: 'fab green', title: 'تماس جدید', onclick: () => { buzz(); newCall(); } }, ic('call')), nav.el);
   const render = batched(() => {
+    nav.update();
     const logs = [];
     for (const [convo, msgs] of S.convos) for (const m of msgs) if (m.type === 'call') logs.push(m);
     logs.sort((a, b) => b.ts - a.ts);
@@ -2375,14 +2474,15 @@ function CallsScreen() {
         const row = h('div', { class: 'row' }, avatar(m.convo, 'sm'),
           h('div', { class: 'mid', onclick: () => { if (!wasLong()) go('#/c/' + encodeURIComponent(m.convo)); } },
             h('div', { class: 'name' + (missed ? ' missed' : '') }, E.titleOf(m.convo)),
-            h('div', { class: 'prev' }, (m.mine ? '↗ ' : '↙ ') + (m.text || '') + ' · ' + fmtListTime(m.ts))),
-          group ? h('button', { class: 'icon', title: 'تماس گروهی', onclick: () => groupCall(m.convo) }, '📞')
-            : h('button', { class: 'icon', title: 'تماس', onclick: () => Call.startCall(m.convo, false) }, '📞'));
+            h('div', { class: 'prev' }, h('span', { class: 'cdir' + (missed ? ' missed' : '') }, ic(m.mine ? 'callMade' : 'callReceived', 15)), ' ' + (m.text || '') + ' · ' + fmtListTime(m.ts))),
+          group ? h('button', { class: 'icon', title: 'تماس گروهی', onclick: () => groupCall(m.convo) }, ic('call'))
+            : h('button', { class: 'icon', title: 'تماس', onclick: () => Call.startCall(m.convo, false) }, ic('call')));
         // 1.27: long-press / right-click › «حذف از تاریخچه»
         const wasLong = onLongPress(row, () => sheet(E.titleOf(m.convo), [{ label: 'حذف از تاریخچه', danger: true, run: () => E.deleteLocal(m) }]));
         return row;
       }),
-      !logs.length && !live.length ? h('div', { class: 'empty' }, 'هنوز تماسی ندارید. با دکمهٔ 📞+ با یک یا چند نفر تماس بگیرید.') : null);
+      !logs.length && !live.length ? emptyState('call', 'هنوز تماسی ندارید', 'با یک یا چند نفر تماس صوتی یا تصویری بگیرید.', 'تماس تازه', newCall) : null,
+      h('div', { style: { height: '84px' } }));
   });
   render();
   return { el, update: (k) => { if (k === 'msg' || k === 'gcall' || k === 'users') render(); } };
@@ -2404,7 +2504,7 @@ function renderGcall(g) {
   const r = g.room;
   if (!r) { fill(gcEl, h('div', { class: 'info' }, h('h2', null, 'تماس گروهی'), h('div', null, g.note || 'در حال پیوستن…'))); return; }
   const title = r.title || (r.host === S.me ? 'تماس گروهی' : E.nameOf(r.host));
-  const btn = (label, cls, fn, t) => h('button', { class: 'cb ' + cls, title: t, onclick: fn }, label);
+  const btn = callBtn;
   if (g.phase === 'incoming') {
     fill(gcEl, h('div', { class: 'info' }, avatar(r.group || r.host, 'lg'), h('h2', null, title), h('div', null, (r.video ? 'تماس تصویری گروهی از ' : 'تماس صوتی گروهی از ') + E.nameOf(g.by)),
       h('div', { class: 'avs' }, r.parts.map((p) => avatar(p.u, 'sm')))),
@@ -2434,10 +2534,10 @@ function renderGcall(g) {
   const ringing = r.ringing.filter((u) => !r.parts.some((p) => p.u === u));
   fill(gcEl,
     h('div', { class: 'gtop' }, h('div', null, h('b', null, title), h('div', { class: 'mut' }, Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0') + ' · ' + faNum(r.parts.length) + ' نفر' + (ringing.length ? ' · در حال زنگ: ' + ringing.map(E.nameOf).join('، ') : ''))),
-      h('button', { class: 'icon', title: 'افزودن نفر', onclick: addPeople }, '👤+')),
+      h('button', { class: 'icon', title: 'افزودن نفر', onclick: addPeople }, ic('personAdd', 22))),
     h('div', { class: 'tiles n' + Math.min(shown.length, 9) + (pinned ? ' pinned' : '') + (shown.some(vidOf) ? ' hasvid' : '') }, tiles),
     pip ? h('div', { class: 'gpip', onclick: () => GC.pin(S.me) }, videoEl(S.me, g.videos[S.me], g.front),
-      h('button', { class: 'gswitch', title: 'دوربین جلو / عقب', onclick: (e) => { e.stopPropagation(); GC.switchCam(); } }, '🔄')) : null,
+      h('button', { class: 'gswitch', title: 'دوربین جلو / عقب', onclick: (e) => { e.stopPropagation(); GC.switchCam(); } }, ic('flipCamera', 18))) : null,
     h('div', { class: 'ctrls' },
       btn(g.muted ? '🔇' : '🎙', g.muted ? 'on' : '', GC.toggleMute, 'میکروفون'),
       GC.videoOn() ? btn(g.cam ? '📷' : '🚫📷', g.cam ? 'on' : '', GC.toggleCam, 'دوربین') : null,
@@ -2546,7 +2646,7 @@ function renderCall(c) {
   // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
   const routeLine = c.canRoute && c.phase === 'active' && c.note ? h('div', { class: 'route-now' }, c.note) : null;
   const info = h('div', { class: 'info' }, h('h2', null, E.nameOf(c.peer)), h('div', null, status), busyLine, routeLine);
-  const btn = (label, cls, fn, title) => h('button', { class: 'cb ' + cls, title, onclick: fn }, label);
+  const btn = callBtn;
   const ctrls = c.phase === 'incoming'
     ? h('div', { class: 'ctrls' }, btn('✕', 'red', Call.decline, 'رد'), btn(c.video ? '🎥' : '📞', 'green', Call.accept, 'پاسخ'))
     : c.phase === 'outgoing' && c.busy === 1
@@ -2565,7 +2665,7 @@ function renderCall(c) {
   if (c.canRoute && c.phase === 'active') {
     const shown = routePanelOn() && c.peerRoute;
     const tog = h('button', { class: 'rtog' + (shown ? ' on' : ''), title: c.peerRoute ? 'نمایش / پنهان کردن مسیر اتصال' : 'طرف مقابل نسخهٔ قدیمی سپن را دارد؛ تغییر مسیر ممکن نیست', disabled: !c.peerRoute,
-      onclick: () => { setRoutePanel(!routePanelOn()); renderCall(Call.C); } }, '🔀');
+      onclick: () => { setRoutePanel(!routePanelOn()); renderCall(Call.C); } }, ic('route', 20));
     let panel = null;
     if (shown) {
       const pick = (m) => () => { routeLevel = 'top'; Call.setRoute(m); renderCall(Call.C); };

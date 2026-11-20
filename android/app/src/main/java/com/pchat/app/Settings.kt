@@ -1,5 +1,9 @@
 package com.pchat.app
 
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.width
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
@@ -95,6 +99,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
     LaunchedEffect(confirmClear) { if (!confirmClear) usage = withContext(Dispatchers.IO) { Engine.storageUsage() } }
     val hasPhoto = (self?.avatarVer ?: 0) > 0
     val changed = name.trim() != (self?.displayName ?: "") || bio.trim() != (self?.bio ?: "")
+    val ctx = androidx.compose.ui.platform.LocalContext.current
 
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
@@ -113,9 +118,11 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             )
         }
     ) { pad ->
-        Column(Modifier.padding(pad).fillMaxSize().verticalScroll(rememberScrollState())) {
+        // 1.28: the settings sit in round cards on a soft background, each section with its own coloured icon
+        Column(Modifier.padding(pad).fillMaxSize().background(if (Look.dark()) Color(0xFF0E1621) else Color(0xFFEEF2F6)).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)) {
             // ---- profile header ----
-            Column(Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surface).padding(vertical = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 Box {
                     Box(Modifier.clip(CircleShape).clickable(enabled = !busy) { photoMenu = true }) { Avatar(Engine.me, false, 104) }
                     DropdownMenu(expanded = photoMenu, onDismissRequest = { photoMenu = false }) {
@@ -138,7 +145,7 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             }
 
             // ---- account ----
-            SectionTitle("حساب")
+            SettingsCard("حساب", SIcons.person, Color(0xFF2A73C9)) {
             Column(Modifier.padding(horizontal = 16.dp)) {
                 OutlinedTextField(
                     value = name, onValueChange = { if (it.length <= 40) name = it }, singleLine = true,
@@ -162,38 +169,56 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             }
 
             // ---- stickers (1.10) ----
-            SectionTitle("استیکر")
+            }
+            SettingsCard("استیکر", SIcons.smile, Color(0xFFF5A623)) {
             SettingRow("استیکرهای من", "ساختن پک از عکس‌ها، افزودن فایل یا zip، مرتب‌کردن") { showStickers = true }
             SwitchRow("نمایش افکت استیکر", "استیکری که با نگه‌داشتن فرستاده شود، تمام‌صفحه می‌آید", Prefs.stickerFx.also { notifTick }) { Prefs.stickerFx = it }
 
             // ---- notifications ----
-            SectionTitle("اعلان‌ها")
+            }
+            SettingsCard("اعلان‌ها", SIcons.bell, Color(0xFFE5534B)) {
             SwitchRow("پیام‌های خصوصی", "نمایش اعلان برای گفتگوهای خصوصی", Prefs.notifyPrivate.also { notifTick }) { Prefs.notifyPrivate = it }
             SwitchRow("گروه‌ها", "نمایش اعلان برای پیام‌های گروه", Prefs.notifyGroups.also { notifTick }) { Prefs.notifyGroups = it }
             SwitchRow("صدا", null, Prefs.sound.also { notifTick }) { Prefs.sound = it }
             SwitchRow("لرزش", null, Prefs.vibrate.also { notifTick }) { Prefs.vibrate = it }
-            Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ 🔔 بالای همان گفتگو را بزنید.", fontSize = 12.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
+            Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ زنگوله بالای همان گفتگو را بزنید.", fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
 
             // ---- calls ----
-            SectionTitle("تماس")
+            }
+            SettingsCard("تماس", SIcons.call, Color(0xFF43A047)) {
             // 1.26: a Sepan caller sees «busy» (and may wait) while I'm on a phone call or another messenger's call
             var showBusy by remember { mutableStateOf(Prefs.showBusy) }
             SwitchRow("نمایش «در حال مکالمه»", "وقتی با تلفن یا پیام‌رسان دیگری صحبت می‌کنید، تماس‌گیرندهٔ ${BuildConfig.APP_NAME} به‌جای زنگ خوردن می‌بیند که مشغولید و می‌تواند منتظر بماند", showBusy) { Prefs.showBusy = it; showBusy = it }
             // 1.15: only users the admin allowed to choose the call path
             val canRoute by Engine.callRoute.collectAsState()
             if (canRoute) {
-                Text("مسیر پیش‌فرض تماس: تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ 🔀 عوض می‌شود.",
+                Text("مسیر پیش‌فرض تماس: تماس با این مسیر برقرار می‌شود (اگر طرف مقابل هم نسخهٔ تازه داشته باشد). در خود تماس هم با دکمهٔ مسیر عوض می‌شود.",
                     fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(horizontal = 16.dp))
                 val cr by Prefs.callRoute.collectAsState()
                 for ((k, label) in CallManager.ROUTE_NAMES) RadioRow(label, cr == k) { Prefs.setCallRoute(k) }
             }
 
             // ---- appearance ----
-            SectionTitle("ظاهر")
+            }
+            SettingsCard("ظاهر", SIcons.palette, Color(0xFF8E6CD8)) {
             val theme by Prefs.theme.collectAsState()
             for ((v, label) in listOf(Prefs.THEME_SYSTEM to "مطابق تنظیمات گوشی", Prefs.THEME_LIGHT to "روشن", Prefs.THEME_DARK to "تیره")) {
                 RadioRow(label, theme == v) { Prefs.setTheme(v) }
+            }
+            // 1.28: the app's main colour
+            val acc by Prefs.accent.collectAsState()
+            Text("رنگ اصلی برنامه", fontSize = 15.sp, modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 10.dp))
+            Row(Modifier.padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                for ((i, a) in Look.accents.withIndex()) {
+                    val c = if (Look.dark()) a.dark else a.light
+                    Box(Modifier.size(48.dp).clip(CircleShape).clickable { Prefs.setAccent(i) }, contentAlignment = Alignment.Center) {
+                        Box(
+                            Modifier.size(34.dp).then(if (i == acc) Modifier.border(2.dp, c, CircleShape).padding(4.dp) else Modifier).clip(CircleShape).background(c),
+                            contentAlignment = Alignment.Center
+                        ) { if (i == acc) Icon(SIcons.check, a.name, tint = Color.White, modifier = Modifier.size(16.dp)) }
+                    }
+                }
             }
             val wall by Prefs.wallpaper.collectAsState()
             SwitchRow("پس‌زمینهٔ طرح‌دار گفتگو", "اگر خاموش کنید، پس‌زمینه ساده می‌شود", wall) { Prefs.setWallpaper(it) }
@@ -211,10 +236,10 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             Text("نمونهٔ متن پیام با این اندازه", fontSize = textSize.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
 
             // ---- privacy and security ----
-            SectionTitle("حریم خصوصی و امنیت")
+            }
+            SettingsCard("حریم خصوصی و امنیت", SIcons.lock, Color(0xFF2A73C9)) {
             val hideSeen by Engine.hideSeen.collectAsState()
             val hideLast by Engine.hideLastSeen.collectAsState()
-            val ctx = androidx.compose.ui.platform.LocalContext.current
             SwitchRow(
                 "نمایش «دیده شد» (دو تیک آبی)",
                 "اگر خاموش کنید، دیگران نمی‌بینند پیامشان را خوانده‌اید و شما هم «دیده شد» آن‌ها را نمی‌بینید. فقط گفتگوهای خصوصی؛ در گروه همیشه نمایش داده می‌شود.",
@@ -249,7 +274,8 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             SettingRow("ورود دستگاه تازه", "کد یک‌بارمصرف برای ورود روی گوشی یا مرورگر دیگر، بدون پیامک و حتی بدون اینترنت") { showDevCode = true }
 
             // ---- data and storage ----
-            SectionTitle("داده و حافظه")
+            }
+            SettingsCard("داده و حافظه", SIcons.data, Color(0xFF16A085)) {
             Text("دانلود خودکار عکس‌ها و پیام‌های صوتی", fontSize = 15.sp, modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
             val auto = Prefs.autoDownload.also { notifTick }
             for ((v, label) in listOf(Prefs.AUTO_ALWAYS to "همیشه", Prefs.AUTO_WIFI to "فقط با وای‌فای", Prefs.AUTO_NEVER to "هرگز (با ضربه دانلود شود)")) {
@@ -258,7 +284,8 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             SettingRow("فضای استفاده‌شده", (usage?.let { U.size(it) } ?: "در حال محاسبه…") + " · پاک کردن فایل‌های ذخیره‌شده") { confirmClear = true }
 
             // ---- 1.9: in-app update ----
-            SectionTitle("دربارهٔ ${BuildConfig.APP_NAME}")
+            }
+            SettingsCard("دربارهٔ ${BuildConfig.APP_NAME}", SIcons.info, Color(0xFF607D8B)) {
             SettingRow("به‌روزرسانی برنامه", "نسخهٔ فعلی: " + Updater.installedName(ctx) + (if (checking) " · در حال بررسی…" else " · بررسی نسخهٔ تازه")) {
                 if (!checking) {
                     checking = true
@@ -271,10 +298,11 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
                 }
             }
 
+            }
+            Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surface)) {
+                SettingRow("خروج از حساب", null, color = MaterialTheme.colorScheme.error, onClick = onLogout)
+            }
             Spacer(Modifier.height(12.dp))
-            HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-            SettingRow("خروج از حساب", null, color = MaterialTheme.colorScheme.error, onClick = onLogout)
-            Spacer(Modifier.height(24.dp))
         }
     }
     if (showKeys) KeysDialog(users.map { it.username }.filter { it != Engine.me }) { showKeys = false }
@@ -374,6 +402,21 @@ private fun PinField(value: String, label: String, onChange: (String) -> Unit) {
         label = { Text(label) }, visualTransformation = PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword), modifier = Modifier.fillMaxWidth()
     )
+}
+
+/** 1.28: one settings section: a round card with a coloured icon and the section name on top */
+@Composable
+fun SettingsCard(title: String, icon: androidx.compose.ui.graphics.vector.ImageVector, color: Color, content: @Composable () -> Unit) {
+    Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).background(MaterialTheme.colorScheme.surface).padding(bottom = 6.dp)) {
+        Row(Modifier.padding(start = 14.dp, end = 14.dp, top = 14.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(30.dp).clip(RoundedCornerShape(9.dp)).background(color), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = Color.White, modifier = Modifier.size(18.dp))
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
+        }
+        content()
+    }
 }
 
 @Composable

@@ -25,7 +25,27 @@ object U {
     }
     /** A number in Persian digits («۸»). */
     fun fa(n: Int): String = n.toString().map { if (it in '0'..'9') '۰' + (it - '0') else it }.joinToString("")
-    fun time(ts: Long): String = SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(ts))
+    /** 1.28: every ASCII digit in [s] as a Persian one («12:45» -> «۱۲:۴۵») */
+    fun faDigits(s: String): String = buildString(s.length) { for (ch in s) append(if (ch in '0'..'9') '۰' + (ch - '0') else ch) }
+    fun time(ts: Long): String = faDigits(SimpleDateFormat("HH:mm", Locale.US).format(Date(ts)))
+    /** 1.28: the chat list's time: today = the hour, yesterday = «دیروز», this week = the weekday, else the Persian date */
+    fun listTime(ts: Long): String {
+        val today = dayKey(System.currentTimeMillis())
+        val d = dayKey(ts)
+        val ago = (System.currentTimeMillis() - ts) / 86_400_000L
+        return when {
+            d == today -> time(ts)
+            d == dayKey(System.currentTimeMillis() - 86_400_000L) -> "دیروز"
+            ago < 6 -> android.icu.text.SimpleDateFormat("EEEE", android.icu.util.ULocale("fa_IR")).format(Date(ts))
+            else -> android.icu.text.SimpleDateFormat("d MMMM", android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date(ts))
+        }
+    }
+    /** 1.28: the day chip over the messages: «امروز», «دیروز» or the Persian date */
+    fun dayLabel(ts: Long): String = when (dayKey(ts)) {
+        dayKey(System.currentTimeMillis()) -> "امروز"
+        dayKey(System.currentTimeMillis() - 86_400_000L) -> "دیروز"
+        else -> android.icu.text.SimpleDateFormat("d MMMM yyyy", android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date(ts))
+    }
     /** Full Persian (Solar Hijri) date and time, e.g. «۲ آبان ۱۴۰۵، ۱۴:۲۲». */
     fun fullDate(ts: Long): String =
         android.icu.text.SimpleDateFormat("d MMMM yyyy، HH:mm", android.icu.util.ULocale("fa_IR@calendar=persian")).format(Date(ts))
@@ -61,7 +81,7 @@ object U {
     /** 0:07, 1:25, 12:03 */
     fun dur(ms: Long): String {
         val s = (ms / 1000).coerceAtLeast(0)
-        return "%d:%02d".format(Locale.US, s / 60, s % 60)
+        return faDigits("%d:%02d".format(Locale.US, s / 60, s % 60))
     }
 
     /** «آنلاین», «۵ دقیقه پیش آنلاین بود», «آخرین بازدید دیروز ۱۴:۲۰», or «اخیراً آنلاین بوده» when hidden. */
