@@ -1,5 +1,7 @@
 package com.pchat.app
 
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.Animatable
@@ -578,7 +580,25 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
             }
             if (results != null && results.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("چیزی پیدا نشد", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
+                    // 1.28
+                    Box(Modifier.padding(24.dp).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))) {
+                        EmptyState(SIcons.search, "چیزی پیدا نشد", "کلمهٔ دیگری را امتحان کنید.")
+                    }
+                }
+            } else if (results == null && rowsList.isEmpty() && !isGroup && writeBlock == null && canSend) {
+                // 1.28: a new chat with nobody's words yet: a card that offers to say hello with one tap
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(
+                        Modifier.padding(32.dp).clip(RoundedCornerShape(20.dp)).background(Color.Black.copy(alpha = 0.22f))
+                            .clickable { Ui.tick(haptic); Engine.sendText(convo, "سلام 👋", null) }.padding(horizontal = 28.dp, vertical = 22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Text("هنوز پیامی نیست", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("برای شروع، یک سلام بفرستید", color = Color.White.copy(alpha = 0.85f), fontSize = 13.sp)
+                        Spacer(Modifier.height(10.dp))
+                        Text("👋", fontSize = 64.sp)
+                        Text("سلام بفرست", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    }
                 }
             } else Box(Modifier.weight(1f).fillMaxWidth()) {
                 CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr, LocalOpenMention provides openMention, LocalMediaActions provides mediaActions) {
@@ -1044,7 +1064,7 @@ fun Bubble(
                                 if (m.status == 0) {
                                     val waiting by Engine.waitingDownloads.collectAsState()
                                     if (progress != null) {
-                                        Text("${(progress * 100).toInt()}٪", color = sub, fontSize = 12.sp)
+                                        Text(U.fa((progress * 100).toInt()) + "٪", color = sub, fontSize = 12.sp)
                                     } else if (m.id in waiting) {
                                         // 1.8: cut off by the network; continues by itself from where it stopped
                                         Text("⏸ ادامه بعد از اتصال", color = sub, fontSize = 12.sp, modifier = Modifier.clickable { Engine.resumeDownloads() })
@@ -1186,7 +1206,7 @@ private fun VoiceContent(m: Msg, progress: Float?, sub: Color) {
     val accent = MaterialTheme.colorScheme.primary
     Row(verticalAlignment = Alignment.CenterVertically) {
         Box(
-            Modifier.size(44.dp).clip(CircleShape).background(accent).clickable {
+            Modifier.size(46.dp).clip(CircleShape).background(accent).clickable {
                 val p = m.localPath
                 if (p != null && File(p).exists()) VoicePlayer.toggle(m.id, p)
                 else if (progress == null && m.fileId != null) scope.launch {
@@ -1198,7 +1218,7 @@ private fun VoiceContent(m: Msg, progress: Float?, sub: Color) {
             contentAlignment = Alignment.Center
         ) {
             if (progress != null && m.localPath == null) CircularProgressIndicator(Modifier.size(24.dp), color = Color.White, strokeWidth = 2.dp)
-            else Text(if (playing) "❚❚" else "▶", color = Color.White, fontSize = 16.sp)
+            else Icon(if (playing) SIcons.pause else SIcons.play, contentDescription = if (playing) "توقف" else "پخش", tint = Color.White, modifier = Modifier.size(26.dp))
         }
         Column(Modifier.padding(start = 8.dp)) {
             val bars = if (m.wave.isNotEmpty()) m.wave else List(50) { 3 }
@@ -1244,7 +1264,7 @@ private fun LocationContent(l: Loc, fg: Color, sub: Color) {
         Modifier.clip(RoundedCornerShape(10.dp)).clickable { GeoLocation.openMap(ctx, l) }.padding(4.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(Modifier.size(46.dp).clip(CircleShape).background(Color(0xFFE53935)), contentAlignment = Alignment.Center) { Text("📍", fontSize = 22.sp) }
+        Box(Modifier.size(46.dp).clip(CircleShape).background(Color(0xFFE53935)), contentAlignment = Alignment.Center) { Icon(SIcons.location, null, tint = Color.White) }
         Column(Modifier.padding(horizontal = 10.dp)) {
             Text("موقعیت مکانی", color = fg, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
             Text(GeoLocation.coords(l) + if (l.acc > 0) " · ±${l.acc} م" else "", color = sub, fontSize = 12.sp)
@@ -1262,8 +1282,8 @@ private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (Stri
     }
     val ratio = if (m.w > 0 && m.h > 0) (m.w.toFloat() / m.h).coerceIn(0.5f, 2f) else 1f
     Box(
-        Modifier.width(240.dp).aspectRatio(ratio).clip(RoundedCornerShape(8.dp))
-            .background(Color.Gray.copy(alpha = 0.25f))
+        Modifier.width(240.dp).aspectRatio(ratio).clip(RoundedCornerShape(12.dp))
+            .background(if (bmp == null) shimmer() else SolidColor(Color.Transparent))
             // 1.12: a long press opens the message menu (reply, forward, save…), like every other message
             .combinedClickable(onLongClick = onLong) {
                 if (m.localPath != null) onImage(m.localPath)
@@ -1272,11 +1292,22 @@ private fun ImageContent(m: Msg, progress: Float?, auto: Boolean, onImage: (Stri
         contentAlignment = Alignment.Center
     ) {
         val b = bmp
-        if (b != null) Image(b, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-        else if (m.localPath == null && !auto && progress == null) Text("⬇ ${U.size(m.size)}", color = Color.White, fontSize = 14.sp)
-        else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            CircularProgressIndicator(Modifier.size(28.dp), strokeWidth = 2.dp)
-            if (progress != null) Text("${(progress * 100).toInt()}٪", fontSize = 12.sp, color = Color.White)
+        // 1.28: the photo fades in; while it is on its way a shimmer and a ring that fills up
+        val shown by animateFloatAsState(if (b != null) 1f else 0f, tween(250), label = "imgIn")
+        if (b != null) Image(b, contentDescription = null, modifier = Modifier.fillMaxSize().alpha(shown), contentScale = ContentScale.Crop)
+        else if (m.localPath == null && !auto && progress == null) Row(
+            Modifier.clip(RoundedCornerShape(50)).background(Color.Black.copy(alpha = 0.45f)).padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(SIcons.download, null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(4.dp))
+            Text(U.size(m.size), color = Color.White, fontSize = 13.sp)
+        }
+        else Box(Modifier.size(52.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
+            if (progress != null) {
+                CircularProgressIndicator(progress = { progress }, modifier = Modifier.size(40.dp), strokeWidth = 3.dp, color = Color.White, trackColor = Color.White.copy(alpha = 0.25f))
+                Text(U.fa((progress * 100).toInt()) + "٪", fontSize = 10.sp, color = Color.White)
+            } else CircularProgressIndicator(Modifier.size(32.dp), strokeWidth = 3.dp, color = Color.White)
         }
     }
 }

@@ -1,5 +1,7 @@
 package com.pchat.app
 
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.shadow
 import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
@@ -318,7 +320,8 @@ fun CallsTab(onOpen: (String) -> Unit) {
                 }
             }
             if (logs.isEmpty()) item(key = "empty") {
-                Text("هنوز تماسی نیست. با «📞+» تماس تازه بگیرید.", color = dim, modifier = Modifier.padding(20.dp))
+                // 1.28
+                EmptyState(SIcons.call, "هنوز تماسی نیست", "تماس‌های صوتی و تصویری این‌جا می‌آیند. با دکمهٔ سبز پایین صفحه تماس تازه بگیرید.")
             }
             items(logs, key = { "log:" + it.id }) { m ->
                 val missed = m.text.contains("بی‌پاسخ") || m.text.contains("از دست رفته")
@@ -339,38 +342,42 @@ fun CallsTab(onOpen: (String) -> Unit) {
                             color = if (missed) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            (if (m.mine) "↗ " else "↙ ") + m.text.removePrefix("📞 ") + " · " + U.fullDate(m.ts),
-                            fontSize = 13.sp, color = dim, maxLines = 1, overflow = TextOverflow.Ellipsis
+                            (if (m.mine) "↗ " else "↙ ") + m.text.removePrefix("📞 ") + " · " + U.listTime(m.ts),
+                            fontSize = 13.sp, color = if (missed) MaterialTheme.colorScheme.error.copy(alpha = 0.8f) else dim, maxLines = 1, overflow = TextOverflow.Ellipsis
                         )
                     }
                     val can = if (group) GroupCall.cfg.value.on && Engine.groups.value.any { it.key == m.convo && it.call } else m.convo in callablePeople()
-                    if (can) Text(
-                        "📞", fontSize = 20.sp,
-                        modifier = Modifier.clip(CircleShape).clickable { if (group) actions.groupCall(m.convo) else actions.callOne(m.convo) }.padding(8.dp)
-                    )
+                    if (can) Box(
+                        Modifier.size(48.dp).clip(CircleShape).clickable { if (group) actions.groupCall(m.convo) else actions.callOne(m.convo) },
+                        contentAlignment = Alignment.Center
+                    ) { Icon(SIcons.call, contentDescription = "تماس", tint = MaterialTheme.colorScheme.primary) }
                 }
                 }
             }
+            item(key = "fab_room") { Spacer(Modifier.height(90.dp)) }
         }
         Box(
-            Modifier.align(Alignment.BottomEnd).navigationBarsPadding().padding(20.dp).size(58.dp).clip(CircleShape)
-                .background(MaterialTheme.colorScheme.primary).clickable { actions.newCall() },
+            Modifier.align(Alignment.BottomEnd).padding(18.dp).size(58.dp).shadow(4.dp, RoundedCornerShape(18.dp)).clip(RoundedCornerShape(18.dp))
+                .background(Color(0xFF43A047)).clickable { actions.newCall() },
             contentAlignment = Alignment.Center
-        ) { Text("📞+", color = Color.White, fontSize = 17.sp, maxLines = 1, softWrap = false) }
+        ) { Icon(SIcons.call, contentDescription = "تماس تازه", tint = Color.White) }
     }
 }
 
 // ------------------------------------------------------------ the call screen
 
+/** 1.28: the group call's buttons, the same round icon buttons as a one-to-one call */
 @Composable
-private fun GBtn(label: String, caption: String, bg: Color, onClick: () -> Unit) {
+private fun GBtn(icon: androidx.compose.ui.graphics.vector.ImageVector, caption: String, bg: Color, size: Int = 52, pulse: Boolean = false, onClick: () -> Unit) =
+    RoundBtn(icon, caption, bg, size, pulse, onClick)
+
+/** an emoji button (✋ 😀) in the same round shape */
+@Composable
+private fun GEmojiBtn(label: String, caption: String, bg: Color, onClick: () -> Unit) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier.size(56.dp).clip(CircleShape).background(bg).clickable(onClick = onClick),
-            contentAlignment = Alignment.Center
-        ) { Text(label, fontSize = 24.sp, color = Color.White) }
-        Spacer(Modifier.height(4.dp))
-        Text(caption, fontSize = 11.sp, color = Color.White.copy(alpha = 0.8f), maxLines = 1)
+        Box(Modifier.size(52.dp).clip(CircleShape).background(bg).clickable(onClick = onClick), contentAlignment = Alignment.Center) { Text(label, fontSize = 22.sp) }
+        Spacer(Modifier.height(6.dp))
+        Text(caption, fontSize = 12.sp, color = Color.White.copy(alpha = 0.85f), maxLines = 1)
     }
 }
 
@@ -405,12 +412,10 @@ private fun GcIncoming(g: GState, r: GRoom) {
             Spacer(Modifier.height(12.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { for (p in r.parts.take(6)) Avatar(p.u, false, 34) }
         }
-        Row(
-            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 40.dp),
-            horizontalArrangement = Arrangement.spacedBy(48.dp)
-        ) {
-            GBtn("✖", "رد", Color(0xFFE53935)) { GroupCall.decline() }
-            GBtn("📞", "پیوستن", Color(0xFF43A047)) { mic { GroupCall.accept() } }
+        CallPanel(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 32.dp)) {
+            GBtn(SIcons.callEnd, "رد", Color(0xFFE53935), 68) { GroupCall.decline() }
+            Spacer(Modifier.width(28.dp))
+            GBtn(if (r.video) SIcons.video else SIcons.call, "پیوستن", Color(0xFF43A047), 68, pulse = true) { mic { GroupCall.accept() } }
         }
     }
 }
@@ -507,26 +512,26 @@ private fun GcActive(g: GState, r: GRoom) {
             items(shown, key = { it.u }) { p -> Tile(p, tileH, Modifier.fillMaxWidth()) }
         }
         Row(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 24.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-            GBtn(if (g.muted) "🔇" else "🎤", "میکروفون", if (g.muted) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { GroupCall.toggleMute() }
-            if (videoOn) GBtn(if (g.cam) "📷" else "📷", if (g.cam) "دوربین" else "دوربین خاموش", if (g.cam) Color(0xFF3390EC) else Color(0x33FFFFFF)) {
+            GBtn(if (g.muted) SIcons.micOff else SIcons.mic, "میکروفون", if (g.muted) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { GroupCall.toggleMute() }
+            if (videoOn) GBtn(if (g.cam) SIcons.video else SIcons.videoOff, if (g.cam) "دوربین" else "دوربین خاموش", if (g.cam) Look.callAccent else Color(0x33FFFFFF)) {
                 if (g.cam) GroupCall.toggleCam() else askCam { GroupCall.toggleCam() }
             }
             val (ico, cap) = when (g.route) {
-                AudioRoute.BLUETOOTH -> "🎧" to "بلوتوث"
-                AudioRoute.SPEAKER -> "🔊" to "بلندگو"
-                AudioRoute.EARPIECE -> (if (g.bt) "📱" else "🔈") to (if (g.bt) "گوشی" else "بلندگو")
+                AudioRoute.BLUETOOTH -> SIcons.bluetooth to "بلوتوث"
+                AudioRoute.SPEAKER -> SIcons.speaker to "بلندگو"
+                AudioRoute.EARPIECE -> (if (g.bt) SIcons.ear else SIcons.speaker) to (if (g.bt) "گوشی" else "بلندگو")
             }
-            GBtn(ico, cap, if (g.route != AudioRoute.EARPIECE) Color(0xFF3390EC) else Color(0x33FFFFFF)) { GroupCall.toggleSpeaker() }
-            GBtn("✋", "دست", if (g.hand) Color(0xFFF9A825) else Color(0x33FFFFFF)) { GroupCall.toggleHand() }
+            GBtn(ico, cap, if (g.route != AudioRoute.EARPIECE) Look.callAccent else Color(0x33FFFFFF)) { GroupCall.toggleSpeaker() }
+            GEmojiBtn("✋", "دست", if (g.hand) Color(0xFFF9A825) else Color(0x33FFFFFF)) { GroupCall.toggleHand() }
             Box {
-                GBtn("😀", "واکنش", Color(0x33FFFFFF)) { reactMenu = true }
+                GEmojiBtn("😀", "واکنش", Color(0x33FFFFFF)) { reactMenu = true }
                 DropdownMenu(expanded = reactMenu, onDismissRequest = { reactMenu = false }) {
                     Row(Modifier.padding(horizontal = 8.dp)) {
                         for (e in REACTIONS) Text(e, fontSize = 28.sp, modifier = Modifier.clickable { reactMenu = false; GroupCall.react(e) }.padding(6.dp))
                     }
                 }
             }
-            GBtn("✖", "خروج", Color(0xFFE53935)) { GroupCall.leave() }
+            GBtn(SIcons.callEnd, "خروج", Color(0xFFE53935)) { GroupCall.leave() }
         }
     }
     // my own picture, small in the corner; tap = show it big, 🔄 = front / back camera

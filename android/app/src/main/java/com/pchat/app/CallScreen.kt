@@ -1,5 +1,19 @@
 package com.pchat.app
 
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.alpha
+import androidx.compose.foundation.border
+import androidx.compose.material3.Icon
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.foundation.layout.width
 import android.Manifest
 import android.content.Context
 import android.os.Build
@@ -138,16 +152,36 @@ fun VideoView(track: VideoTrack?, mirror: Boolean, overlay: Boolean, modifier: M
     AndroidView(factory = { view }, update = { it.setMirror(mirror) }, modifier = modifier)
 }
 
+/** 1.28: a round call button with a real icon; [pulse] = rings that keep spreading out (the «پاسخ» button) */
 @Composable
-private fun RoundBtn(label: String, caption: String, bg: Color, onClick: () -> Unit) {
+fun RoundBtn(icon: ImageVector, caption: String, bg: Color, size: Int = 68, pulse: Boolean = false, onClick: () -> Unit) {
+    val haptic = LocalHapticFeedback.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            Modifier.size(62.dp).clip(CircleShape).background(bg).clickable(onClick = onClick),
-            contentAlignment = Alignment.Center
-        ) { Text(label, fontSize = 26.sp, color = Color.White) }
-        Spacer(Modifier.height(4.dp))
-        Text(caption, fontSize = 12.sp, color = Color.White.copy(alpha = 0.8f))
+        Box(contentAlignment = Alignment.Center) {
+            if (pulse) {
+                val t = rememberInfiniteTransition(label = "ring")
+                for (i in 0..1) {
+                    val k by t.animateFloat(0f, 1f, infiniteRepeatable(tween(1800, delayMillis = i * 900, easing = LinearEasing), RepeatMode.Restart), label = "r$i")
+                    Box(Modifier.size(size.dp).scale(1f + 0.7f * k).alpha(1f - k).border(2.dp, bg, CircleShape))
+                }
+            }
+            Box(
+                Modifier.size(size.dp).clip(CircleShape).background(bg).clickable { Ui.tick(haptic); onClick() },
+                contentAlignment = Alignment.Center
+            ) { Icon(icon, contentDescription = caption, tint = Color.White, modifier = Modifier.size((size * 0.42f).dp)) }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(caption, fontSize = 12.sp, color = Color.White.copy(alpha = 0.85f), maxLines = 1)
     }
+}
+
+/** 1.28: the see-through panel the call buttons sit on, readable on any photo or video */
+@Composable
+fun CallPanel(modifier: Modifier, content: @Composable () -> Unit) {
+    Row(
+        modifier.clip(RoundedCornerShape(30.dp)).background(Color(0xFF141C24).copy(alpha = 0.42f)).padding(horizontal = 14.dp, vertical = 14.dp),
+        horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.Top
+    ) { content() }
 }
 
 @Composable
@@ -197,7 +231,11 @@ fun CallScreen() {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text(Engine.nameOf(s.peer), color = Color.White, fontSize = 24.sp, fontWeight = FontWeight.Bold)
-            Text(status, color = Color.White.copy(alpha = 0.75f), fontSize = 15.sp)
+            // 1.28: «در حال زنگ زدن» / «در حال اتصال» with moving dots
+            if (status.endsWith("…") && !status.startsWith("در انتظار")) Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(status.removeSuffix("…"), color = Color.White.copy(alpha = 0.8f), fontSize = 15.sp)
+                Spacer(Modifier.width(5.dp)); TypingDots(Color.White, 5)
+            } else Text(U.faDigits(status), color = Color.White.copy(alpha = 0.8f), fontSize = 15.sp)
             // 1.15: a short note when a chosen path could not be reached (the path itself is in the 🔀 panel)
             if (s.phase == CallPhase.OUTGOING && s.busy != 0) {
                 Text(
@@ -214,32 +252,35 @@ fun CallScreen() {
             VideoView(if (swap) remote else local, !swap && s.front, true, small)
             if (remoteVideo) Box(small.clickable { swapped = !swapped })
         }
-        Row(
-            Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 36.dp),
-            horizontalArrangement = Arrangement.spacedBy(18.dp)
-        ) {
+        val red = Color(0xFFE53935)
+        val glass = Color(0x33FFFFFF)
+        val acc = Look.callAccent
+        CallPanel(Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(start = 10.dp, end = 10.dp, bottom = 28.dp)) {
             if (s.phase == CallPhase.INCOMING) {
-                RoundBtn("✖", "رد", Color(0xFFE53935)) { CallManager.decline() }
-                RoundBtn("📞", "پاسخ", Color(0xFF43A047)) { accept() }
+                RoundBtn(SIcons.callEnd, "رد", red) { CallManager.decline() }
+                Spacer(Modifier.width(28.dp))
+                RoundBtn(if (s.video) SIcons.video else SIcons.call, "پاسخ", Color(0xFF43A047), pulse = true) { accept() }
             } else if (s.phase == CallPhase.OUTGOING && s.busy == 1) {
-                RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
-                RoundBtn("⏳", "منتظر می‌مانم", Color(0xFF3390EC)) { CallManager.waitForPeer() }
+                RoundBtn(SIcons.callEnd, "قطع", red) { CallManager.hangup() }
+                RoundBtn(SIcons.hourglass, "منتظر می‌مانم", acc) { CallManager.waitForPeer() }
             } else if (s.phase == CallPhase.OUTGOING && s.busy == 2) {
-                RoundBtn("✖", "لغو انتظار", Color(0xFFE53935)) { CallManager.hangup() }
+                RoundBtn(SIcons.callEnd, "لغو انتظار", red) { CallManager.hangup() }
             } else {
-                RoundBtn(if (s.muted) "🔇" else "🎤", "بی‌صدا", if (s.muted) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { CallManager.toggleMute() }
+                val many = s.video && local != null
+                val sz = if (many) 54 else 68
+                RoundBtn(if (s.muted) SIcons.micOff else SIcons.mic, "بی‌صدا", if (s.muted) Color.White.copy(alpha = 0.9f).compositeOver(Color(0xFF5C6B7A)) else glass, sz) { CallManager.toggleMute() }
                 // 1.9: with a Bluetooth headset the button cycles phone → speaker → headset
                 val (ico, cap) = when (s.route) {
-                    AudioRoute.BLUETOOTH -> "🎧" to "بلوتوث"
-                    AudioRoute.SPEAKER -> "🔊" to "بلندگو"
-                    AudioRoute.EARPIECE -> (if (s.bt) "📱" else "🔈") to (if (s.bt) "گوشی" else "بلندگو")
+                    AudioRoute.BLUETOOTH -> SIcons.bluetooth to "بلوتوث"
+                    AudioRoute.SPEAKER -> SIcons.speaker to "بلندگو"
+                    AudioRoute.EARPIECE -> (if (s.bt) SIcons.ear else SIcons.speaker) to (if (s.bt) "گوشی" else "بلندگو")
                 }
-                RoundBtn(ico, cap, if (s.route != AudioRoute.EARPIECE) Color(0xFF3390EC) else Color(0x33FFFFFF)) { CallManager.toggleSpeaker() }
-                if (s.video && local != null) {
-                    RoundBtn(if (s.camOff) "🚫" else "📷", "دوربین", if (s.camOff) Color(0xFF5C6B7A) else Color(0x33FFFFFF)) { CallManager.toggleCamera() }
-                    RoundBtn("🔄", "چرخش", Color(0x33FFFFFF)) { CallManager.switchCamera() }
+                RoundBtn(ico, cap, if (s.route != AudioRoute.EARPIECE) acc else glass, sz) { CallManager.toggleSpeaker() }
+                if (many) {
+                    RoundBtn(if (s.camOff) SIcons.videoOff else SIcons.video, "دوربین", if (s.camOff) Color(0xFF5C6B7A) else glass, sz) { CallManager.toggleCamera() }
+                    RoundBtn(SIcons.flipCamera, "چرخش", glass, sz) { CallManager.switchCamera() }
                 }
-                RoundBtn("✖", "قطع", Color(0xFFE53935)) { CallManager.hangup() }
+                RoundBtn(SIcons.callEnd, "قطع", red, sz) { CallManager.hangup() }
             }
         }
         // 1.19: «افزودن نفر» turns this voice call into a group call (the other side moves over by itself)
@@ -249,7 +290,7 @@ fun CallScreen() {
             Box(
                 Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(end = 12.dp, top = 24.dp).clip(RoundedCornerShape(18.dp))
                     .background(Color(0x33FFFFFF)).clickable { adding = true }.padding(horizontal = 12.dp, vertical = 8.dp)
-            ) { Text("👤+", color = Color.White, fontSize = 16.sp, maxLines = 1, softWrap = false) }
+            ) { Icon(SIcons.personAdd, contentDescription = "افزودن به تماس", tint = Color.White) }
         }
         if (adding) PeoplePicker(PickReq("افزودن به تماس", callablePeople().filter { it != s.peer }, "زنگ بزن", maxVoice() - 2) { users ->
             if (CallManager.state.value.phase == CallPhase.ACTIVE) CallManager.upgradeToGroup(users)
@@ -263,10 +304,10 @@ fun CallScreen() {
             val showText by Prefs.diagText.collectAsState()
             if (showText) DiagOverlay(s.peer, Modifier.align(Alignment.CenterStart).statusBarsPadding().padding(start = 8.dp, top = 90.dp))
             Box(
-                Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 12.dp, top = 24.dp).size(40.dp).clip(CircleShape)
-                    .background(if (showText) Color(0x663390EC) else Color(0x33FFFFFF)).clickable { Prefs.setDiagText(!showText) },
+                Modifier.align(Alignment.TopStart).statusBarsPadding().padding(start = 8.dp, top = 20.dp).size(48.dp).padding(4.dp).clip(CircleShape)
+                    .background(if (showText) Look.callAccent.copy(alpha = 0.4f) else Color(0x33FFFFFF)).clickable { Prefs.setDiagText(!showText) },
                 contentAlignment = Alignment.Center
-            ) { Text(if (showText) "👁" else "🙈", fontSize = 18.sp) }
+            ) { Icon(if (showText) SIcons.eye else SIcons.eyeOff, contentDescription = "متن آزمایشی", tint = Color.White, modifier = Modifier.size(20.dp)) }
         }
     }
 }
@@ -284,14 +325,14 @@ private fun RouteMenu(s: CallState, modifier: Modifier) {
     val maxW = (LocalConfiguration.current.screenWidthDp / 3).dp
     Column(modifier, horizontalAlignment = Alignment.End) {
         Box(
-            Modifier.size(40.dp).clip(CircleShape)
-                .background(if (shown && s.peerRoute) Color(0x663390EC) else Color(0x33FFFFFF))
+            Modifier.size(48.dp).padding(4.dp).clip(CircleShape)
+                .background(if (shown && s.peerRoute) Look.callAccent.copy(alpha = 0.4f) else Color(0x33FFFFFF))
                 .clickable {
                     if (!s.peerRoute) Toast.makeText(ctx, "طرف مقابل نسخهٔ قدیمی ${BuildConfig.APP_NAME} را دارد؛ تغییر مسیر ممکن نیست", Toast.LENGTH_SHORT).show()
                     else Prefs.setRoutePanel(!shown)
                 },
             contentAlignment = Alignment.Center
-        ) { Text("🔀", fontSize = 18.sp, color = if (s.peerRoute) Color.White else Color.White.copy(alpha = 0.4f)) }
+        ) { Icon(SIcons.route, contentDescription = "مسیر تماس", tint = if (s.peerRoute) Color.White else Color.White.copy(alpha = 0.4f), modifier = Modifier.size(20.dp)) }
         if (shown && s.peerRoute) {
             Spacer(Modifier.height(6.dp))
             Column(Modifier.widthIn(max = maxW).clip(RoundedCornerShape(10.dp)).background(Color(0x8010202F)).padding(4.dp)) {

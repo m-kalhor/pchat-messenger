@@ -1,5 +1,12 @@
 package com.pchat.app
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.core.tween
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -193,10 +200,26 @@ fun App(deepLink: MutableState<String?>) {
     } else if (ks != null) {
         KeyScreen(ks, onLogout = { Engine.logout() })
     } else {
-        val c = convo
-        if (c == null && settings) SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })
-        else if (c == null) ChatListScreen(onOpen = { convo = it }, onSettings = { settings = true }, onLogout = { Engine.logout() })
-        else ChatScreen(c, onBack = { convo = null }, onOpenUser = { convo = it })
+        // 1.28: screens slide in from the left (RTL: forward) and back out to the right; off when the phone's animations are off
+        val target = convo?.let { "c:$it" } ?: if (settings) "settings" else "list"
+        val still = remember { Ui.reduceMotion(ctx) }
+        AnimatedContent(
+            targetState = target, label = "screens",
+            transitionSpec = {
+                val depth = { k: String -> if (k == "list") 0 else 1 }
+                val fwd = depth(targetState) > depth(initialState)
+                val back = depth(targetState) < depth(initialState)
+                if (still || (!fwd && !back)) fadeIn(tween(if (still) 0 else 150)) togetherWith fadeOut(tween(if (still) 0 else 150))
+                else if (fwd) (slideInHorizontally(tween(260)) { -it } + fadeIn(tween(200))) togetherWith (slideOutHorizontally(tween(260)) { it / 4 } + fadeOut(tween(260)))
+                else (slideInHorizontally(tween(260)) { -it / 4 } + fadeIn(tween(260))) togetherWith (slideOutHorizontally(tween(260)) { it } + fadeOut(tween(200)))
+            }
+        ) { t ->
+            when {
+                t == "settings" -> SettingsScreen(onBack = { settings = false }, onLogout = { settings = false; Engine.logout() })
+                t == "list" -> ChatListScreen(onOpen = { convo = it }, onSettings = { settings = true }, onLogout = { Engine.logout() })
+                else -> ChatScreen(t.removePrefix("c:"), onBack = { convo = null }, onOpenUser = { convo = it })
+            }
+        }
     }
 
     val offer = updateOffer
