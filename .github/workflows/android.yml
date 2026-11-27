@@ -40,26 +40,39 @@ jobs:
       - name: Check the APKs are signed and not debuggable
         run: |
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          for APK in app/build/outputs/apk/release/app-release.apk admin/build/outputs/apk/release/admin-release.apk; do
+          for APK in app/build/outputs/apk/direct/release/app-direct-release.apk app/build/outputs/apk/bazaar/release/app-bazaar-release.apk admin/build/outputs/apk/release/admin-release.apk; do
             echo "== $APK"
             "$BT/apksigner" verify --verbose --print-certs "$APK" | grep -E "Verified using|Signer #1 certificate DN|SHA-256"
             if "$BT/aapt" dump badging "$APK" | grep -q "application-debuggable"; then echo "::error::$APK is debuggable"; exit 1; fi
             "$BT/aapt" dump badging "$APK" | grep -E "^package:"
           done
+      # 1.28.1: Café Bazaar rejects apps that can install APKs; only the direct build may have the permission
+      - name: Bazaar build has no install permission
+        run: |
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/aapt" dump permissions app/build/outputs/apk/direct/release/app-direct-release.apk | grep -q REQUEST_INSTALL_PACKAGES
+          if "$BT/aapt" dump permissions app/build/outputs/apk/bazaar/release/app-bazaar-release.apk | grep -q REQUEST_INSTALL_PACKAGES; then
+            echo "::error::the Bazaar APK requests REQUEST_INSTALL_PACKAGES"; exit 1; fi
+          "$BT/aapt" dump badging app/build/outputs/apk/bazaar/release/app-bazaar-release.apk | grep -E "^package: name='com.pchat.app'"
       # 1.25: the same code built as a customer's app (name, package id, server) must also work
       - name: Customer build check
         run: |
-          ./gradlew assembleRelease -Ppchat.appName="پیام تست" -Ppchat.appId=citest -Ppchat.serverHost=10.1.2.3 --stacktrace
+          ./gradlew assembleDirectRelease :admin:assembleRelease -Ppchat.appName="پیام تست" -Ppchat.appId=citest -Ppchat.serverHost=10.1.2.3 --stacktrace
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          "$BT/aapt" dump badging app/build/outputs/apk/release/app-release.apk | grep -E "^package: name='com.pchat.app.citest'"
-          "$BT/aapt" dump badging app/build/outputs/apk/release/app-release.apk | grep -E "^application-label:'پیام تست'"
+          "$BT/aapt" dump badging app/build/outputs/apk/direct/release/app-direct-release.apk | grep -E "^package: name='com.pchat.app.citest'"
+          "$BT/aapt" dump badging app/build/outputs/apk/direct/release/app-direct-release.apk | grep -E "^application-label:'پیام تست'"
           "$BT/aapt" dump badging admin/build/outputs/apk/release/admin-release.apk | grep -E "^package: name='com.sepan.admin.citest'"
           "$BT/aapt" dump badging admin/build/outputs/apk/release/admin-release.apk | grep -E "^application-label:'پیام تست مدیر'"
           ./gradlew assembleRelease --stacktrace   # back to the Sepan build for the artifacts below
       - uses: actions/upload-artifact@v4
         with:
           name: sepan-release-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/app/build/outputs/apk/direct/release/*.apk
+      # 1.28.1: the build uploaded to Café Bazaar (updates only through Bazaar)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sepan-bazaar-apk
+          path: android/app/build/outputs/apk/bazaar/release/*.apk
       # 1.24: «سپن مدیر» (admin panel app), a separate small APK only for the admin
       - uses: actions/upload-artifact@v4
         with:
