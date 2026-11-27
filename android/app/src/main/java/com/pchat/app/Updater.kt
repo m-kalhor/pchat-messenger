@@ -7,7 +7,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.net.Uri
-import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -37,7 +36,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import androidx.core.content.FileProvider
 import androidx.core.content.pm.PackageInfoCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -45,8 +43,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-/** A newer APK on the server. */
-data class AppUpdate(val code: Long, val name: String, val size: Long, val notes: List<String> = emptyList())
+/** A newer APK on the server, or (1.28.1, Bazaar build) a newer version on Café Bazaar ([store] = its page). */
+data class AppUpdate(val code: Long, val name: String, val size: Long, val notes: List<String> = emptyList(), val store: String? = null)
 
 /**
  * 1.9: in-app updates. The server reads the version of the APK the admin uploaded (/api/app/version);
@@ -78,7 +76,8 @@ object Updater {
         val i = Intent(ctx, MainActivity::class.java).putExtra("update", true)
             .apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP }
         val pi = PendingIntent.getActivity(ctx, 7704, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val body = "نسخهٔ ${u.name} آماده است. برای به‌روزرسانی بزنید. پیام‌ها و تنظیمات پاک نمی‌شوند."
+        val body = (if (u.store != null) "نسخهٔ ${u.name} در کافه‌بازار آمده است." else "نسخهٔ ${u.name} آماده است.") +
+            " برای به‌روزرسانی بزنید. پیام‌ها و تنظیمات پاک نمی‌شوند."
         val n = NotificationCompat.Builder(ctx, Prefs.messageChannel(ctx))
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle("⬆️ نسخهٔ تازهٔ ${BuildConfig.APP_NAME} آمده است")
@@ -106,8 +105,27 @@ object Updater {
         ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: ""
     } catch (e: Exception) { "" }
 
-    /** The newer version on the server, or null (none, older, or the server cannot be reached). */
+    /** 1.28.1: the Café Bazaar build updates only through Bazaar. */
+    val fromBazaar get() = BuildConfig.STORE == "bazaar"
+    const val BAZAAR_PAGE = "https://cafebazaar.ir/app/com.pchat.app"
+
+    /** "1.28.1" -> 1028001 (0 when unreadable), to compare version names and to remember a dismissed one. */
+    fun nameCode(v: String): Long {
+        val p = v.trim().split('.')
+        if (p.isEmpty() || p.size > 4 || p.any { it.isEmpty() || it.length > 3 || !it.all(Char::isDigit) }) return 0L
+        return (p + List(4 - p.size) { "0" }).take(3).fold(0L) { a, x -> a * 1000 + x.toLong() }
+    }
+
+    /** The newer version on the server (or on Bazaar), or null (none, older, or the server cannot be reached). */
     suspend fun check(ctx: Context): AppUpdate? = withContext(Dispatchers.IO) {
+        if (fromBazaar) return@withContext try {
+            val o = Api.appVersion("bazaar")
+            val name = if (o.isNull("name")) "" else o.optString("name")
+            val code = nameCode(name)
+            val na = o.optJSONArray("notes")
+            val notes = if (na == null) emptyList() else (0 until na.length()).map { na.optString(it) }.filter { it.isNotBlank() }
+            if (code > 0 && code > nameCode(installedName(ctx))) AppUpdate(code, name, 0L, notes, o.optString("url").ifBlank { BAZAAR_PAGE }) else null
+        } catch (e: Exception) { null }
         try {
             val o = Api.appVersion()
             if (o.isNull("code")) return@withContext null
@@ -133,20 +151,20 @@ object Updater {
         } finally { progress.value = null }
     }
 
-    /** Android 8+ asks once per app for "install unknown apps"; true when it is already allowed. */
-    fun canInstall(ctx: Context): Boolean = ctx.packageManager.canRequestPackageInstalls()
+    fun canInstall(ctx: Context): Boolean = ApkInstall.canInstall(ctx)
+    fun openInstallPermission(ctx: Context) = ApkInstall.openInstallPermission(ctx)
+    fun install(ctx: Context, f: File) = ApkInstall.install(ctx, f)
 
-    fun openInstallPermission(ctx: Context) {
-        try {
-            ctx.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + ctx.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-        } catch (e: Exception) { }
-    }
-
-    fun install(ctx: Context, f: File) {
-        val uri = FileProvider.getUriForFile(ctx, ctx.packageName + ".fileprovider", f)
-        val i = Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive")
-            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
-        ctx.startActivity(i)
+    /** 1.28.1: opens Sepan's page in the Café Bazaar app, else the same page in a browser. */
+    fun openStore(ctx: Context, page: String?): Boolean {
+        val tries = listOf(
+            Intent(Intent.ACTION_VIEW, Uri.parse("bazaar://details?id=" + ctx.packageName)).setPackage("com.farsitel.bazaar"),
+            Intent(Intent.ACTION_VIEW, Uri.parse(page?.takeIf { it.startsWith("https://") } ?: BAZAAR_PAGE)),
+        )
+        for (i in tries) {
+            try { ctx.startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)); return true } catch (e: Exception) { }
+        }
+        return false
     }
 
     /** 1.22.1: «تازه‌های این نسخه», shown once after an update: (version name, lines). */
@@ -175,6 +193,7 @@ fun UpdateDialog(u: AppUpdate, onClose: () -> Unit) {
     var file by remember { mutableStateOf<File?>(null) }
     var err by remember { mutableStateOf<String?>(null) }
     val busy = prog != null
+    if (u.store != null) { BazaarUpdateDialog(u, onClose); return }
     val install = {
         val f = file
         if (f != null) {
@@ -289,5 +308,32 @@ fun ChangePasswordDialog(onClose: () -> Unit) {
             }) { Text("تغییر رمز") }
         },
         dismissButton = { TextButton(enabled = !busy, onClick = onClose) { Text("انصراف") } }
+    )
+}
+
+/** 1.28.1 (Bazaar build): the newer version is on Café Bazaar; «به‌روزرسانی از بازار» opens it there. */
+@Composable
+private fun BazaarUpdateDialog(u: AppUpdate, onClose: () -> Unit) {
+    val ctx = LocalContext.current
+    AlertDialog(
+        onDismissRequest = onClose,
+        title = { Text("نسخهٔ تازهٔ ${BuildConfig.APP_NAME}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("نسخهٔ ${u.name} در کافه‌بازار آمده است. نسخهٔ فعلی شما ${Updater.installedName(ctx)} است.", fontSize = 14.sp)
+                if (u.notes.isNotEmpty()) Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("تازه‌ها و اصلاح‌ها:", fontSize = 13.sp)
+                    for (n in u.notes) Text("• $n", fontSize = 13.sp)
+                }
+                Text("پیام‌ها و تنظیمات شما با به‌روزرسانی پاک نمی‌شوند.", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                if (Updater.openStore(ctx, u.store)) onClose()
+                else Toast.makeText(ctx, "کافه‌بازار باز نشد", Toast.LENGTH_SHORT).show()
+            }) { Text("به‌روزرسانی از بازار") }
+        },
+        dismissButton = { TextButton(onClick = onClose) { Text("بعداً") } }
     )
 }
