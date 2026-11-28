@@ -130,6 +130,7 @@ function authInfo(ctx) {
     calls: callcfg.get(),
     sms_usage: auth.smsUsage(), // 1.18.1: codes sent in the last hour / day and the limits
     gcall: gcall.cfg(), // 1.19: group calls
+    feats: { saved: getSetting('feat_saved', '1') === '1', sched: getSetting('feat_sched', '1') === '1' }, // 1.29
   };
 }
 
@@ -424,6 +425,11 @@ async function route(ctx, req, res, secure) {
     if (typeof b.password_login === 'boolean') setSetting('password_login', b.password_login ? '1' : '0');
     if (typeof b.open_signup === 'boolean') setSetting('open_signup', b.open_signup ? '1' : '0');
     if (typeof b.msg_requests === 'boolean') setSetting('msg_requests', b.msg_requests ? '1' : '0');
+    // 1.29: «پیام‌های ذخیره‌شده» and «ارسال زمان‌دار» (card «امکانات پیام»)
+    if (b.feats && typeof b.feats === 'object') {
+      if (typeof b.feats.saved === 'boolean') setSetting('feat_saved', b.feats.saved ? '1' : '0');
+      if (typeof b.feats.sched === 'boolean') setSetting('feat_sched', b.feats.sched ? '1' : '0');
+    }
     for (const k of ['sms_max_hour', 'sms_max_day']) {
       if (b[k] === undefined) continue;
       const v = Number(b[k]);

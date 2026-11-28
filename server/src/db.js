@@ -86,6 +86,17 @@ if (!msgCols.includes('edited')) db.exec('ALTER TABLE messages ADD COLUMN edited
 if (!msgCols.includes('deleted')) db.exec('ALTER TABLE messages ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0');
 // 1.22: a sticker sent with the full-screen effect (outside the E2E payload so the server can rate-limit it)
 if (!msgCols.includes('fx')) db.exec('ALTER TABLE messages ADD COLUMN fx INTEGER NOT NULL DEFAULT 0');
+// 1.29: «ارسال بی‌صدا» (the receiver's devices show it without a sound)
+if (!msgCols.includes('silent')) db.exec('ALTER TABLE messages ADD COLUMN silent INTEGER NOT NULL DEFAULT 0');
+// 1.29: scheduled messages wait here (still end-to-end encrypted) until `at`, then go out as normal messages
+db.exec(`CREATE TABLE IF NOT EXISTS scheduled (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, sender TEXT NOT NULL, target TEXT NOT NULL, kind TEXT NOT NULL,
+  payload TEXT NOT NULL, file_id TEXT, at INTEGER NOT NULL, created INTEGER NOT NULL, silent INTEGER NOT NULL DEFAULT 0,
+  failed TEXT)`);
+db.exec('CREATE INDEX IF NOT EXISTS idx_sched_at ON scheduled(at)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_sched_sender ON scheduled(sender)');
+// 1.29: small per-user settings synced between the user's devices (folders, archive), sealed with the user's own key
+db.exec('CREATE TABLE IF NOT EXISTS user_prefs (username TEXT NOT NULL, k TEXT NOT NULL, v TEXT NOT NULL, ts INTEGER NOT NULL, PRIMARY KEY (username, k))');
 db.exec('CREATE INDEX IF NOT EXISTS idx_msg_file ON messages(file_id)');
 
 function getSetting(key, def = null) {
