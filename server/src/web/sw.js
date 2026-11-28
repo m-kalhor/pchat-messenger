@@ -2,7 +2,7 @@
 // network. Always tries the network first (so updates arrive at once) and never touches /api.
 // It also shows Web Push notifications while the app is closed (iPhone, iOS 16.4+) and reports the
 // message as delivered, so the sender's tick turns blue.
-const CACHE = 'sepan-shell-v19';
+const CACHE = 'sepan-shell-v20';
 const SHELL = ['/', '/app', '/app.css', '/app.mjs', '/engine.mjs', '/api.mjs', '/crypto.mjs', '/store.mjs', '/call.mjs', '/groupcall.mjs', '/webp.mjs', '/emoji.mjs', '/voice.mjs', '/diag.mjs', '/lan.mjs', '/countries.mjs', '/icons.mjs', '/Vazirmatn-Regular.woff2', '/Vazirmatn-Medium.woff2', '/Vazirmatn-Bold.woff2', '/manifest.webmanifest', '/icon-180.png', '/icon-192.png', '/wallpaper.svg', '/wallpaper-dark.svg'];
 
 self.addEventListener('install', (e) => {
@@ -53,7 +53,7 @@ self.addEventListener('push', (e) => {
   e.waitUntil(Promise.all([
     self.registration.showNotification(title, {
       body: d.body || 'پیام تازه', tag: d.convo || 'sepan', renotify: true, icon: '/icon-192.png', badge: '/icon-192.png',
-      lang: 'fa', dir: 'rtl', data: { convo: d.convo || null },
+      lang: 'fa', dir: 'rtl', data: { convo: d.convo || null }, silent: !!d.silent, // 1.29: «ارسال بی‌صدا»
     }),
     d.t === 'msg' ? delivered(d.convo, d.id) : null,
   ]));

@@ -195,7 +195,8 @@ object Api {
     }
 
     /** 1.9: the version of the APK on the server: {code, name, size} or {code: null} */
-    fun appVersion(): JSONObject = JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/version").get().build()))
+    fun appVersion(store: String? = null): JSONObject =
+        JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/version" + (if (store != null) "?store=$store" else "")).get().build()))
 
     /** 1.22.1: the short «what's new / fixed» lines of a version name. */
     fun appNotes(v: String): List<String> {
@@ -345,13 +346,37 @@ object Api {
     }
 
     /** fx: 1.22 full-screen sticker effect (the server allows one per 5 s per user; a sooner one goes plain). */
-    fun send(target: String, payload: String, fileId: String?, fx: Boolean = false): Pair<Long, Long> {
+    fun send(target: String, payload: String, fileId: String?, fx: Boolean = false, silent: Boolean = false): Pair<Long, Long> {
         val b = JSONObject().put("target", target).put("kind", "msg").put("payload", payload)
         if (fileId != null) b.put("fileId", fileId)
         if (fx) b.put("fx", 1)
+        if (silent) b.put("silent", 1) // 1.29: «ارسال بی‌صدا»
         val o = JSONObject(exec(req("/api/send").post(b.toString().toRequestBody(JSON)).build()))
         return Pair(o.getLong("id"), o.getLong("ts"))
     }
+
+    // ---- 1.29: scheduled messages (kept sealed on the server until `at`) ----
+    fun schedule(target: String, payload: String, at: Long, silent: Boolean): Long {
+        val b = JSONObject().put("target", target).put("kind", "msg").put("payload", payload).put("at", at)
+        if (silent) b.put("silent", 1)
+        return JSONObject(exec(req("/api/send").post(b.toString().toRequestBody(JSON)).build())).getLong("scheduled")
+    }
+    fun scheduled(): JSONArray = JSONObject(exec(req("/api/scheduled").get().build())).getJSONArray("list")
+    /** what = "delete" | "now" | "update" (with at and / or a new payload) */
+    fun scheduledAction(what: String, id: Long, at: Long? = null, payload: String? = null): JSONArray {
+        val b = JSONObject().put("id", id)
+        if (at != null) b.put("at", at)
+        if (payload != null) b.put("payload", payload)
+        return JSONObject(exec(req("/api/scheduled/$what").post(b.toString().toRequestBody(JSON)).build())).getJSONArray("list")
+    }
+
+    // ---- 1.29: settings synced between my devices (sealed for me; the server cannot read them) ----
+    fun prefsGet(k: String): Pair<String?, Long> {
+        val o = JSONObject(exec(req("/api/prefs?k=$k").get().build()))
+        return Pair(if (o.isNull("v")) null else o.getString("v"), o.optLong("ts", 0))
+    }
+    fun prefsSet(k: String, v: String, dev: String): Long =
+        JSONObject(exec(req("/api/prefs").post(JSONObject().put("k", k).put("v", v).put("dev", dev).toString().toRequestBody(JSON)).build())).getLong("ts")
 
     /** Replaces the text of my message; prev = the old version encrypted for me only (edit history). Returns the edit time. */
     fun edit(id: Long, payload: String, prev: String?): Long {

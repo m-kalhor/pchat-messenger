@@ -511,3 +511,27 @@ html[dir="rtl"] .ic.flip { transform: scaleX(-1); }
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 .setting:has(+ .accents) { border-bottom: 0; }
+
+/* 1.29: chat tabs and folders, archive, mentions, scheduled send */
+.ctabs { display: flex; gap: 6px; padding: 6px 8px; overflow-x: auto; scrollbar-width: none; flex: none; border-bottom: 1px solid var(--line); background: var(--bg); }
+.ctabs::-webkit-scrollbar { display: none; }
+.ctab { flex: none; border: 0; border-radius: 16px; padding: 4px 12px; background: var(--bg2); color: var(--fg); font-size: 14px; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; user-select: none; -webkit-user-select: none; }
+.ctab.on { background: var(--accent); color: var(--accent-fg); font-weight: 700; }
+.ctab .cn { background: var(--accent); color: var(--accent-fg); border-radius: 9px; font-size: 11px; padding: 0 5px; line-height: 18px; }
+.ctab.on .cn { background: rgba(255, 255, 255, .3); }
+.ctab.edit { background: transparent; color: var(--fg2); padding: 4px 6px; }
+.count.at { display: inline-flex; align-items: center; justify-content: center; padding: 0; width: 22px; margin-inline-end: 4px; }
+.count.muted { background: var(--fg2); }
+.jump.at { bottom: 140px; color: var(--accent); }
+.mentions { max-height: 220px; overflow-y: auto; background: var(--bg); border-radius: 14px; margin: 0 8px 4px; box-shadow: 0 1px 6px rgba(0, 0, 0, .2); }
+.mentions .mrow { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 12px; border: 0; background: none; text-align: start; }
+.mentions .mrow:hover { background: var(--bg2); }
+.mentions .mrow b { display: block; font-weight: 600; font-size: 14.5px; }
+.mentions .mrow small { display: block; color: var(--fg2); font-size: 12px; }
+.sch { display: flex; align-items: center; gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.sch .st { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sch small { display: block; color: var(--fg2); font-size: 12px; }
+.sch small.err { color: var(--danger); }
+.dialog .it.qk { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; padding: 9px 4px; text-align: start; color: var(--fg); }
+.dialog .it.qk .ic { color: var(--accent); }
+.dialog select, .dialog input[type="time"] { width: 100%; margin: 4px 0; padding: 8px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); }

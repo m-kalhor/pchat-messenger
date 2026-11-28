@@ -15,6 +15,7 @@ const auth = require('./auth');
 const diag = require('./diag');
 const callcfg = require('./callcfg');
 const { apkVersion } = require('./apkinfo');
+const bazaar = require('./bazaar');
 const stickers = require('./stickers');
 const usage = require('./usage');
 const gcall = require('./gcall');
@@ -55,7 +56,7 @@ const q = {
   delSess: db.prepare('DELETE FROM sessions WHERE th=?'),
   setKey: db.prepare('UPDATE users SET pubkey=? WHERE username=?'),
   setBackup: db.prepare('UPDATE users SET key_backup=?, pubkey=? WHERE username=?'),
-  addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts,fx) VALUES(?,?,?,?,?,?,?)'),
+  addMsg: db.prepare('INSERT INTO messages(sender,target,kind,payload,file_id,ts,fx,silent) VALUES(?,?,?,?,?,?,?,?)'),
   msg: db.prepare('SELECT * FROM messages WHERE id=?'),
   editMsg: db.prepare('UPDATE messages SET payload=?, edited=? WHERE id=?'),
   delMsg: db.prepare("UPDATE messages SET deleted=1, payload='', file_id=NULL WHERE id=?"),
@@ -192,7 +193,7 @@ function releaseNotes(v) {
 const FX_GAP = 5000;
 const fxLast = new Map();
 const msgJson = (m, reactions, namer) => ({
-  id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null, ...(m.fx ? { fx: 1 } : {}),
+  id: m.id, from: m.sender, target: m.target, kind: m.kind, payload: m.payload, fileId: m.file_id, ts: m.ts, edited: m.edited || null, ...(m.fx ? { fx: 1 } : {}), ...(m.silent ? { silent: 1 } : {}),
   ...(reactions && reactions.length ? { reactions: Object.fromEntries(reactions.map((r) => [namer ? namer(m.id, r.username) : r.username, r.emoji])) } : {}),
 });
 /** An edit or delete-for-everyone of message m, as clients receive it (seq orders all changes). */
@@ -409,6 +410,8 @@ function resolveTarget(user, target) {
     if (!core.isMember(user, cat.id)) return { error: 'not_member', code: 403 };
     return { type: 'group', cat };
   }
+  // 1.29: «پیام‌های ذخیره‌شده» = a private chat with oneself
+  if (target === user) return savedOn() ? { type: 'self', peer: user } : { error: 'saved_off', code: 403 };
   if (!core.activeUser(target)) return { error: 'no_such_user', code: 404 };
   if (!core.canDM(user, target)) return { error: 'not_allowed', code: 403 };
   return { type: 'dm', peer: target };
@@ -480,7 +483,7 @@ function receiptsFor(user) {
 
 function applyReceipt(user, me, it) {
   const tr = resolveTarget(user, String((it && it.target) || '').toLowerCase());
-  if (tr.error) return;
+  if (tr.error || tr.type === 'self') return;
   const key = tr.type === 'group' ? tr.cat.gkey : core.convoKey(user, tr.peer);
   // never past the newest message that actually came in
   const max = tr.type === 'group' ? q.maxIn.get(key).m : q.maxFrom.get(tr.peer, user).m;
@@ -537,6 +540,78 @@ function msgAudience(m) {
   }
   return [m.target, m.sender];
 }
+
+/**
+ * Stores message m and sends it live to everyone in the chat (a closed iPhone web app gets a push).
+ * request = the 1.7 message-request state when the sender is not connected to the receiver (else null).
+ */
+function deliver(user, target, tr, kind, payload, fileId, ts, fx, silent, request) {
+  const r = q.addMsg.run(user, target, kind, payload, fileId, ts, fx, silent);
+  const m = { id: Number(r.lastInsertRowid), sender: user, target, kind, payload, file_id: fileId, ts, fx, silent };
+  // a declined request still takes the message (the sender is not told) but nothing pops up for the receiver
+  const quiet = request && request.status !== 'pending';
+  const recipients = tr.type === 'group' ? core.membersOf(tr.cat.id) : tr.type === 'self' || quiet ? [user] : [target, user];
+  for (const u of recipients) emit(u, 'msg', msgJson(m), m.id);
+  // nobody has the app on screen: wake their closed web apps (iPhone) with a notification (a request: its first message only)
+  const ping = !request || request.first;
+  for (const u of recipients) if (ping && u !== user && !isOnline(u) && push.hasSubs(u)) push.notify(u, { ...pushData(m, tr, !!request), ...(silent ? { silent: 1 } : {}) }).catch(() => { });
+  return m;
+}
+
+// ---------- 1.29: saved messages and scheduled messages (admin panel card «امکانات پیام») ----------
+const savedOn = () => getSetting('feat_saved', '1') === '1';
+const schedOn = () => getSetting('feat_sched', '1') === '1';
+const SCHED_MAX = +(process.env.SCHED_MAX || 100);            // waiting per user
+const SCHED_DAYS = +(process.env.SCHED_DAYS || 30);           // at most this far ahead
+const sq = {
+  add: db.prepare('INSERT INTO scheduled(sender,target,kind,payload,file_id,at,created,silent) VALUES(?,?,?,?,?,?,?,?)'),
+  count: db.prepare('SELECT COUNT(*) AS n FROM scheduled WHERE sender=?'),
+  get: db.prepare('SELECT * FROM scheduled WHERE id=?'),
+  mine: db.prepare('SELECT * FROM scheduled WHERE sender=? ORDER BY at, id'),
+  due: db.prepare('SELECT * FROM scheduled WHERE at<=? AND failed IS NULL ORDER BY at, id LIMIT 200'),
+  del: db.prepare('DELETE FROM scheduled WHERE id=?'),
+  setAt: db.prepare('UPDATE scheduled SET at=?, failed=NULL WHERE id=?'),
+  setPayload: db.prepare('UPDATE scheduled SET payload=?, failed=NULL WHERE id=?'),
+  fail: db.prepare('UPDATE scheduled SET failed=? WHERE id=?'),
+};
+const schedJson = (r) => ({ id: r.id, target: r.target, kind: r.kind, payload: r.payload, fileId: r.file_id, at: r.at, silent: r.silent ? 1 : 0, failed: r.failed || null });
+function okAt(at) {
+  const t = now();
+  return Number.isFinite(at) && at >= t - 60e3 && at <= t + SCHED_DAYS * DAY;
+}
+function schedule(user, target, kind, payload, fileId, at, silent) {
+  if (!schedOn()) return { error: 'sched_off', code: 403 };
+  if (!okAt(at)) return { error: 'bad_time', code: 400 };
+  if (sq.count.get(user).n >= SCHED_MAX) return { error: 'sched_full', code: 429 };
+  const id = Number(sq.add.run(user, target, kind, payload, fileId, Math.round(at), now(), silent).lastInsertRowid);
+  emit(user, 'scheduled', { list: sq.mine.all(user).map(schedJson) });
+  return { id, at: Math.round(at) };
+}
+/** Sends every scheduled message whose time has come; one that cannot go any more is marked failed for its sender. */
+function runScheduled() {
+  const touched = new Set();
+  for (const r of sq.due.all(now())) {
+    touched.add(r.sender);
+    const tr = resolveTarget(r.sender, r.target);
+    let why = tr.error || null;
+    if (!why && tr.type === 'group' && !ugroups.canWrite(r.sender, tr.cat)) why = tr.cat.frozen ? 'group_frozen' : 'admins_only';
+    if (!why && tr.type === 'group' && !ugroups.postKeyOk(tr.cat, r.payload)) why = 'chan_key_old';
+    if (!why && r.file_id && !q.file.get(r.file_id)) why = 'bad_file';
+    if (why) { sq.fail.run(why, r.id); continue; }
+    sq.del.run(r.id);
+    const m = deliver(r.sender, r.target, tr, r.kind, r.payload, r.file_id, now(), 0, r.silent, null);
+    emit(r.sender, 'scheduled_sent', { id: r.id, msg: m.id });
+  }
+  for (const u of touched) emit(u, 'scheduled', { list: sq.mine.all(u).map(schedJson) });
+}
+setInterval(() => { try { runScheduled(); } catch (e) { console.error('scheduled', e.message); } }, +(process.env.SCHED_TICK_MS || 10000)).unref();
+
+// ---------- 1.29: per-user synced settings (folders, archive) ----------
+const PREF_KEYS = new Set(['chatlist']);
+const pq = {
+  get: db.prepare('SELECT v, ts FROM user_prefs WHERE username=? AND k=?'),
+  set: db.prepare('INSERT INTO user_prefs(username,k,v,ts) VALUES(?,?,?,?) ON CONFLICT(username,k) DO UPDATE SET v=excluded.v, ts=excluded.ts'),
+};
 
 /** A user may attach (forward) a file they uploaded or one that arrived in a conversation they are in. */
 function canUseFile(user, fileId) {
@@ -623,6 +698,11 @@ async function route(req, res) {
   if (p === '/download/sepan.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res);
   // 1.9: the version of the APK the admin uploaded, so the app can offer an update (never forced)
   if (p === '/api/app/version' && req.method === 'GET') {
+    // 1.28.1: the Bazaar build only updates through Café Bazaar: the version Bazaar publishes, and its page
+    if (url.searchParams.get('store') === 'bazaar') {
+      const name = await bazaar.version();
+      return send(res, 200, name ? { store: 'bazaar', name, url: bazaar.PAGE, notes: releaseNotes(name) } : { store: 'bazaar', name: null });
+    }
     const info = apkInfo();
     const v = info ? apkVersion(APK) : null;
     return send(res, 200, v ? { code: v.code, name: v.name, size: info.size, notes: releaseNotes(v.name) } : { code: null });
@@ -765,6 +845,7 @@ async function route(req, res) {
       call_route: callcfg.routeAllowed(user), // 1.15: may pick the call path in a call (admin panel, users tab)
       gcall: gcallCfgFor(), // 1.19: group calls (admin panel, card «تماس گروهی»)
       ugroups: ugroupsFor(user), // 1.20: groups users make themselves
+      feats: { saved: savedOn(), sched: schedOn(), sched_max: SCHED_MAX, sched_days: SCHED_DAYS }, // 1.29
     });
   }
 
@@ -817,7 +898,7 @@ async function route(req, res) {
     const tr = resolveTarget(user, String(b.target || '').toLowerCase());
     if (tr.error) return send(res, tr.code, { error: tr.error });
     if (tr.type === 'group') { if (tr.cat.kind !== 'chan') for (const u of core.membersOf(tr.cat.id)) if (u !== user) emit(u, 'typing', { convo: tr.cat.gkey, from: user }); }
-    else emit(tr.peer, 'typing', { convo: user, from: user });
+    else if (tr.type === 'dm') emit(tr.peer, 'typing', { convo: user, from: user });
     return send(res, 200, { ok: true });
   }
 
@@ -1035,6 +1116,44 @@ async function route(req, res) {
     return;
   }
 
+  // ---- 1.29: scheduled messages of the signed-in user ----
+  if (p === '/api/scheduled' && req.method === 'GET') return send(res, 200, { list: sq.mine.all(user).map(schedJson) });
+  if (p.startsWith('/api/scheduled/') && req.method === 'POST') {
+    const b = await readJson(req, 131072 + 1024);
+    const r = sq.get.get(Number(b.id));
+    if (!r || r.sender !== user) return send(res, 404, { error: 'no_such_message' });
+    const what = p.slice('/api/scheduled/'.length);
+    if (what === 'delete') sq.del.run(r.id);
+    else if (what === 'update') {
+      if (b.at != null) { if (!okAt(Number(b.at))) return send(res, 400, { error: 'bad_time' }); sq.setAt.run(Math.round(Number(b.at)), r.id); }
+      if (b.payload != null) {
+        if (typeof b.payload !== 'string' || !b.payload || b.payload.length > 131072) return send(res, 400, { error: 'bad_payload' });
+        sq.setPayload.run(b.payload, r.id);
+      }
+    } else if (what === 'now') { sq.setAt.run(now(), r.id); runScheduled(); }
+    else return send(res, 404, { error: 'not_found' });
+    const list = sq.mine.all(user).map(schedJson);
+    emit(user, 'scheduled', { list });
+    return send(res, 200, { ok: true, list });
+  }
+  // ---- 1.29: settings synced between the user's own devices (sealed for the user: the server cannot read them) ----
+  if (p === '/api/prefs' && req.method === 'GET') {
+    const k = String(url.searchParams.get('k') || '');
+    if (!PREF_KEYS.has(k)) return send(res, 400, { error: 'bad_key' });
+    const r = pq.get.get(user, k);
+    return send(res, 200, r ? { v: r.v, ts: r.ts } : { v: null, ts: 0 });
+  }
+  if (p === '/api/prefs' && req.method === 'POST') {
+    const b = await readJson(req, 65536 + 512);
+    const k = String(b.k || '');
+    if (!PREF_KEYS.has(k)) return send(res, 400, { error: 'bad_key' });
+    if (typeof b.v !== 'string' || b.v.length > 65536) return send(res, 400, { error: 'bad_value' });
+    const ts = now();
+    pq.set.run(user, k, b.v, ts);
+    emit(user, 'prefs', { k, ts, dev: String(b.dev || '').slice(0, 64) });
+    return send(res, 200, { ok: true, ts });
+  }
+
   if (p === '/api/send' && req.method === 'POST') {
     const b = await readJson(req, 131072 + 1024);
     const target = String(b.target || 'all').toLowerCase();
@@ -1042,6 +1161,7 @@ async function route(req, res) {
     if (!/^[a-z_]{1,16}$/.test(kind)) return send(res, 400, { error: 'bad_kind' });
     if (typeof b.payload !== 'string' || b.payload.length > 131072) return send(res, 400, { error: 'bad_payload' });
     let tr = resolveTarget(user, target);
+    if (b.at != null && (tr.error || kind.startsWith('sig_'))) return send(res, tr.error ? tr.code : 400, { error: tr.error || 'bad_kind' });
     let request = null; // 1.7: a message to someone not connected travels as a message request
     if (tr.error === 'not_allowed') {
       if (kind === 'sig_invite') {
@@ -1078,21 +1198,21 @@ async function route(req, res) {
       if (!canUseFile(user, b.fileId)) return send(res, 400, { error: 'bad_file' });
       fileId = b.fileId;
     }
+    const silent = b.silent === 1 ? 1 : 0;
+    // 1.29: «ارسال زمان‌دار» — kept (still sealed) until `at`, then sent like any other message (see runScheduled)
+    if (b.at != null) {
+      if (request) return send(res, 403, { error: 'not_connected' });
+      const r = schedule(user, target, kind, b.payload, fileId, Number(b.at), silent);
+      if (r.error) return send(res, r.code, { error: r.error });
+      return send(res, 200, { scheduled: r.id, at: r.at });
+    }
     const ts = now();
     // 1.22: the full-screen sticker effect, at most once per FX_GAP per user (a sooner one goes as a plain sticker)
     let fx = 0;
     if (b.fx === 1 && !fileId && !request) {
       if (ts - (fxLast.get(user) || 0) >= FX_GAP) { fx = 1; fxLast.set(user, ts); }
     }
-    const r = q.addMsg.run(user, target, kind, b.payload, fileId, ts, fx);
-    const m = { id: Number(r.lastInsertRowid), sender: user, target, kind, payload: b.payload, file_id: fileId, ts, fx };
-    // a declined request still takes the message (the sender is not told) but nothing pops up for the receiver
-    const quiet = request && request.status !== 'pending';
-    const recipients = tr.type === 'group' ? core.membersOf(tr.cat.id) : quiet ? [user] : [target, user];
-    for (const u of recipients) emit(u, 'msg', msgJson(m), m.id);
-    // nobody has the app on screen: wake their closed web apps (iPhone) with a notification (a request: its first message only)
-    const ping = !request || request.first;
-    for (const u of recipients) if (ping && u !== user && !isOnline(u) && push.hasSubs(u)) push.notify(u, pushData(m, tr, !!request)).catch(() => { });
+    const m = deliver(user, target, tr, kind, b.payload, fileId, ts, fx, silent, request);
     return send(res, 200, request ? { id: m.id, ts, fx, request: true, left: contacts.REQ_MSGS - (contacts.lists(user).outgoing.find((r) => r.username === target) || { msgs: contacts.REQ_MSGS }).msgs } : { id: m.id, ts, fx });
   }
 
@@ -1149,7 +1269,7 @@ async function route(req, res) {
       }
       q.delPin.run(core.convoKey(user, peer));
       // a marker row (never delivered as a message) that the change points at; its payload is `upto`
-      mid = Number(q.addMsg.run(user, peer, 'sig_clear', String(upto), null, t, 0).lastInsertRowid);
+      mid = Number(q.addMsg.run(user, peer, 'sig_clear', String(upto), null, t, 0, 0).lastInsertRowid);
       db.prepare('UPDATE messages SET deleted=1 WHERE id=?').run(mid);
       seq = Number(q.addChange.run(mid, 'clear', t).lastInsertRowid);
       db.exec('COMMIT');
@@ -1473,9 +1593,13 @@ server.keepAliveTimeout = 65000;
 function cleanup() {
   try {
     const fcut = now() - FILE_TTL_DAYS * DAY;
-    for (const f of db.prepare('SELECT id FROM files WHERE ts<?').all(fcut)) { try { fs.unlinkSync(path.join(FILES_DIR, f.id)); } catch { } }
-    db.prepare('DELETE FROM files WHERE ts<?').run(fcut);
-    db.prepare('DELETE FROM messages WHERE ts<?').run(now() - MSG_TTL_DAYS * DAY);
+    // 1.29: files kept in «پیام‌های ذخیره‌شده» or waiting in a scheduled message stay (they count toward the owner's quota)
+    const keepF = `id NOT IN (SELECT file_id FROM messages WHERE sender=target AND deleted=0 AND file_id IS NOT NULL)
+      AND id NOT IN (SELECT file_id FROM scheduled WHERE file_id IS NOT NULL)`;
+    for (const f of db.prepare(`SELECT id FROM files WHERE ts<? AND ${keepF}`).all(fcut)) { try { fs.unlinkSync(path.join(FILES_DIR, f.id)); } catch { } }
+    db.prepare(`DELETE FROM files WHERE ts<? AND ${keepF}`).run(fcut);
+    db.prepare('DELETE FROM messages WHERE ts<? AND (sender<>target OR deleted=1)').run(now() - MSG_TTL_DAYS * DAY);
+    db.prepare('DELETE FROM scheduled WHERE failed IS NOT NULL AND at<?').run(now() - SCHED_DAYS * DAY);
     db.prepare('DELETE FROM msg_history WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     db.prepare('DELETE FROM reactions WHERE msg_id NOT IN (SELECT id FROM messages)').run();
     push.cleanup();

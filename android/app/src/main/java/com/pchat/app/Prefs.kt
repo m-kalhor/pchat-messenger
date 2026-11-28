@@ -76,6 +76,10 @@ object Prefs {
     var notifyGroups: Boolean
         get() = p.getBoolean("notif_group", true)
         set(v) { p.edit().putBoolean("notif_group", v).apply(); notifTick.value++ }
+    /** 1.29: a mention of me (or an answer to my message) notifies even in a muted group */
+    var mentionAlways: Boolean
+        get() = p.getBoolean("notif_mention", true)
+        set(v) { p.edit().putBoolean("notif_mention", v).apply(); notifTick.value++ }
     /** 1.22: show the full-screen effect of stickers sent by holding them */
     var stickerFx: Boolean
         get() = p.getBoolean("sticker_fx", true)

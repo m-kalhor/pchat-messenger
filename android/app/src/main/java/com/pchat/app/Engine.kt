@@ -112,6 +112,12 @@ object Engine {
     val waitingDownloads = MutableStateFlow<Map<Long, Msg>>(emptyMap())
     /** message id -> reason a queued message failed permanently */
     val failures = MutableStateFlow<Map<Long, String>>(emptyMap())
+    /** 1.29: server features the admin turned on (panel card «امکانات پیام») */
+    data class Feats(val saved: Boolean = false, val sched: Boolean = false, val schedDays: Int = 30)
+    val feats = MutableStateFlow(Feats())
+    /** 1.29: my scheduled messages waiting on the server (texts opened here) */
+    data class Sched(val id: Long, val convo: String, val text: String, val at: Long, val silent: Boolean, val failed: String?)
+    val scheduled = MutableStateFlow<List<Sched>>(emptyList())
 
     @Volatile var currentConvo: String? = null
     @Volatile var appVisible = false
@@ -139,7 +145,10 @@ object Engine {
     fun groupName(key: String): String =
         groups.value.firstOrNull { it.key == key }?.name ?: if (key == "all") "گروه عمومی" else key
 
-    fun titleOf(convo: String) = if (isGroup(convo)) groupName(convo) else nameOf(convo)
+    fun titleOf(convo: String) = if (isGroup(convo)) groupName(convo) else if (isSaved(convo)) SAVED_TITLE else nameOf(convo)
+    /** 1.29: «پیام‌های ذخیره‌شده» = the chat with myself */
+    fun isSaved(convo: String) = convo.isNotEmpty() && convo == me
+    const val SAVED_TITLE = "پیام‌های ذخیره‌شده"
 
     @Synchronized
     fun init(ctx: Context) {
@@ -158,6 +167,8 @@ object Engine {
         hideSeen.value = prefs.getBoolean("hide_seen", false)
         hideLastSeen.value = prefs.getBoolean("hide_last_seen", false)
         Stickers.load()
+        ChatList.load() // 1.29
+        feats.value = Feats(prefs.getBoolean("feat_saved", false), prefs.getBoolean("feat_sched", false), prefs.getInt("feat_sched_days", 30))
         CallManager.init(app)
         if (Build.VERSION.SDK_INT >= 26) {
             val nm = app.getSystemService(NotificationManager::class.java)
@@ -205,6 +216,7 @@ object Engine {
         chanViews.value = emptyMap()
         phoneMatches.value = emptyList()
         Prefs.clearChatPrefs()
+        ChatList.clear(); scheduled.value = emptyList() // 1.29
         receipts.value = emptyMap()
         gtyping.value = emptyMap()
         hideSeen.value = false
@@ -746,6 +758,7 @@ object Engine {
                         synchronized(acks) { acked.clear() }
                         scope.launch { delay(2500); syncReceipts() }
                         scope.launch { delay(4000); Updater.checkAndNotify(app, appVisible) }
+                        scope.launch { refreshScheduled(); ChatList.pull() } // 1.29
                     },
                     onEvent = { ev, data -> try { handleEvent(ev, data) } catch (e: Exception) { } }
                 )
@@ -810,6 +823,9 @@ object Engine {
             // 1.19: group calls
             "gcall", "gcall_end", "gsig", "gcall_react", "gcall_host" -> GroupCall.onEvent(ev, o)
             "login_alert" -> postLoginAlert(o)
+            // 1.29
+            "scheduled" -> setScheduled(o.optJSONArray("list") ?: JSONArray())
+            "prefs" -> if (o.optString("dev") != deviceId) scope.launch { ChatList.pull() }
             "stickers" -> scope.launch { Stickers.refresh() }
             "app_update" -> scope.launch { Updater.checkAndNotify(app, appVisible) }
             "pin" -> {
@@ -857,6 +873,8 @@ object Engine {
             val loc = locOf(plain)
             val stk = stkOf(plain)
             val wf = plain.optJSONArray("wf")
+            // 1.29: in a group, @me, @همه from its owner / an admin, or an answer to my message
+            val ment = if (!mine && isGroup(target) && !isChan(target) && mentionsMe(from, target, plain.optString("x", ""), r?.optString("u"))) 1 else 0
             Msg(
                 id, convo, from, mine, ts,
                 if (voice) "voice" else if (loc != null) "location" else if (stk != null) "sticker" else t, plain.optString("x", ""),
@@ -871,7 +889,8 @@ object Engine {
                 wave = if (voice && wf != null) (0 until minOf(wf.length(), 100)).map { wf.optInt(it).coerceIn(0, 31) } else emptyList(),
                 loc = loc, reactions = reactionMap(o.optJSONObject("reactions")), stk = stk,
                 // 1.22: an effect sticker plays once when first seen (not old ones that come with a new login)
-                fx = if (stk == null || o.optInt("fx", 0) != 1) 0 else if (!mine && System.currentTimeMillis() - ts < 86_400_000L) 2 else 1
+                fx = if (stk == null || o.optInt("fx", 0) != 1) 0 else if (!mine && System.currentTimeMillis() - ts < 86_400_000L) 2 else 1,
+                mention = if (ment == 1 && visible) 2 else ment, silent = o.optInt("silent", 0) == 1
             )
         } catch (e: Exception) {
             if (e is NoChanKey) {
@@ -886,6 +905,7 @@ object Engine {
         if (isNew && lx != null && fileId != null) lanServerMessage(lx!!, msg)
         if (!isNew && msg.reactions.isNotEmpty()) db.setReactions(id, msg.reactions)
         if (!mine) ack(convo, id, if (msg.read) id else 0)
+        if (isNew && !mine) ChatList.onIncoming(convo) // 1.29: back out of the archive (unless muted)
         if (isNew && !msg.read && !quiet) postNotification(msg)
         if (id > prefs.getLong("last_id", 0)) prefs.edit().putLong("last_id", id).apply()
         if (isNew) tick.value++
@@ -936,7 +956,8 @@ object Engine {
     private fun postNotification(m: Msg) {
         if (!notifAllowed()) return
         val group = isGroup(m.convo)
-        if (!Prefs.shouldNotify(m.convo, group)) return
+        // 1.29: a mention or an answer to me still notifies in a muted group (switch in Settings › اعلان‌ها)
+        if (!Prefs.shouldNotify(m.convo, group) && !(m.mention == 1 && Prefs.mentionAlways && Prefs.notifyGroups)) return
         val lines = synchronized(notifLines) {
             notifLines.getOrPut(m.convo) { ArrayList() }.apply { add(NotifLine(m.sender, U.preview(m), m.ts)); while (size > 8) removeAt(0) }.toList()
         }
@@ -964,6 +985,7 @@ object Engine {
             .setContentIntent(openIntent(m.convo))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setSilent(m.silent) // 1.29: «ارسال بی‌صدا»
             .build()
         NotificationManagerCompat.from(app).notify(m.convo.hashCode(), n)
     }
@@ -1101,11 +1123,12 @@ object Engine {
         groups.value.forEach { keys.add(it.key) }
         users.value.filter { it.username != me }.forEach { keys.add(it.username) }
         keys.addAll(db.convos())
+        if (feats.value.saved && me.isNotEmpty()) keys.add(me) else if (!feats.value.saved) keys.remove(me)
         val canDm = users.value.filter { it.dm && it.req == null }.map { it.username }.toSet()
         // message requests to me live under «درخواست‌ها», not in the chat list
         val requests = users.value.filter { it.req == "in" || it.req == "declined" }.map { it.username }.toSet()
         return keys.map { db.summary(it) }
-            .filter { it.convo !in requests && (isGroup(it.convo) || it.convo in canDm || it.last != null) }
+            .filter { it.convo !in requests && (isGroup(it.convo) || it.convo in canDm || it.last != null || isSaved(it.convo)) }
             .sortedWith(compareByDescending<ConvoSummary> { it.last?.ts ?: if (isGroup(it.convo)) 1L else 0L })
     }
 
@@ -1150,13 +1173,110 @@ object Engine {
     fun clearCallLogs() { db.clearCallLogs(); tick.value++ }
 
     fun sendTyping(convo: String) {
-        if (reqOf(convo) == "out" || isChan(convo)) return // no "typing…" to someone who has not accepted yet, nor in a channel
+        if (reqOf(convo) == "out" || isChan(convo) || isSaved(convo)) return // no "typing…" to someone who has not accepted yet, nor in a channel
         val t = System.currentTimeMillis()
         if (t - (lastTypingSent[convo] ?: 0L) < 3000) return
         lastTypingSent[convo] = t
         scope.launch {
             try { if (isGroup(convo)) Api.typing(convo) else Api.signal(convo, "sig_typing", "1") } catch (e: Exception) { }
         }
+    }
+
+    // ---------------- 1.29: mentions, saved messages, scheduled messages ----------------
+
+    /** @me (my username, any case), @all / @همه from the group's owner or an admin, or an answer to my message. */
+    fun mentionsMe(from: String, group: String, text: String, replyUser: String?): Boolean {
+        if (replyUser == me && me.isNotEmpty()) return true
+        val words = Regex("@([A-Za-z0-9_.]+|همه)").findAll(text).map { it.groupValues[1].lowercase() }.toList()
+        if (words.isEmpty()) return false
+        if (me.lowercase() in words) return true
+        if (("all" in words || "همه" in words)) {
+            val g = groupOf(group) ?: return false
+            return g.owner == from || from in g.admins
+        }
+        return false
+    }
+
+    /** Members to offer after «@» in a group (not me), filtered by what was typed after it. */
+    fun mentionCandidates(convo: String, prefix: String): List<String> {
+        val g = groupOf(convo) ?: return emptyList()
+        if (g.isChan) return emptyList()
+        val p = prefix.lowercase()
+        return g.members.filter { it != me && (p.isEmpty() || it.lowercase().startsWith(p) || nameOf(it).lowercase().contains(p)) }
+            .sortedBy { nameOf(it) }.take(30)
+    }
+    /** @همه is only for a user group's owner and admins. */
+    fun canMentionAll(convo: String): Boolean = groupOf(convo)?.let { !it.isChan && it.manages } == true
+
+    /** A note only my devices can open (my settings synced through the server). */
+    fun sealForMe(plain: String): String =
+        Crypto.encryptFor(identity!!, me, me, mapOf(me to identity!!.pubB64), plain.toByteArray())
+    fun openFromMe(sealed: String): String? = try {
+        String(Crypto.decryptFrom(identity!!, me, me, me, null, sealed), Charsets.UTF_8)
+    } catch (e: Exception) { null }
+
+    private fun setScheduled(a: JSONArray) {
+        val out = ArrayList<Sched>()
+        for (i in 0 until a.length()) {
+            val o = a.getJSONObject(i)
+            val tg = o.getString("target")
+            val text = try {
+                val pl = o.getString("payload")
+                val plain = if (isGroup(tg) && Crypto.chanVersion(pl) > 0) chanOpen(me, tg, pl)
+                    else JSONObject(String(Crypto.decryptFrom(identity!!, me, me, tg, null, pl), Charsets.UTF_8))
+                plain.optString("x", "")
+            } catch (e: Exception) { LOCKED_TEXT }
+            out.add(Sched(o.getLong("id"), tg, text, o.getLong("at"), o.optInt("silent", 0) == 1, if (o.isNull("failed")) null else o.optString("failed")))
+        }
+        scheduled.value = out
+    }
+
+    fun refreshScheduled() { try { if (feats.value.sched) setScheduled(Api.scheduled()) } catch (e: Exception) { } }
+
+    fun scheduledIn(convo: String, list: List<Sched> = scheduled.value) = list.filter { it.convo == convo }
+
+    /** Seals a text now and leaves it on the server until [at] (the phone may be off by then). */
+    suspend fun scheduleText(convo: String, text: String, reply: Msg?, at: Long, silent: Boolean): String? = withContext(Dispatchers.IO) {
+        try {
+            val m = Msg(0, convo, me, true, at, "text", text, null, null, null, 0, null, 0, 0,
+                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true)
+            val plain = plainOf(m).toString().toByteArray()
+            try { Api.schedule(convo, encryptFor(convo, plain), at, silent) } catch (e: Api.HttpError) {
+                if (e.code != 409 || e.error != "chan_key_old") throw e
+                refreshGroups(); groupOf(convo)?.let { chanSyncNow(it) }
+                Api.schedule(convo, encryptFor(convo, plain), at, silent)
+            }
+            refreshScheduled()
+            null
+        } catch (e: Exception) { schedError(e) }
+    }
+
+    /** what = "now" | "delete" | "move" (to [at]); a failed one is sealed again (a channel's key may have changed). */
+    suspend fun scheduledAction(s: Sched, what: String, at: Long? = null): String? = withContext(Dispatchers.IO) {
+        try {
+            val fresh = if (s.failed != null && what != "delete") encryptFor(s.convo, plainOf(Msg(0, s.convo, me, true, 0, "text", s.text, null, null, null, 0, null, 0, 0, 0L, null, null, null, true)).toString().toByteArray()) else null
+            val l = when (what) {
+                "move" -> Api.scheduledAction("update", s.id, at = at, payload = fresh)
+                "now" -> { if (fresh != null) Api.scheduledAction("update", s.id, payload = fresh); Api.scheduledAction("now", s.id) }
+                else -> Api.scheduledAction("delete", s.id)
+            }
+            setScheduled(l)
+            null
+        } catch (e: Exception) { schedError(e) }
+    }
+
+    private fun schedError(e: Exception): String = when ((e as? Api.HttpError)?.error) {
+        "bad_time" -> "زمان باید از الان تا ${U.fa(feats.value.schedDays)} روز بعد باشد"
+        "sched_full" -> "صف پیام‌های زمان‌دار شما پر است؛ چندتایی را حذف یا همین حالا بفرستید"
+        "sched_off" -> "ارسال زمان‌دار را مدیر سرور خاموش کرده است"
+        else -> errText(e)
+    }
+
+    fun schedFailText(why: String): String = when (why) {
+        "not_allowed", "not_member" -> "دیگر به این گفتگو دسترسی ندارید"
+        "admins_only", "group_frozen" -> "در این گروه اجازهٔ نوشتن ندارید"
+        "chan_key_old" -> "کلید کانال عوض شده؛ «همین حالا بفرست» را بزنید"
+        else -> "ارسال نشد"
     }
 
     /** Who is typing in a group right now. */
@@ -1331,6 +1451,10 @@ object Engine {
         if (o.has("username")) diag.value = o.optBoolean("diag", false) // /api/me only
         if (o.has("username")) callRoute.value = o.optBoolean("call_route", false)
         if (o.has("gcall")) GroupCall.cfg.value = parseGCfg(o.optJSONObject("gcall"))
+        o.optJSONObject("feats")?.let { f ->
+            feats.value = Feats(f.optBoolean("saved", false), f.optBoolean("sched", false), f.optInt("sched_days", 30))
+            prefs.edit().putBoolean("feat_saved", feats.value.saved).putBoolean("feat_sched", feats.value.sched).putInt("feat_sched_days", feats.value.schedDays).apply()
+        }
         o.optJSONObject("ugroups")?.let { u -> ugCfg.value = UgCfg(u.optBoolean("on", false), u.optInt("limit", 0), u.optInt("owned", 0), u.optInt("max_members", 200), u.optBoolean("chan_on", false), u.optInt("chan_max", 1000)) }
         prefs.edit().putBoolean("hide_seen", hideSeen.value).putBoolean("hide_last_seen", hideLastSeen.value).apply()
     }
@@ -1909,7 +2033,7 @@ object Engine {
                 val pk = pubOf(u)
                 if (pk != null) rec[u] = pk
             }
-        } else {
+        } else if (convo != me) {
             rec[convo] = users.value.firstOrNull { it.username == convo }?.pubkey
                 ?: throw UserError("این کاربر هنوز وارد برنامه نشده و کلید امنیتی ندارد")
         }
@@ -1934,11 +2058,11 @@ object Engine {
     }
 
     /** Queues a text message (shown immediately, sent in the background, retried until it succeeds). */
-    fun sendText(convo: String, text: String, reply: Msg?) {
+    fun sendText(convo: String, text: String, reply: Msg?, silent: Boolean = false) {
         val localId = -System.nanoTime()
         db.insert(
             Msg(localId, convo, me, true, System.currentTimeMillis(), "text", text, null, null, null, 0, null, 0, 0,
-                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1)
+                reply?.id?.takeIf { it > 0 } ?: 0L, reply?.sender, reply?.let { U.preview(it).take(80) }, null, true, status = 1, silent = silent)
         )
         tick.value++
         scope.launch { flushTexts() }
@@ -2044,17 +2168,17 @@ object Engine {
     }
 
     /** Sends; a channel that moved to a new key meanwhile (somebody was removed) gets the new key and one more try. */
-    private fun sendRekeyed(convo: String, plain: ByteArray, fileId: String?, fx: Boolean = false): Pair<Long, Long> = try {
-        Api.send(convo, encryptFor(convo, plain), fileId, fx)
+    private fun sendRekeyed(convo: String, plain: ByteArray, fileId: String?, fx: Boolean = false, silent: Boolean = false): Pair<Long, Long> = try {
+        Api.send(convo, encryptFor(convo, plain), fileId, fx, silent)
     } catch (e: Api.HttpError) {
         if (e.code != 409 || e.error != "chan_key_old") throw e
         refreshGroups()
         groupOf(convo)?.let { chanSyncNow(it) }
-        Api.send(convo, encryptFor(convo, plain), fileId, fx)
+        Api.send(convo, encryptFor(convo, plain), fileId, fx, silent)
     }
 
     private fun sendQueuedText(m: Msg) {
-        val (id, ts) = sendRekeyed(m.convo, plainOf(m).toString().toByteArray(), null, m.type == "sticker" && m.fx != 0)
+        val (id, ts) = sendRekeyed(m.convo, plainOf(m).toString().toByteArray(), null, m.type == "sticker" && m.fx != 0, m.silent)
         db.insert(m.copy(id = id, ts = ts, status = 0, uploadId = null, read = true))
         db.delete(m.id)
         tick.value++

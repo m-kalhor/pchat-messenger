@@ -12,7 +12,7 @@ import './lan.mjs';
 import { COUNTRIES, flag, joinPhone } from './countries.mjs';
 import { ic } from './icons.mjs';
 
-const VERSION = '1.28.0';
+const VERSION = '1.29.0';
 const S = E.S;
 const app = document.getElementById('app');
 
@@ -133,6 +133,8 @@ const initials = (s) => (s || '?').trim().split(/\s+/).slice(0, 2).map((w) => Ar
 function avatar(convo, cls = '') {
   const group = E.isGroup(convo);
   const el = h('div', { class: 'av ' + cls });
+  // 1.29: «پیام‌های ذخیره‌شده»
+  if (E.isSaved(convo)) { el.style.background = 'var(--accent)'; el.append(ic('bookmark', cls === 'xs' ? 14 : cls === 'sm' ? 20 : cls === 'lg' ? 48 : 24)); return el; }
   el.style.background = colorFor(convo);
   const url = group ? E.groupAvatarUrl(convo) : E.avatarUrl(convo);
   if (url) el.append(h('img', { src: url, alt: '' }));
@@ -273,7 +275,7 @@ const fmtFull = (ts) => new Date(ts).toLocaleString('fa-IR-u-ca-persian', { date
 function forwardSheet(msgs, done) {
   const keys = E.summaries().map((x) => x.convo);
   for (const u of S.users) if (u.dm && u.username !== S.me && !keys.includes(u.username)) keys.push(u.username);
-  const targets = keys.filter((c) => E.isGroup(c) || (E.user(c) && (E.user(c).dm || (S.convos.get(c) || []).length)));
+  const targets = keys.filter((c) => E.isGroup(c) || E.isSaved(c) || (E.user(c) && (E.user(c).dm || (S.convos.get(c) || []).length))).sort((a, b) => E.isSaved(b) - E.isSaved(a));
   const picked = new Set();
   const list = h('div', { class: 'picklist' });
   const q = h('input', { type: 'text', placeholder: 'جستجو…', oninput: () => render() });
@@ -502,6 +504,7 @@ function route() {
   else if (hash.startsWith('/c/')) view = ChatScreen(hash.slice(3));
   else if (hash.startsWith('/p/')) view = ProfileScreen(hash.slice(3));
   else if (hash === '/new') view = ContactsScreen();
+  else if (hash === '/archive') view = ListScreen(true); // 1.29
   else if (hash === '/requests') view = RequestsScreen();
   else if (hash === '/calls') view = CallsScreen();
   else if (/^@[A-Za-z0-9_]{2,20}$/.test(hash)) { const n = hash.slice(1); view = ListScreen(); setTimeout(() => { history.replaceState(null, '', '#/'); openUser(n); }, 0); }
@@ -802,19 +805,29 @@ function KeyScreen(mode) {
 }
 
 // ---------------- chat list ----------------
-function ListScreen() {
+let listTab = 'all'; // 1.29: the chat list's tab (kept while the page is open)
+function ListScreen(archive = false) {
   const conn = h('span', { class: 'conn' });
   const reqBadge = h('span', { class: 'badge hidden' });
   const list = h('div', { class: 'scroll' });
+  const tabsEl = h('div', { class: 'ctabs' });
   const connLine = h('div', { class: 'connline hidden' });
   const nav = bottomNav('chats');
+  const menu = () => sheet(null, [
+    S.feats.saved ? { label: '🔖 ' + E.SAVED_TITLE, run: () => go('#/c/' + encodeURIComponent(S.me)) } : null,
+    { label: '🗂 پوشه‌های گفتگو', run: () => foldersBox() },
+    { label: '🗄 بایگانی' + (S.chat.archived.length ? ' (' + faNum(S.chat.archived.length) + ')' : ''), run: () => go('#/archive') },
+  ]);
   const el = h('div', { class: 'scroll', style: { display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' } },
-    h('div', { class: 'bar' },
-      h('h1', null, 'سپن ', conn),
-      h('button', { class: 'icon', title: 'درخواست‌های ارتباط', onclick: () => go('#/requests') }, ic('personAdd'), reqBadge)),
-    connLine, list,
+    archive
+      ? h('div', { class: 'bar' }, h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, ic('back')), h('h1', null, 'بایگانی ', conn))
+      : h('div', { class: 'bar' },
+        h('h1', null, 'سپن ', conn),
+        h('button', { class: 'icon', title: 'درخواست‌های ارتباط', onclick: () => go('#/requests') }, ic('personAdd'), reqBadge),
+        h('button', { class: 'icon', title: 'بیشتر', onclick: menu }, ic('more'))),
+    connLine, archive ? null : tabsEl, list,
     // 1.28: round «گفتگوی تازه» button above the bottom bar
-    h('button', { class: 'fab', title: 'گفتگوی تازه', onclick: () => { buzz(); newMenu(); } }, ic('edit')),
+    archive ? null : h('button', { class: 'fab', title: 'گفتگوی تازه', onclick: () => { buzz(); newMenu(); } }, ic('edit')),
     nav.el);
   const render = batched(() => {
     conn.textContent = connText();
@@ -828,45 +841,175 @@ function ListScreen() {
     const isReq = (c) => { const r = E.reqOf(c); return r === 'in' || r === 'declined'; };
     const all = E.summaries().filter((x) => !isReq(x.convo));
     const sorted = [...pins.map((c) => all.find((s) => s.convo === c)).filter(Boolean), ...all.filter((s) => !pins.includes(s.convo))];
-    const rows = sorted.map((s) => {
+    // 1.29: tabs (built-in kinds + my folders) and the archive
+    const active = sorted.filter((s) => !E.isArchived(s.convo));
+    const arch = sorted.filter((s) => E.isArchived(s.convo));
+    const tabs = E.chatTabs();
+    let tab = tabs.find((t) => t.key === listTab) || tabs[0];
+    if (S.chat.hideTabs) tab = tabs[0];
+    tabsEl.classList.toggle('hidden', !!S.chat.hideTabs);
+    if (!archive && !S.chat.hideTabs) {
+      fill(tabsEl, tabs.map((t) => {
+        const cnt = t.key === 'unread' ? 0 : active.filter((s) => E.inTab(t, s) && s.unread > 0).length;
+        const b = h('button', { class: 'ctab' + (t.key === tab.key ? ' on' : ''), onclick: () => { if (wasLong()) return; listTab = t.key; render(); list.scrollTop = 0; } },
+          t.name, cnt ? h('span', { class: 'cn' }, faNum(cnt)) : null);
+        const wasLong = onLongPress(b, () => { buzz(12); foldersBox(); });
+        return b;
+      }), h('button', { class: 'ctab edit', title: 'ویرایش پوشه‌ها', onclick: () => foldersBox() }, ic('edit', 16)));
+    }
+    const shown = archive ? arch : active.filter((s) => E.inTab(tab, s));
+    const rows = shown.map((s) => {
       const group = E.isGroup(s.convo);
       const gt = group ? E.typingIn(s.convo) : [];
       const typing = group ? gt.length > 0 : Date.now() - (S.typing[s.convo] || 0) < 4500;
       const last = s.last;
       const draft = draftOf(s.convo);
       const chan = group && E.isChan(s.convo);
-      let prev = last ? (chan ? '' : group && !last.mine && last.type !== 'call' ? E.nameOf(last.sender) + ': ' : last.mine && last.type !== 'call' ? 'شما: ' : '') + E.preview(last) : (chan ? 'کانال' : 'هنوز پیامی نیست');
+      let prev = last ? (chan ? '' : group && !last.mine && last.type !== 'call' ? E.nameOf(last.sender) + ': ' : last.mine && last.type !== 'call' && !E.isSaved(s.convo) ? 'شما: ' : '') + E.preview(last) : (chan ? 'کانال' : E.isSaved(s.convo) ? 'یادداشت‌ها و پیام‌های نگه‌داشته' : 'هنوز پیامی نیست');
       if (draft) prev = [h('span', { class: 'draft' }, 'پیش‌نویس: '), draft];
       if (typing) prev = group ? E.nameOf(gt[0]) + (gt.length > 1 ? ' و ' + faNum(gt.length - 1) + ' نفر دیگر' : '') + ' در حال نوشتن…' : 'در حال نوشتن…';
-      const tick = last && !typing && !draft ? E.tickOf(last) : null;
+      const tick = last && !typing && !draft && !E.isSaved(s.convo) ? E.tickOf(last) : null;
       const row = h('button', { class: 'row' },
         avatarWithDot(s.convo),
         h('div', { class: 'mid' },
           h('div', { class: 'top' }, h('div', { class: 'name' }, chan ? ic('campaign', 16, 'nic') : null, E.titleOf(s.convo)), group && GC.roomOf(s.convo) ? h('span', { class: 'gcmark', title: 'تماس گروهی در جریان' }, ic('call', 16)) : null, tick ? tickEl(tick) : null, h('div', { class: 'time' }, last ? fmtListTime(last.ts) : '')),
-          h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, typing ? typingDots() : null, prev), s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, ic('pin', 16)) : null)));
+          h('div', { class: 'sub' }, h('div', { class: 'prev' + (typing ? ' typing' : '') }, typing ? typingDots() : null, prev),
+            s.mentions ? h('span', { class: 'count at', title: 'منشن' }, ic('at', 14)) : null,
+            s.unread ? h('span', { class: 'count' }, faNum(s.unread)) : pins.includes(s.convo) ? h('span', { class: 'pinmark' }, ic('pin', 16)) : null)));
       const wasLong = onLongPress(row, () => {
         buzz(12);
         const pinned = pinnedChats().includes(s.convo);
+        const inArch = E.isArchived(s.convo);
         sheet(E.titleOf(s.convo), [{ label: pinned ? 'برداشتن سنجاق از بالای فهرست' : '📌 سنجاق به بالای فهرست', run: () => { togglePinChat(s.convo); render(); } },
+          { label: inArch ? '📤 خارج کردن از بایگانی' : '🗄 بایگانی', run: () => E.setArchived(s.convo, !inArch) },
+          { label: '🗂 افزودن به پوشه', run: () => folderPick(s.convo) },
           { label: '🗑 حذف گفتگو', danger: true, run: () => clearChatDialog(s.convo) }]);
       });
       row.addEventListener('click', () => { if (!wasLong()) go('#/c/' + encodeURIComponent(s.convo)); });
       return row;
     });
-    const reqRow = n ? h('button', { class: 'row', onclick: () => go('#/requests') },
+    const reqRow = n && !archive ? h('button', { class: 'row', onclick: () => go('#/requests') },
       h('div', { class: 'av', style: { background: 'var(--accent)' } }, ic('inbox', 26)),
       h('div', { class: 'mid' }, h('div', { class: 'top' }, h('div', { class: 'name' }, 'درخواست‌های پیام')),
         h('div', { class: 'sub' }, h('div', { class: 'prev' }, S.requests.incoming.slice(0, 3).map((r) => r.display_name || '@' + r.username).join('، ')), h('span', { class: 'count' }, faNum(n))))) : null;
-    fill(list, 
-      isIOS && !standalone() ? h('div', { class: 'hint' }, 'برای اینکه سپن مثل یک برنامه باز شود: دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' و بعد ', h('b', null, '«افزودن به صفحهٔ اصلی»'), '.') : null,
-      reqRow,
-      rows.length ? rows : !S.lastId && S.conn !== 'online' ? skeleton()
+    const unreadArch = arch.filter((s) => s.unread > 0).length;
+    const archRow = !archive && arch.length && tab.key === 'all' ? h('button', { class: 'row', onclick: () => go('#/archive') },
+      h('div', { class: 'av', style: { background: 'var(--muted, #8a97a6)' } }, ic('archive', 26)),
+      h('div', { class: 'mid' }, h('div', { class: 'top' }, h('div', { class: 'name' }, 'بایگانی')),
+        h('div', { class: 'sub' }, h('div', { class: 'prev' }, arch.slice(0, 4).map((x) => E.titleOf(x.convo)).join('، ')), unreadArch ? h('span', { class: 'count muted' }, faNum(unreadArch)) : null))) : null;
+    fill(list,
+      isIOS && !standalone() && !archive ? h('div', { class: 'hint' }, 'برای اینکه سپن مثل یک برنامه باز شود: دکمهٔ اشتراک‌گذاری ', h('b', null, '⬆️'), ' و بعد ', h('b', null, '«افزودن به صفحهٔ اصلی»'), '.') : null,
+      archRow, reqRow,
+      rows.length ? rows : archive ? emptyState('archive', 'بایگانی خالی است', 'با نگه داشتن انگشت روی یک گفتگو آن را بایگانی کنید.')
+        : sorted.length ? h('div', { class: 'hint' }, tab.folder ? 'این پوشه هنوز گفتگویی ندارد. با نگه داشتن انگشت روی هر گفتگو آن را به پوشه بیفزایید.' : 'گفتگویی در این بخش نیست')
+        : !S.lastId && S.conn !== 'online' ? skeleton()
         : emptyState('chat', 'هنوز گفتگویی ندارید', 'با یکی از مخاطبانتان گفتگو را شروع کنید؛ پیام‌ها سرتاسری رمزنگاری می‌شوند.', 'گفتگوی تازه', newMenu),
       h('div', { style: { height: '84px' } }));
   });
   render();
   E.refreshRequests().catch(() => { });
   return { el, update: render };
+}
+
+// ---------------- 1.29: chat folders ----------------
+function foldersBox() {
+  const body = h('div');
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'پوشه‌های گفتگو'),
+      h('p', null, 'گفتگوها را در پوشه‌های خودتان بچینید. پوشه‌ها روی همهٔ دستگاه‌هایتان یکی است و فقط خودتان می‌بینید.'),
+      body, h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => v.remove() }, 'بستن'))));
+  const render = () => {
+    const fs = S.chat.folders;
+    const tabsCb = h('input', { type: 'checkbox', checked: !S.chat.hideTabs, onchange: () => E.setHideTabs(!tabsCb.checked) });
+    fill(body,
+      fs.map((f, i) => h('div', { class: 'pick' },
+        ic('folder', 20), h('span', { class: 'grow', style: { cursor: 'pointer' }, onclick: () => { v.remove(); folderEdit(f); } }, f.name, h('small', null, ' · ' + faNum(f.convos.length) + ' گفتگو')),
+        i > 0 ? h('button', { class: 'icon', title: 'بالاتر', onclick: () => { E.moveFolder(f.id, -1); render(); } }, ic('arrowUp', 20)) : null,
+        i < fs.length - 1 ? h('button', { class: 'icon', title: 'پایین‌تر', onclick: () => { E.moveFolder(f.id, 1); render(); } }, ic('arrowDown', 20)) : null,
+        h('button', { class: 'icon', title: 'حذف', onclick: () => { E.deleteFolder(f.id); render(); } }, ic('close', 20)))),
+      fs.length < E.MAX_FOLDERS ? h('button', { class: 'btn flat', onclick: () => { v.remove(); folderEdit(null); } }, '+ پوشهٔ تازه') : null,
+      h('label', { class: 'pick sw' }, h('span', { class: 'grow' }, 'نمایش زبانه‌ها بالای فهرست'), tabsCb));
+  };
+  render();
+  document.body.append(v);
+}
+function folderEdit(f, pre = []) {
+  const chosen = new Set(f ? f.convos : pre);
+  const name = h('input', { type: 'text', placeholder: 'نام پوشه', maxLength: E.MAX_FOLDER_NAME, value: f ? f.name : '' });
+  const count = h('small');
+  const list = h('div', { class: 'picklist' });
+  const chats = E.summaries().map((x) => x.convo);
+  const upd = () => { count.textContent = 'گفتگوها (' + faNum(chosen.size) + ')'; };
+  fill(list, chats.map((c) => {
+    const cb = h('input', { type: 'checkbox', checked: chosen.has(c), onchange: () => { if (cb.checked) chosen.add(c); else chosen.delete(c); upd(); } });
+    return h('label', { class: 'pick' }, cb, avatar(c, 'sm'), h('span', null, E.titleOf(c)));
+  }));
+  upd();
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, f ? 'ویرایش پوشه' : 'پوشهٔ تازه'), name, count, list,
+      h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => v.remove() }, 'انصراف'),
+        h('button', { class: 'btn', onclick: () => { const err = E.saveFolder(f ? f.id : null, name.value, [...chosen]); if (err) toast(err); else v.remove(); } }, 'ذخیره'))));
+  document.body.append(v);
+  name.focus();
+}
+function folderPick(convo) {
+  const body = h('div');
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) v.remove(); } },
+    h('div', { class: 'dialog' }, h('h3', null, 'افزودن به پوشه'), body, h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => v.remove() }, 'بستن'))));
+  const render = () => fill(body,
+    S.chat.folders.length ? null : h('p', null, 'هنوز پوشه‌ای نساخته‌اید.'),
+    S.chat.folders.map((f) => {
+      const cb = h('input', { type: 'checkbox', checked: f.convos.includes(convo), onchange: () => E.toggleInFolder(f.id, convo) });
+      return h('label', { class: 'pick' }, cb, h('span', null, f.name));
+    }),
+    S.chat.folders.length < E.MAX_FOLDERS ? h('button', { class: 'btn flat', onclick: () => { v.remove(); folderEdit(null, [convo]); } }, '+ پوشهٔ تازه') : null);
+  render();
+  document.body.append(v);
+}
+
+// ---------------- 1.29: scheduled send ----------------
+/** Resolves to the chosen time (ms) or null. Quick choices first, then a day and a time. */
+function schedulePicker(title, initial) {
+  return new Promise((resolve) => {
+    const close = (r) => { v.remove(); resolve(r); };
+    const now = Date.now();
+    const days = S.feats.sched_days || 30;
+    const at = (d, hh, mm) => { const x = new Date(startOfDay(now)); x.setDate(x.getDate() + d); x.setHours(hh, mm, 0, 0); return x.getTime(); };
+    const quick = [['یک ساعت دیگر', now + 3600e3], ['امشب ساعت ۲۱', at(0, 21, 0)], ['فردا ساعت ۹ صبح', at(1, 9, 0)]].filter((q) => q[1] > now + 60e3);
+    const start = new Date(initial && initial > now ? initial : now + 3600e3);
+    const daySel = h('select', null, Array.from({ length: days + 1 }, (_, i) => h('option', { value: String(i) },
+      i === 0 ? 'امروز' : i === 1 ? 'فردا' : new Date(at(i, 12, 0)).toLocaleDateString('fa-IR-u-ca-persian', { weekday: 'long', day: 'numeric', month: 'long' }))));
+    daySel.value = String(Math.max(0, Math.min(days, Math.round((startOfDay(start.getTime()) - startOfDay(now)) / 864e5))));
+    const time = h('input', { type: 'time', value: String(start.getHours()).padStart(2, '0') + ':' + String(Math.floor(start.getMinutes() / 5) * 5).padStart(2, '0') });
+    const pick = (t) => { if (t < Date.now() + 30e3) { toast('این زمان گذشته است'); return; } close(t); };
+    const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) close(null); } },
+      h('div', { class: 'dialog' }, h('h3', null, title),
+        quick.map(([label, t]) => h('button', { class: 'it qk', onclick: () => pick(t) }, ic('clock', 18), ' ', label)),
+        h('p', null, 'یا زمان دلخواه:'), daySel, time,
+        h('div', { class: 'btns' }, h('button', { class: 'btn flat', onclick: () => close(null) }, 'انصراف'),
+          h('button', { class: 'btn', onclick: () => { const [hh, mm] = (time.value || '12:00').split(':').map(Number); pick(at(Number(daySel.value), hh, mm)); } }, 'تنظیم'))));
+    document.body.append(v);
+  });
+}
+function scheduledSheet(convo) {
+  const body = h('div', { class: 'picklist' });
+  const v = h('div', { class: 'veil', onclick: (e) => { if (e.target === v) { off(); v.remove(); } } },
+    h('div', { class: 'dialog' }, h('h3', null, 'پیام‌های زمان‌دار'),
+      h('p', null, 'روی سرور می‌مانند و سر وقت فرستاده می‌شوند، حتی اگر مرورگر بسته باشد.'), body,
+      h('div', { class: 'btns' }, h('button', { class: 'btn', onclick: () => { off(); v.remove(); } }, 'بستن'))));
+  const run = async (x, what, at) => { const err = await E.scheduledAction(x, what, at); if (err) toast(err); };
+  const render = () => {
+    const l = E.scheduledIn(convo);
+    fill(body, l.length ? l.map((x) => h('div', { class: 'sch' + (x.failed ? ' failed' : '') },
+      h('div', { class: 'grow' }, h('div', { class: 'st' }, x.text), h('small', null, fmtFull(x.at) + (x.silent ? ' · بی‌صدا' : '')),
+        x.failed ? h('small', { class: 'err' }, E.schedFailText(x.failed)) : null),
+      h('button', { class: 'icon', title: 'همین حالا بفرست', onclick: () => run(x, 'now') }, ic('send', 20)),
+      h('button', { class: 'icon', title: 'تغییر زمان', onclick: async () => { const t = await schedulePicker('تغییر زمان ارسال', x.at); if (t) run(x, 'move', t); } }, ic('schedule', 20)),
+      h('button', { class: 'icon', title: 'حذف', onclick: () => run(x, 'delete') }, ic('close', 20)))) : h('p', null, 'پیامی در صف نیست'));
+  };
+  const off = E.on((k) => { if (k === 'scheduled') render(); });
+  render();
+  document.body.append(v);
 }
 
 // ---------------- contacts (new chat) ----------------
@@ -962,8 +1105,10 @@ function RequestsScreen() {
 // ---------------- chat ----------------
 function ChatScreen(convo) {
   const group = E.isGroup(convo);
-  if (!group && !E.user(convo) && !(S.convos.get(convo) || []).length) { setTimeout(() => go('#/'), 0); return { el: h('div') }; }
+  const saved = E.isSaved(convo); // 1.29: «پیام‌های ذخیره‌شده»
+  if (!group && !saved && !E.user(convo) && !(S.convos.get(convo) || []).length) { setTimeout(() => go('#/'), 0); return { el: h('div') }; }
   S.openConvo = convo;
+  const pendingMentions = E.takeMentions(convo); // 1.29: «@» jumps to them, oldest first
   E.markRead(convo);
   let reply = null, editing = null, selected = null, limit = 120, search = '', forceBottom = true;
   // 1.21: a channel: older posts for a new member, and the 👁 counts while it is on screen
@@ -972,7 +1117,7 @@ function ChatScreen(convo) {
   const viewsTimer = chan ? setInterval(() => E.refreshViews(convo), 30000) : null;
 
   const title = h('div', { class: 't' }), sub = h('div', { class: 's' }), av = h('div');
-  const callBtns = group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, ic('call')),
+  const callBtns = saved ? [] : group ? [h('button', { class: 'icon gcbtn', title: 'تماس صوتی گروهی', onclick: () => groupCall(convo) }, ic('call')),
     h('button', { class: 'icon gcbtn gcvid', title: 'تماس تصویری گروهی', onclick: () => groupCall(convo, true) }, ic('video'))] : [
     h('button', { class: 'icon', title: 'تماس صوتی', onclick: () => call(false) }, ic('call')),
     h('button', { class: 'icon', title: 'تماس تصویری', onclick: () => call(true) }, ic('video'))];
@@ -1002,6 +1147,21 @@ function ChatScreen(convo) {
   const msgs = h('div', { class: 'msgs' });
   const jumpCount = h('span', { class: 'badge hidden' });
   const jump = h('button', { class: 'jump hidden', title: 'آخرین پیام', onclick: () => { forceBottom = true; msgs.scrollTo({ top: msgs.scrollHeight, behavior: lessMotion() ? 'auto' : 'smooth' }); } }, ic('arrowDown', 26), jumpCount);
+  // 1.29: mentions of me, scheduled messages, «@» suggestions
+  const atCount = h('span', { class: 'badge' });
+  const atBtn = h('button', { class: 'jump at hidden', title: 'منشن‌ها', onclick: () => { const id = pendingMentions.shift(); if (id) scrollToMsg(id); renderAt(); } }, ic('at', 24), atCount);
+  const renderAt = () => { atBtn.classList.toggle('hidden', !pendingMentions.length); atCount.textContent = faNum(pendingMentions.length); };
+  const schedBar = h('div', { class: 'pinbar schbar hidden' });
+  function renderSched() {
+    const l = E.scheduledIn(convo);
+    schedBar.classList.toggle('hidden', !l.length);
+    if (!l.length) return;
+    const failed = l.filter((x) => x.failed).length;
+    fill(schedBar, h('span', { class: 'pinic' }, ic(failed ? 'error' : 'schedule', 20)),
+      h('div', { class: 'pt' }, h('b', null, faNum(l.length) + ' پیام زمان‌دار'), h('span', null, failed ? faNum(failed) + ' ارسال نشد' : 'نزدیک‌ترین: ' + fmtFull(l[0].at))));
+    schedBar.onclick = () => scheduledSheet(convo);
+  }
+  const mentionBox = h('div', { class: 'mentions hidden' });
 
   const ta = h('textarea', { rows: 1, placeholder: 'پیام', dir: 'auto' });
   const fileIn = h('input', { type: 'file', multiple: true, class: 'hidden' });
@@ -1051,14 +1211,16 @@ function ChatScreen(convo) {
   const el = h('div', { class: 'chat', style: { display: 'flex', flexDirection: 'column', height: '100%', position: 'relative' } },
     h('div', { class: 'bar' },
       h('button', { class: 'icon', title: 'بازگشت', onclick: () => go('#/') }, ic('back')),
-      h('div', { class: 'grow', style: { display: 'flex', gap: '10px', alignItems: 'center' }, onclick: () => go('#/p/' + encodeURIComponent(convo)) }, av, h('div', { style: { minWidth: '0' } }, title, sub)),
+      h('div', { class: 'grow', style: { display: 'flex', gap: '10px', alignItems: 'center' }, onclick: () => { if (!saved) go('#/p/' + encodeURIComponent(convo)); } }, av, h('div', { style: { minWidth: '0' } }, title, sub)),
       callBtns,
       h('button', { class: 'icon', title: 'جستجو', onclick: () => { searchBar.classList.remove('hidden'); searchInput.focus(); } }, ic('search')),
       // 1.27: ⋮ › «حذف گفتگو»
-      h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(E.titleOf(convo), [{ label: '🗑 حذف گفتگو', danger: true, run: async () => { if (await clearChatDialog(convo)) go('#/'); } }]) }, ic('more'))),
-    connLine, searchBar, gcBar, pinBar, reqBar, msgs, jump,
+      h('button', { class: 'icon', title: 'گزینه‌ها', onclick: () => sheet(E.titleOf(convo), [
+        E.scheduledIn(convo).length ? { label: '🕒 پیام‌های زمان‌دار (' + faNum(E.scheduledIn(convo).length) + ')', run: () => scheduledSheet(convo) } : null,
+        { label: '🗑 حذف گفتگو', danger: true, run: async () => { if (await clearChatDialog(convo)) go('#/'); } }]) }, ic('more'))),
+    connLine, searchBar, gcBar, pinBar, schedBar, reqBar, msgs, jump, atBtn,
     // 1.13: send/mic on the right; 1.28: the text box, emoji and attach sit in one floating pill
-    h('div', { class: 'composer' }, selBar, replyBar, recBar, lockBar, h('div', { class: 'line' }, sendBtn, micBtn, h('div', { class: 'pill' }, ta, emojiBtn, attachBtn)), emojiPanel, fileIn, photoIn, camIn));
+    h('div', { class: 'composer' }, selBar, mentionBox, replyBar, recBar, lockBar, h('div', { class: 'line' }, sendBtn, micBtn, h('div', { class: 'pill' }, ta, emojiBtn, attachBtn)), emojiPanel, fileIn, photoIn, camIn));
   // 1.20: a user group where only admins write, or one the server admin froze
   function renderLock() {
     const why = group ? E.writeBlock(convo) : '';
@@ -1075,6 +1237,7 @@ function ChatScreen(convo) {
     connLine.classList.toggle('hidden', !c);
     let s = '', on = false, typing = false;
     if (c) s = c;
+    else if (saved) s = 'یادداشت‌ها و پیام‌های نگه‌داشته، فقط برای شما';
     else if (group && E.typingIn(convo).length) { const t = E.typingIn(convo); s = E.nameOf(t[0]) + (t.length > 1 ? ' و ' + faNum(t.length - 1) + ' نفر دیگر' : '') + ' در حال نوشتن'; on = true; typing = true; }
     else if (chan) { const g = E.groupOf(convo); s = '📢 کانال' + (g ? ' · ' + faNum(g.count || g.members.length) + ' عضو' : ''); }
     else if (group) {
@@ -1347,6 +1510,7 @@ function ChatScreen(convo) {
       m.id > 0 && { label: 'پاسخ', run: () => setReply(m) },
       E.canEdit(m) && { label: 'ویرایش', run: () => setEditing(m) },
       m.id > 0 && m.status === 0 && { label: 'فوروارد', run: () => forwardSheet([m]) },
+      S.feats.saved && !saved && m.id > 0 && m.status === 0 && m.type !== 'call' && { label: '🔖 ذخیره در پیام‌های ذخیره‌شده', run: () => { E.forward([m], [S.me], false); toast('در پیام‌های ذخیره‌شده نگه داشته شد'); } },
       m.id > 0 && m.status === 0 && { label: 'انتخاب', run: () => setSelecting(new Set([m.id])) },
       m.id > 0 && { label: 'اطلاعات پیام', run: () => infoSheet(m) },
       m.mine && group && m.id > 0 && m.status === 0 && { label: 'دیده شده توسط…', run: () => readersSheet(m) },
@@ -1396,6 +1560,7 @@ function ChatScreen(convo) {
       prev = m;
     }
     if (!all.length) kids.push(search ? emptyState('search', 'پیامی پیدا نشد', 'کلمهٔ دیگری را امتحان کنید.')
+      : saved ? h('div', { class: 'hello' }, emptyState('bookmark', E.SAVED_TITLE, 'یادداشت، فایل و عکس برای خودتان بفرستید یا پیام‌ها را با «فوروارد» و «ذخیره» اینجا نگه دارید. روی همهٔ دستگاه‌هایتان هست و بعد از ۹۰ روز پاک نمی‌شود.'))
       : h('div', { class: 'hello' }, emptyState('lock', 'هنوز پیامی نیست', 'پیام‌ها سرتاسری رمزنگاری می‌شوند؛ فقط شما و ' + (group ? 'اعضا' : E.nameOf(convo)) + ' می‌خوانید.',
         !chan && !(group && E.writeBlock(convo)) && E.reqOf(convo) !== 'in' ? 'سلام 👋' : null, () => { forceBottom = true; E.sendText(convo, 'سلام 👋', null); })));
     shownIds = new Set(shown.map((m) => m.id));
@@ -1425,22 +1590,39 @@ function ChatScreen(convo) {
   const canMic = Voice.canRecord();
   const showMic = () => { const mic = canMic && E.reqOf(convo) !== 'out' && !ta.value.trim() && !editing; micBtn.classList.toggle('hidden', !mic); sendBtn.classList.toggle('hidden', mic); };
   let draftTimer = null;
+  // 1.29: «@» in a group offers its members
+  function renderMentions() {
+    const before = ta.value.slice(0, ta.selectionStart ?? ta.value.length);
+    const mm = group && !chan && !editing ? /(^|\s)@([^\s@]{0,32})$/.exec(before) : null;
+    let list = mm ? E.mentionCandidates(convo, mm[2]) : [];
+    if (mm && E.canMentionAll(convo) && ('همه'.startsWith(mm[2]) || 'all'.startsWith(mm[2].toLowerCase()))) list = ['همه', ...list];
+    mentionBox.classList.toggle('hidden', !list.length);
+    if (!list.length) return;
+    fill(mentionBox, list.map((u) => h('button', { class: 'mrow', onmousedown: (e) => e.preventDefault(), onclick: () => {
+      const start = before.length - mm[2].length - 1;
+      ta.value = ta.value.slice(0, start) + '@' + u + ' ' + ta.value.slice(before.length);
+      const pos = start + u.length + 2;
+      ta.focus(); ta.setSelectionRange(pos, pos); autosize(); renderMentions();
+    } }, u === 'همه' ? h('div', { class: 'av sm', style: { background: 'var(--accent)' } }, ic('group', 20)) : avatar(u, 'sm'),
+      h('div', null, h('b', null, u === 'همه' ? 'همه' : E.nameOf(u)), h('small', null, u === 'همه' ? 'خبر به همهٔ اعضا، حتی اگر گروه را بی‌صدا کرده باشند' : '@' + u)))));
+  }
   ta.addEventListener('input', () => {
-    autosize(); showMic();
+    autosize(); showMic(); renderMentions();
     if (ta.value.trim()) E.sendTyping(convo);
     clearTimeout(draftTimer); draftTimer = setTimeout(() => { if (!editing) setDraft(convo, ta.value); }, 400);
   });
   ta.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !isIOS && matchMedia('(pointer: fine)').matches) { e.preventDefault(); send(); } });
-  async function send() {
+  async function send(silent) {
     const text = ta.value.trim();
     if (!text) return;
+    mentionBox.classList.add('hidden');
     if (editing) {
       const m = editing;
       setEditing(null); ta.value = ''; autosize();
       if (text !== m.text) { const e = await E.editMessage(m, text); if (e) toast(e); }
       return;
     }
-    E.sendText(convo, text, reply);
+    E.sendText(convo, text, reply, silent);
     ta.value = ''; autosize(); setReply(null); setDraft(convo, ''); showMic();
     forceBottom = true;
     ta.focus();
@@ -1494,7 +1676,27 @@ function ChatScreen(convo) {
   micBtn.addEventListener('pointerup', () => { if (!recState) return; recState.up = true; if (!recState.locked && rec) endRec(true); });
   micBtn.addEventListener('pointercancel', () => { if (recState && !recState.locked) { recState.up = true; if (rec) endRec(false); } });
   micBtn.addEventListener('contextmenu', (e) => e.preventDefault());
-  sendBtn.addEventListener('click', (e) => { e.preventDefault(); send(); });
+  // 1.29: hold (or right-click) the send key: «ارسال بی‌صدا» / «ارسال زمان‌دار»
+  async function sendLater(silent) {
+    const text = ta.value.trim();
+    if (!text) return;
+    const at = await schedulePicker(saved ? 'یادآوری' : 'ارسال زمان‌دار');
+    if (!at) return;
+    const err = await E.scheduleText(convo, text, reply, at, silent);
+    if (err) { toast(err); return; }
+    ta.value = ''; autosize(); setReply(null); setDraft(convo, ''); showMic();
+    toast('برای ' + fmtFull(at) + ' تنظیم شد');
+  }
+  const sendLong = onLongPress(sendBtn, () => {
+    if (editing || !ta.value.trim() || E.reqOf(convo) === 'out') return;
+    buzz(12);
+    sheet(null, [
+      !saved && { label: '🔕 ارسال بی‌صدا', run: () => send(true) },
+      S.feats.sched && { label: saved ? '🕒 یادآوری در زمان دلخواه' : '🕒 ارسال زمان‌دار', run: () => sendLater(false) },
+      S.feats.sched && !saved && { label: '🕒 زمان‌دار و بی‌صدا', run: () => sendLater(true) },
+    ]);
+  });
+  sendBtn.addEventListener('click', (e) => { e.preventDefault(); if (sendLong()) return; send(); });
   sendBtn.addEventListener('mousedown', (e) => e.preventDefault()); // keep the keyboard open
   fileIn.addEventListener('change', async () => {
     const files = [...fileIn.files];
@@ -1564,7 +1766,7 @@ function ChatScreen(convo) {
   const tick = setInterval(renderHeader, 2000);
   ta.value = draftOf(convo);
   showMic();
-  renderHeader(); renderPin(); renderReq(); renderGcBar(); renderLock();
+  renderHeader(); renderPin(); renderReq(); renderGcBar(); renderLock(); renderSched(); renderAt();
   return {
     el,
     mounted: () => { renderList(); autosize(); playPending(); },
@@ -1582,6 +1784,7 @@ function ChatScreen(convo) {
       } else if (kind === 'progress' || kind === 'media' || kind === 'receipts' || kind === 'privacy' || (kind === 'react' && data && data.convo === convo)) renderListB();
       else if (kind === 'pins') { renderPin(); renderListB(); }
       else if (kind === 'requests') renderReq();
+      else if (kind === 'scheduled') renderSched();
       else if (kind === 'visible') playPending();
       else if (kind === 'gcall' || kind === 'groups') { renderGcBar(); if (kind === 'groups') renderAll(); }
       else if (kind === 'stickers') { if (renderStk) renderStk(); renderListB(); }

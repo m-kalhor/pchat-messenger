@@ -179,10 +179,21 @@ fun SettingsScreen(onBack: () -> Unit, onLogout: () -> Unit) {
             SettingsCard("اعلان‌ها", SIcons.bell, Color(0xFFE5534B)) {
             SwitchRow("پیام‌های خصوصی", "نمایش اعلان برای گفتگوهای خصوصی", Prefs.notifyPrivate.also { notifTick }) { Prefs.notifyPrivate = it }
             SwitchRow("گروه‌ها", "نمایش اعلان برای پیام‌های گروه", Prefs.notifyGroups.also { notifTick }) { Prefs.notifyGroups = it }
+            // 1.29
+            SwitchRow("منشن در گروه بی‌صدا", "وقتی کسی شما را با @ صدا بزند یا به پیامتان پاسخ دهد، حتی در گروه بی‌صدا اعلان بیاید", Prefs.mentionAlways.also { notifTick }) { Prefs.mentionAlways = it }
             SwitchRow("صدا", null, Prefs.sound.also { notifTick }) { Prefs.sound = it }
             SwitchRow("لرزش", null, Prefs.vibrate.also { notifTick }) { Prefs.vibrate = it }
             Text("برای بی‌صدا کردن یک گفتگو، دکمهٔ زنگوله بالای همان گفتگو را بزنید.", fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 10.dp))
+
+            // ---- chat list (1.29) ----
+            }
+            SettingsCard("فهرست گفتگوها", SIcons.folder, Color(0xFF2A73C9)) {
+            val hideTabs by ChatList.hideTabs.collectAsState()
+            var showFolders by remember { mutableStateOf(false) }
+            if (showFolders) FoldersDialog(onClose = { showFolders = false })
+            SettingRow("پوشه‌های گفتگو", "ساختن، مرتب‌کردن و حذف پوشه‌ها") { showFolders = true }
+            SwitchRow("نمایش زبانه‌ها", "«همه، خصوصی، گروه‌ها، کانال‌ها، نخوانده» و پوشه‌های شما بالای فهرست", !hideTabs) { ChatList.setHideTabs(!it) }
 
             // ---- calls ----
             }

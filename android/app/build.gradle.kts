@@ -47,8 +47,8 @@ android {
         applicationId = if (appIdSuffix != null) "com.pchat.app.$appIdSuffix" else "com.pchat.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 34
-        versionName = "1.28.0"
+        versionCode = 36
+        versionName = "1.29.0"
 
         buildConfigField("String", "SERVER_HOST", "\"$serverHost\"")
         buildConfigField("int", "SERVER_PORT", "$serverPort")
@@ -59,6 +59,22 @@ android {
     }
 
     sourceSets["main"].res.srcDir(iconRes)
+
+    // 1.28.1: «direct» = the APK from our own site and the customers' APKs, which update themselves from the
+    // server; «bazaar» = the build published on Café Bazaar, which may only be updated through Bazaar, so it
+    // has no install permission and no APK download (src/bazaar), and its update offer opens Bazaar.
+    flavorDimensions += "store"
+    productFlavors {
+        create("direct") {
+            dimension = "store"
+            isDefault = true
+            buildConfigField("String", "STORE", "\"direct\"")
+        }
+        create("bazaar") {
+            dimension = "store"
+            buildConfigField("String", "STORE", "\"bazaar\"")
+        }
+    }
 
     signingConfigs {
         if (sepanKeystore != null) create("sepan") {

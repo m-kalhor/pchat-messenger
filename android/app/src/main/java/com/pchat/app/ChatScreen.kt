@@ -162,7 +162,7 @@ private fun openFile(ctx: Context, path: String, mime: String?) {
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit = {}) {
     val scope = rememberCoroutineScope()
@@ -219,6 +219,15 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     var keyWarn by remember(tick, convo) { mutableStateOf(!Engine.isGroup(convo) && Engine.db.keyChanged(convo)) }
     val listState = rememberLazyListState()
     val isGroup = Engine.isGroup(convo)
+    // 1.29: «پیام‌های ذخیره‌شده», scheduled messages, mentions of me
+    val saved = Engine.isSaved(convo)
+    val feats by Engine.feats.collectAsState()
+    val schedAll by Engine.scheduled.collectAsState()
+    val schedHere = remember(schedAll, convo) { Engine.scheduledIn(convo, schedAll) }
+    var schedSheet by remember { mutableStateOf(false) }
+    var schedPick by remember { mutableStateOf<Boolean?>(null) } // null = closed, else silent
+    var sendMenu by remember { mutableStateOf(false) }
+    val pendingMentions = remember(convo) { mutableStateListOf<Long>().apply { addAll(Engine.db.takeMentions(convo)) } }
     val startCall0 = rememberCallStarter()
     val gcalls = rememberGroupCallActions() // 1.19
     val gcfg by GroupCall.cfg.collectAsState()
@@ -415,6 +424,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     val group = groups.firstOrNull { it.key == convo }
     val groupTyping = remember(gtyping, now) { if (isGroup) Engine.typingIn(convo, now) else emptyList() }
     val subtitle = when {
+        saved -> "یادداشت‌ها و پیام‌های نگه‌داشته، فقط برای شما"
         isGroup && groupTyping.isNotEmpty() ->
             (if (groupTyping.size == 1) Engine.nameOf(groupTyping[0]) else "${groupTyping.size} نفر") + " در حال نوشتن…"
         group?.isChan == true -> "📢 کانال · ${maxOf(group.count, group.members.size)} عضو"
@@ -430,7 +440,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
     var muteMenu by remember { mutableStateOf(false) }
     val notifTick by Prefs.notifTick.collectAsState()
     val muted = remember(notifTick, convo) { Prefs.isMuted(convo) }
-    val canSend = isGroup || peer == null || peer.dm || allMsgs.any { !it.mine }
+    val canSend = saved || isGroup || peer == null || peer.dm || allMsgs.any { !it.mine }
     // 1.20: a user group where only admins write, or one the server admin froze
     val writeBlock = remember(group) { Engine.writeBlock(convo) }
     // 1.21: a channel on screen loads older posts once and refreshes its 👁 counts every 30 s
@@ -466,7 +476,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                             )
                         )
                     } else {
-                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !isGroup || group?.isUser == true) { if (isGroup) showGroupInfo = true else showProfile = true }) {
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable(enabled = !saved && (!isGroup || group?.isUser == true)) { if (isGroup) showGroupInfo = true else showProfile = true }) {
                             Avatar(convo, false, 40)
                             Spacer(Modifier.width(10.dp))
                             Column {
@@ -491,11 +501,11 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                             // 1.23: group video call (the admin turns it on in the panel)
                             if (gcfg.video) IconButton(onClick = { gcalls.groupCall(convo, true) }) { Icon(SIcons.video, contentDescription = "تماس تصویری گروهی") }
                         }
-                        if (!isGroup) {
+                        if (!isGroup && !saved) {
                             IconButton(onClick = { startCall(convo, false) }) { Icon(SIcons.call, contentDescription = "تماس صوتی") }
                             IconButton(onClick = { startCall(convo, true) }) { Icon(SIcons.video, contentDescription = "تماس تصویری") }
                         }
-                        Box {
+                        if (!saved) Box {
                             IconButton(onClick = { muteMenu = true }) { Icon(if (muted) SIcons.bellOff else SIcons.bell, contentDescription = if (muted) "بی‌صدا" else "اعلان") }
                             DropdownMenu(expanded = muteMenu, onDismissRequest = { muteMenu = false }) {
                                 if (muted) DropdownMenuItem(text = { Text("روشن کردن اعلان") }, onClick = { muteMenu = false; Prefs.unmute(convo) })
@@ -509,7 +519,8 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                         Box {
                             IconButton(onClick = { chatMenu = true }) { Icon(SIcons.more, contentDescription = "گزینه‌ها") }
                             DropdownMenu(expanded = chatMenu, onDismissRequest = { chatMenu = false }) {
-                                DropdownMenuItem(leadingIcon = { Icon(SIcons.shield, null) }, text = { Text("امنیت و اثرانگشت") }, onClick = { chatMenu = false; showKeys = true })
+                                if (!saved) DropdownMenuItem(leadingIcon = { Icon(SIcons.shield, null) }, text = { Text("امنیت و اثرانگشت") }, onClick = { chatMenu = false; showKeys = true })
+                                if (schedHere.isNotEmpty()) DropdownMenuItem(leadingIcon = { Icon(SIcons.schedule, null) }, text = { Text("پیام‌های زمان‌دار (${U.fa(schedHere.size)})") }, onClick = { chatMenu = false; schedSheet = true })
                                 DropdownMenuItem(leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, text = { Text("حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { chatMenu = false; clearChat = true })
                             }
                         }
@@ -578,11 +589,43 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                     }
                 }
             }
+            // 1.29: messages of mine waiting to go out here
+            if (schedHere.isNotEmpty() && !searching) {
+                val failed = schedHere.count { it.failed != null }
+                Surface(color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth().clickable { schedSheet = true }) {
+                    Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (failed > 0) SIcons.error else SIcons.schedule, null, tint = if (failed > 0) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "${U.fa(schedHere.size)} پیام زمان‌دار" + (if (failed > 0) " · ${U.fa(failed)} ارسال نشد" else " · نزدیک‌ترین: " + U.faDigits(U.fullDate(schedHere.minOf { it.at }))),
+                            fontSize = 13.sp, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis
+                        )
+                        Text("مدیریت", color = MaterialTheme.colorScheme.primary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
             if (results != null && results.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     // 1.28
                     Box(Modifier.padding(24.dp).clip(RoundedCornerShape(20.dp)).background(MaterialTheme.colorScheme.surface.copy(alpha = 0.92f))) {
                         EmptyState(SIcons.search, "چیزی پیدا نشد", "کلمهٔ دیگری را امتحان کنید.")
+                    }
+                }
+            } else if (results == null && rowsList.isEmpty() && saved) {
+                // 1.29: what «پیام‌های ذخیره‌شده» is for
+                Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(
+                        Modifier.padding(32.dp).clip(RoundedCornerShape(20.dp)).background(Color.Black.copy(alpha = 0.22f)).padding(horizontal = 24.dp, vertical = 22.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
+                        Icon(SIcons.bookmark, null, tint = Color.White, modifier = Modifier.size(48.dp))
+                        Spacer(Modifier.height(8.dp))
+                        Text(Engine.SAVED_TITLE, color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            "• یادداشت، فایل و عکس برای خودتان بفرستید\n• پیام‌ها را با «فوروارد» یا «ذخیره» اینجا نگه دارید\n• روی همهٔ دستگاه‌هایتان هست و بعد از ۹۰ روز پاک نمی‌شود",
+                            color = Color.White.copy(alpha = 0.9f), fontSize = 13.sp
+                        )
                     }
                 }
             } else if (results == null && rowsList.isEmpty() && !isGroup && writeBlock == null && canSend) {
@@ -628,6 +671,7 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                     onSelect = { if (it.id in selected) selected.remove(it.id) else if ((it.id > 0 && it.status == 0) || it.type == "call") selected.add(it.id) },
                                     onEdit = { editing = it; replyTo = null; text = it.text; field = TextFieldValue(it.text, TextRange(it.text.length)) },
                                     onForward = { forwarding = listOf(it) },
+                                    onSave = if (feats.saved && !saved && it.type != "call") ({ Engine.forward(listOf(it), listOf(Engine.me), false); Toast.makeText(ctxForToast, "در پیام‌های ذخیره‌شده نگه داشته شد", Toast.LENGTH_SHORT).show() }) else null,
                                     onInfo = { info = it },
                                     onDeleteAll = { deleteAll = it },
                                     canPin = !modGroup || group?.manages == true,
@@ -642,6 +686,22 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                                 }
                             }
                         }
+                    }
+                }
+                // 1.29: «@» jumps to the messages that mention me, oldest first
+                if (pendingMentions.isNotEmpty() && results == null) {
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).padding(end = 14.dp, bottom = if (!atBottom) 72.dp else 14.dp).size(48.dp).shadow(3.dp, CircleShape).clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surface).clickable {
+                                val id = pendingMentions.removeAt(0)
+                                jumpTo = id
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(SIcons.at, contentDescription = "منشن‌ها", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(26.dp))
+                        Box(
+                            Modifier.align(Alignment.TopEnd).clip(CircleShape).background(MaterialTheme.colorScheme.primary).padding(horizontal = 6.dp, vertical = 1.dp)
+                        ) { Text(U.fa(pendingMentions.size), color = Color.White, fontSize = 11.sp) }
                     }
                 }
                 if (!atBottom && results == null) {
@@ -720,6 +780,12 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                 }
             } else Surface(color = if (emojiOpen) MaterialTheme.colorScheme.surface else Color.Transparent, modifier = Modifier.fillMaxWidth()) {
               Column {
+                // 1.29: «@» in a group offers its members
+                val mq = if (isGroup && !chan && editing == null && recorder == null) mentionQuery(text) else null
+                if (mq != null) MentionPopup(convo, mq) { u ->
+                    val t = applyMention(text, u)
+                    text = t; field = TextFieldValue(t, TextRange(t.length))
+                }
                 // 1.28: a floating round text field (emoji inside on the right, attach inside on the left) and a filled
                 // round voice / send button that swaps between the two with a small animation
                 Row(Modifier.padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
@@ -768,7 +834,10 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                   } else
                     Box(
                         Modifier.size(50.dp).shadow(3.dp, CircleShape).clip(CircleShape).background(btnColor)
-                            .clickable(enabled = text.isNotBlank()) {
+                            .combinedClickable(enabled = text.isNotBlank(), onLongClick = {
+                                // 1.29: hold the send key for «ارسال بی‌صدا» / «ارسال زمان‌دار»
+                                if (editing == null && reqState != "out" && (!saved || feats.sched)) { Ui.press(haptic); sendMenu = true }
+                            }) {
                                 val t = text.trim()
                                 val e = editing
                                 if (e != null) {
@@ -782,6 +851,15 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
                             },
                         contentAlignment = Alignment.Center
                     ) {
+                        DropdownMenu(expanded = sendMenu, onDismissRequest = { sendMenu = false }) {
+                            if (!saved) DropdownMenuItem(leadingIcon = { Icon(SIcons.bellOff, null) }, text = { Text("ارسال بی‌صدا") }, onClick = {
+                                sendMenu = false
+                                val t = text.trim(); val r = replyTo
+                                if (t.isNotEmpty()) { text = ""; replyTo = null; Engine.sendText(convo, t, r, silent = true) }
+                            })
+                            if (feats.sched) DropdownMenuItem(leadingIcon = { Icon(SIcons.schedule, null) }, text = { Text(if (saved) "یادآوری در زمان دلخواه" else "ارسال زمان‌دار") }, onClick = { sendMenu = false; schedPick = false })
+                            if (feats.sched && !saved) DropdownMenuItem(leadingIcon = { Icon(SIcons.clock, null) }, text = { Text("زمان‌دار و بی‌صدا") }, onClick = { sendMenu = false; schedPick = true })
+                        }
                         // 1.28: the plane pops in when the first letter is typed
                         val pop = remember { Animatable(0.6f) }
                         LaunchedEffect(Unit) { pop.animateTo(1f, spring(dampingRatio = 0.45f, stiffness = 500f)) }
@@ -878,6 +956,18 @@ fun ChatScreen(convo: String, onBack: () -> Unit, onOpenUser: (String) -> Unit =
         }
     }
     info?.let { MessageInfoDialog(it) { info = null } }
+    if (schedSheet) ScheduledSheet(convo, onClose = { schedSheet = false })
+    schedPick?.let { silent ->
+        SchedulePickerDialog(feats.schedDays, null, if (saved) "یادآوری" else "ارسال زمان‌دار", onClose = { schedPick = null }) { at ->
+            schedPick = null
+            val t = text.trim(); val r = replyTo
+            if (t.isNotEmpty()) scope.launch {
+                val err = Engine.scheduleText(convo, t, r, at, silent)
+                if (err == null) { text = ""; replyTo = null; Toast.makeText(ctxForToast, "برای " + U.faDigits(U.fullDate(at)) + " تنظیم شد", Toast.LENGTH_SHORT).show() }
+                else error = err
+            }
+        }
+    }
     if (clearChat) ClearChatDialog(convo, onClose = { clearChat = false }) { clearChat = false; onBack() }
     if (deleteSel) {
         val n = selected.size
@@ -940,7 +1030,7 @@ fun Bubble(
     m: Msg, group: Boolean, progress: Float?, tail: Boolean = true, failure: String?, pinned: Boolean, first: Boolean = true,
     onImage: (String) -> Unit, onReply: () -> Unit, onPin: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit,
     selecting: Boolean = false, selected: Boolean = false, onSelect: () -> Unit = {}, onEdit: () -> Unit = {},
-    onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {},
+    onForward: () -> Unit = {}, onInfo: () -> Unit = {}, onDeleteAll: () -> Unit = {}, onSave: (() -> Unit)? = null,
     /** "sent" / "delivered" / "seen" for my messages */
     tick: String? = null, onReact: (String?) -> Unit = {}, onMoreReactions: () -> Unit = {},
     onReactors: () -> Unit = {}, onSeenBy: () -> Unit = {},
@@ -1156,6 +1246,8 @@ fun Bubble(
                 if (m.status == 0) DropdownMenuItem(text = { Text("پاسخ") }, onClick = { menu = false; onReply() })
                 if (Engine.canEdit(m)) DropdownMenuItem(text = { Text("ویرایش") }, onClick = { menu = false; onEdit() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("فوروارد") }, onClick = { menu = false; onForward() })
+                // 1.29
+                if (onSave != null && m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("ذخیره در پیام‌های ذخیره‌شده") }, onClick = { menu = false; onSave() })
                 if (m.status == 0 && m.id > 0) DropdownMenuItem(text = { Text("انتخاب") }, onClick = { menu = false; onSelect() })
                 if (m.status == 0 && m.fileId != null && m.type in MEDIA_TYPES) {
                     val media = LocalMediaActions.current

@@ -29,6 +29,9 @@ export const S = {
   stickers: { create: false, limits: {}, packs: [] }, // 1.10: the sticker panel (official packs + my collection)
   chanKeys: {},               // 1.21: channel key -> { version: base64 key }
   views: {},                  // 1.21: channel key -> how far each member read (sorted, no names), for 👁
+  feats: { saved: false, sched: false, sched_days: 30 }, // 1.29: what the server admin allows
+  scheduled: [],              // 1.29: my messages waiting on the server: { id, convo, text, at, silent, failed }
+  chat: { folders: [], archived: [], hideTabs: false, ts: 0 }, // 1.29: folders + archive, synced (sealed for me)
 };
 
 const listeners = new Set();
@@ -49,7 +52,9 @@ export const isGroup = (c) => c === 'all' || /^g:\d+$/.test(c);
 export const user = (u) => S.users.find((x) => x.username === u);
 export const nameOf = (u) => (user(u) && user(u).display_name) || u;
 export const groupName = (k) => (S.groups.find((g) => g.key === k) || {}).name || (k === 'all' ? 'همه' : 'گروه');
-export const titleOf = (c) => (isGroup(c) ? groupName(c) : nameOf(c));
+export const SAVED_TITLE = 'پیام‌های ذخیره‌شده';
+export const isSaved = (c) => !!c && c === S.me;
+export const titleOf = (c) => (isGroup(c) ? groupName(c) : isSaved(c) ? SAVED_TITLE : nameOf(c));
 const pubOf = (u) => (u === S.me ? S.identity.pubB64 : (user(u) || {}).pubkey || null);
 
 export function preview(m) {
@@ -144,6 +149,8 @@ export async function init() {
   S.privacy = (await store.kvGet('privacy')) || S.privacy;
   S.stickers = (await store.kvGet('stickers')) || S.stickers;
   S.chanKeys = (await store.kvGet('chankeys')) || {};
+  S.feats = (await store.kvGet('feats')) || S.feats;
+  S.chat = (await store.kvGet('chatlist')) || S.chat;
   for (const m of await store.allMsgs()) addLocal(m);
   for (const list of S.convos.values()) list.sort(byOrder);
   for (const m of [...S.convos.values()].flat()) if (m.status === 1 && !TEXTISH.has(m.type)) { m.status = 2; S.failures.set(m.id, 'ارسال قطع شد'); }
@@ -313,6 +320,7 @@ function keyErr(e) {
 function resetState() {
   S.users = []; S.groups = []; S.pins = {}; S.read = {}; S.typing = {}; S.gtyping = {}; S.receipts = {}; S.rseq = -1;
   S.convos = new Map(); S.lastId = 0; S.cseq = -1; S.progress.clear(); S.failures.clear(); S.chanKeys = {}; S.views = {};
+  S.scheduled = []; S.chat = { folders: [], archived: [], hideTabs: false, ts: 0 };
 }
 
 export async function logout() {
@@ -363,8 +371,10 @@ export async function refreshMe() {
   const r = await api.me();
   S.privacy = { hide_seen: !!r.hide_seen, hide_last_seen: !!r.hide_last_seen, findable: r.findable !== false, allow_requests: r.allow_requests !== false };
   S.meInfo = { diag: !!r.diag, requests_on: r.requests_on !== false, call_route: !!r.call_route, gcall: r.gcall || null, ugroups: r.ugroups || null };
+  if (r.feats) { S.feats = { saved: !!r.feats.saved, sched: !!r.feats.sched, sched_days: r.feats.sched_days || 30 }; await store.kvSet('feats', S.feats); }
   await store.kvSet('privacy', S.privacy);
   emit('privacy');
+  if (S.feats.sched) refreshScheduled().catch(() => { });
 }
 function refreshAll() {
   refreshUsers().catch(handleAuth);
@@ -372,6 +382,7 @@ function refreshAll() {
   refreshRequests().catch(handleAuth);
   refreshMe().catch(handleAuth);
   refreshStickers().catch(() => { });
+  pullChat().catch(() => { });
   if (gcallHook) gcallHook('refresh', {});
 }
 function handleAuth(e) { if (e instanceof api.HttpError && e.status === 401 && api.getToken()) endSession(); }
@@ -465,6 +476,9 @@ async function handleEvent(ev, data) {
     case 'contacts': try { await refreshRequests(); } catch { } return;
     case 'login_alert': return emit('login_alert', o);
     case 'stickers': return refreshStickers().catch(() => { });
+    // 1.29
+    case 'scheduled': return setScheduled(o.list || []);
+    case 'prefs': if (o.k === 'chatlist' && o.dev !== (await deviceId())) await pullChat().catch(() => { }); return;
     case 'pin':
       if (o.messageId == null) delete S.pins[o.convo]; else S.pins[o.convo] = o.messageId;
       return emit('pins', o.convo);
@@ -528,6 +542,13 @@ async function handleMsg(o, again) {
     if (e && e.noKey) chanSync(groupOf(o.target)).catch(() => { });
   }
   if (o.reactions) m.reactions = { ...o.reactions };
+  if (o.silent) m.silent = 1;
+  // 1.29: a message in a group that names me (or answers mine); kept until I open the chat
+  const prev = (S.convos.get(convo) || []).find((x) => x.id === o.id);
+  if (prev && prev.mention) m.mention = prev.mention;
+  else if (!mine && isGroup(o.target) && !isChan(o.target) && !m.locked && mentionsMe(o.from, o.target, m.text, m.replyUser)) {
+    m.mention = S.openConvo === convo && document.visibilityState === 'visible' ? 2 : 1;
+  }
   // 1.22: an effect sticker plays once, when first seen (not for old ones coming with a new login)
   if (o.fx && m.type === 'sticker') {
     m.fx = 1;
@@ -542,6 +563,7 @@ async function handleMsg(o, again) {
   if (o.id > S.lastId) { S.lastId = o.id; await store.kvSet('last_id', S.lastId); }
   if (isNew) {
     if (mine || (S.openConvo === convo && document.visibilityState === 'visible')) markRead(convo);
+    else if (Date.now() - o.ts < 86400000) unarchiveOnIncoming(convo);
     emit('msg', m);
   } else if (again) emit('msg', m);
 }
@@ -959,11 +981,192 @@ export function markRead(convo) {
 export function summaries() {
   const keys = new Set([...S.convos.keys()].filter((k) => (S.convos.get(k) || []).length));
   for (const g of S.groups) keys.add(g.key);
+  if (S.feats.saved && S.me) keys.add(S.me); else keys.delete(S.me); // 1.29
   return [...keys].map((k) => {
     const list = S.convos.get(k) || [];
     const last = list[list.length - 1] || null;
-    return { convo: k, last, unread: unread(k), ts: last ? last.ts : 0 };
+    return { convo: k, last, unread: unread(k), mentions: mentionsIn(k), ts: last ? last.ts : 0 };
   }).sort((a, b) => b.ts - a.ts);
+}
+
+// ---------------- 1.29: mentions ----------------
+export function mentionsMe(from, group, text, replyUser) {
+  if (replyUser && replyUser === S.me) return true;
+  const words = [...String(text || '').matchAll(/@([A-Za-z0-9_.]+|همه)/g)].map((x) => x[1].toLowerCase());
+  if (!words.length) return false;
+  if (words.includes(S.me.toLowerCase())) return true;
+  if (words.includes('all') || words.includes('همه')) {
+    const g = groupOf(group);
+    return !!g && (g.owner === from || (g.admins || []).includes(from));
+  }
+  return false;
+}
+/** Unseen mentions of me in a chat (shown as «@» in the list while the chat has unread messages). */
+export function mentionsIn(convo) {
+  const list = S.convos.get(convo) || [];
+  const r = S.read[convo] || 0;
+  let n = 0;
+  for (let i = list.length - 1; i >= 0; i--) { const m = list[i]; if (m.id <= r) break; if (m.mention === 1) n++; }
+  return n;
+}
+/** The unseen mentions of me in a chat, oldest first; from now on they count as seen. */
+export function takeMentions(convo) {
+  const out = (S.convos.get(convo) || []).filter((m) => m.mention === 1);
+  for (const m of out) { m.mention = 2; store.putMsg(m); }
+  return out.map((m) => m.id);
+}
+/** Members to offer after «@» (not me), filtered by what was typed. */
+export function mentionCandidates(convo, prefix) {
+  const g = groupOf(convo);
+  if (!g || g.kind === 'chan') return [];
+  const p = (prefix || '').toLowerCase();
+  return (g.members || []).filter((u) => u !== S.me && (!p || u.toLowerCase().startsWith(p) || nameOf(u).toLowerCase().includes(p)))
+    .sort((a, b) => nameOf(a).localeCompare(nameOf(b), 'fa')).slice(0, 30);
+}
+export const canMentionAll = (convo) => { const g = groupOf(convo); return !!g && g.kind !== 'chan' && (g.role === 'owner' || g.role === 'admin'); };
+
+// ---------------- 1.29: scheduled messages ----------------
+async function openScheduled(o) {
+  try {
+    const plain = isGroup(o.target) && C.chanVersion(o.payload) > 0 ? await chanOpen({ from: S.me, target: o.target, payload: o.payload })
+      : JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, S.me, o.target, S.identity.pubB64, o.payload)));
+    return plain;
+  } catch { return null; }
+}
+async function setScheduled(list) {
+  const out = [];
+  for (const o of list) {
+    const plain = await openScheduled(o);
+    out.push({ id: o.id, convo: o.target, text: plain ? plain.x || '' : '🔒', plain, at: o.at, silent: !!o.silent, failed: o.failed || null });
+  }
+  S.scheduled = out;
+  emit('scheduled');
+}
+export async function refreshScheduled() { if (S.feats.sched) await setScheduled((await api.scheduled()).list || []); }
+export const scheduledIn = (convo) => S.scheduled.filter((x) => x.convo === convo).sort((a, b) => a.at - b.at);
+function schedErr(e) {
+  const c = e instanceof api.HttpError && e.body ? e.body.error : null;
+  if (c === 'bad_time') return 'زمان باید از الان تا ' + Number(S.feats.sched_days).toLocaleString('fa-IR') + ' روز بعد باشد';
+  if (c === 'sched_full') return 'صف پیام‌های زمان‌دار شما پر است؛ چندتایی را حذف یا همین حالا بفرستید';
+  if (c === 'sched_off') return 'ارسال زمان‌دار را مدیر سرور خاموش کرده است';
+  return errText(e);
+}
+/** Seals a text now and leaves it on the server until «at»; null = done, else the error text. */
+export async function scheduleText(convo, text, reply, at, silent) {
+  const plain = { t: 'text', x: text, ...replyJson(replyOf(reply)) };
+  try {
+    try { await api.schedule(convo, await encryptFor(convo, plain), at, silent); } catch (e) {
+      if (!(e instanceof api.HttpError && e.status === 409 && e.body && e.body.error === 'chan_key_old')) throw e;
+      await refreshGroups(); await chanSync(groupOf(convo));
+      await api.schedule(convo, await encryptFor(convo, plain), at, silent);
+    }
+    await refreshScheduled();
+    return null;
+  } catch (e) { return e.userText || schedErr(e); }
+}
+/** what = 'now' | 'delete' | 'move' (to «at»). A failed one is sealed again (a channel's key may have changed). */
+export async function scheduledAction(s, what, at) {
+  try {
+    const fresh = s.failed && what !== 'delete' ? await encryptFor(s.convo, s.plain || { t: 'text', x: s.text }) : undefined;
+    let r;
+    if (what === 'move') r = await api.scheduledAction('update', { id: s.id, at, ...(fresh ? { payload: fresh } : {}) });
+    else if (what === 'now') { if (fresh) await api.scheduledAction('update', { id: s.id, payload: fresh }); r = await api.scheduledAction('now', { id: s.id }); }
+    else r = await api.scheduledAction('delete', { id: s.id });
+    await setScheduled(r.list || []);
+    return null;
+  } catch (e) { return e.userText || schedErr(e); }
+}
+export function schedFailText(why) {
+  if (why === 'not_allowed' || why === 'not_member') return 'دیگر به این گفتگو دسترسی ندارید';
+  if (why === 'admins_only' || why === 'group_frozen') return 'در این گروه اجازهٔ نوشتن ندارید';
+  if (why === 'chan_key_old') return 'کلید کانال عوض شده؛ «همین حالا بفرست» را بزنید';
+  return 'ارسال نشد';
+}
+
+// ---------------- 1.29: chat folders and the archive (synced, sealed for me) ----------------
+export const MAX_FOLDERS = 10;
+export const MAX_FOLDER_NAME = 24;
+const chatJson = () => ({ v: 1, folders: S.chat.folders.map((f) => ({ id: f.id, n: f.name, c: f.convos })), archived: S.chat.archived, hideTabs: !!S.chat.hideTabs });
+function applyChat(o) {
+  S.chat.folders = (Array.isArray(o.folders) ? o.folders : []).slice(0, MAX_FOLDERS).map((f, i) => ({
+    id: String(f.id || 'f' + i), name: String(f.n || '').slice(0, MAX_FOLDER_NAME), convos: [...new Set(Array.isArray(f.c) ? f.c.map(String) : [])],
+  }));
+  S.chat.archived = Array.isArray(o.archived) ? o.archived.map(String) : [];
+  S.chat.hideTabs = !!o.hideTabs;
+}
+let chatPushTimer = null;
+function chatChanged() {
+  S.chat.ts = Date.now();
+  S.chat.dirty = true;
+  store.kvSet('chatlist', S.chat);
+  emit('chatlist');
+  clearTimeout(chatPushTimer);
+  chatPushTimer = setTimeout(() => pushChat().catch(() => { }), 1500);
+}
+async function pushChat() {
+  if (!api.getToken() || !S.identity) return;
+  const sealed = await C.encryptFor(S.identity, S.me, S.me, { [S.me]: S.identity.pubB64 }, JSON.stringify(chatJson()));
+  const r = await api.prefsSet('chatlist', sealed, await deviceId());
+  S.chat.ts = r.ts; S.chat.dirty = false;
+  await store.kvSet('chatlist', S.chat);
+}
+/** Takes the server's copy if it is newer (another of my devices changed it). */
+export async function pullChat() {
+  if (!api.getToken() || !S.identity) return;
+  if (S.chat.dirty) return pushChat();
+  const r = await api.prefsGet('chatlist');
+  if (!r.v || r.ts <= (S.chat.ts || 0)) return;
+  const plain = JSON.parse(td.decode(await C.decryptFrom(S.identity, S.me, S.me, S.me, S.identity.pubB64, r.v)));
+  applyChat(plain);
+  S.chat.ts = r.ts;
+  await store.kvSet('chatlist', S.chat);
+  emit('chatlist');
+}
+export const isArchived = (c) => S.chat.archived.includes(c);
+export function setArchived(c, on) {
+  if (on === isArchived(c)) return;
+  S.chat.archived = on ? [...S.chat.archived, c] : S.chat.archived.filter((x) => x !== c);
+  chatChanged();
+}
+// a new message brings an archived chat back (the web app has no per-chat mute)
+function unarchiveOnIncoming(c) { if (isArchived(c)) setArchived(c, false); }
+export function setHideTabs(v) { S.chat.hideTabs = !!v; chatChanged(); }
+/** Makes (id null) or changes a folder; null = done, else the error text. */
+export function saveFolder(id, name, convos) {
+  const n = String(name || '').trim().slice(0, MAX_FOLDER_NAME);
+  if (!n) return 'یک نام برای پوشه بنویسید';
+  if (!id && S.chat.folders.length >= MAX_FOLDERS) return 'حداکثر ' + MAX_FOLDERS.toLocaleString('fa-IR') + ' پوشه می‌شود ساخت';
+  const f = { id: id || 'f' + Date.now().toString(36), name: n, convos: [...new Set(convos)] };
+  S.chat.folders = id ? S.chat.folders.map((x) => (x.id === id ? f : x)) : [...S.chat.folders, f];
+  chatChanged();
+  return null;
+}
+export function deleteFolder(id) { S.chat.folders = S.chat.folders.filter((f) => f.id !== id); chatChanged(); }
+export function moveFolder(id, by) {
+  const l = [...S.chat.folders];
+  const i = l.findIndex((f) => f.id === id), j = i + by;
+  if (i < 0 || j < 0 || j >= l.length) return;
+  l.splice(j, 0, l.splice(i, 1)[0]);
+  S.chat.folders = l; chatChanged();
+}
+export function toggleInFolder(fid, c) {
+  S.chat.folders = S.chat.folders.map((f) => (f.id !== fid ? f : { ...f, convos: f.convos.includes(c) ? f.convos.filter((x) => x !== c) : [...f.convos, c] }));
+  chatChanged();
+}
+/** The chat list's tabs: built-in kinds, then my folders. */
+export const chatTabs = () => [
+  { key: 'all', name: 'همه' }, { key: 'dm', name: 'خصوصی' }, { key: 'groups', name: 'گروه‌ها' }, { key: 'chans', name: 'کانال‌ها' }, { key: 'unread', name: 'نخوانده' },
+  ...S.chat.folders.map((f) => ({ key: 'f:' + f.id, name: f.name, folder: f })),
+];
+export function inTab(t, s) {
+  switch (t.key) {
+    case 'all': return true;
+    case 'dm': return !isGroup(s.convo);
+    case 'groups': return isGroup(s.convo) && !isChan(s.convo);
+    case 'chans': return isChan(s.convo);
+    case 'unread': return s.unread > 0;
+    default: return !!t.folder && t.folder.convos.includes(s.convo);
+  }
 }
 
 export function deleteLocal(m) { removeLocal(m); store.delMsg(m.id); emit('msg', m); }
@@ -1036,8 +1239,8 @@ const replyJson = (m) => (m.replyId ? { r: { id: m.replyId, u: m.replyUser || ''
 let localSeq = 0;
 const localId = () => -(Date.now() * 1000 + (localSeq++ % 1000));
 
-export async function sendText(convo, text, reply) {
-  const m = { id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'text', text, status: 1, ...replyOf(reply) };
+export async function sendText(convo, text, reply, silent) {
+  const m = { id: localId(), convo, sender: S.me, mine: true, ts: Date.now(), type: 'text', text, status: 1, ...replyOf(reply), ...(silent ? { silent: 1 } : {}) };
   addLocal(m);
   await store.putMsg(m);
   markRead(convo);
@@ -1054,7 +1257,7 @@ export async function flush() {
     for (const m of pending) {
       try {
         const payload = await encryptFor(m.convo, { t: 'text', x: m.text, ...replyJson(m), ...forwardJson(m), ...locJson(m), ...stkJson(m) });
-        const r = await api.send(m.convo, payload, undefined, m.type === 'sticker' && m.fx);
+        const r = await api.send(m.convo, payload, undefined, m.type === 'sticker' && m.fx, !!m.silent);
         await swapLocal(m, { ...m, id: r.id, ts: r.ts, status: 0, fx: r.fx ? 1 : 0 });
       } catch (e) {
         if (e instanceof api.HttpError && e.status === 409 && e.body && e.body.error === 'chan_key_old' && !m._rekeyed) {
@@ -1092,7 +1295,7 @@ export function retry(m) {
 
 const sentTyping = {};
 export function sendTyping(convo) {
-  if (S.conn !== 'online' || reqOf(convo) === 'out' || isChan(convo)) return; // no "typing…" to someone who has not accepted yet, nor in a channel
+  if (S.conn !== 'online' || reqOf(convo) === 'out' || isChan(convo) || isSaved(convo)) return; // no "typing…" to someone who has not accepted yet, nor in a channel
   if (Date.now() - (sentTyping[convo] || 0) < 3000) return;
   sentTyping[convo] = Date.now();
   (isGroup(convo) ? api.typing(convo) : api.signal(convo, 'sig_typing', '1')).catch(() => { });

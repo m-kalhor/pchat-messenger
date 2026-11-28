@@ -701,6 +701,13 @@ async function loginTab(box){
     h('div',{class:'row'},h('label',null,mr,' درخواست پیام'),h('span',{class:'mut'},'(هر کاربر می‌تواند با @نام‌کاربری به کسی که به او وصل نیست تا ۳ پیام بدون فایل بفرستد؛ طرف مقابل قبول، رد یا مسدود می‌کند. جفت‌های «بسته» ⛔ هرگز.)')),
     h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){er.textContent='';
       try{await api('POST','/auth',{provider:psel.value,sms:smsVals(),enabled:en.checked,password_login:pw.checked,open_signup:su.checked,signup_category:sc.value,msg_requests:mr.checked,sms_max_hour:Number(mh.value),sms_max_day:Number(md.value)});alert('ذخیره شد');render();}catch(e){er.textContent=msg(e);}}},'ذخیره'),h('span',null,'وضعیت: '),state),er));
+  // 1.29: message features that need the server (mentions, folders and the archive work on the devices and need no switch)
+  var F=A.feats||{saved:true,sched:true},fsv=h('input',{type:'checkbox',checked:F.saved}),fsc=h('input',{type:'checkbox',checked:F.sched}),fe=h('span');
+  box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'امکانات پیام'),
+    h('div',{class:'row'},h('label',null,fsv,' پیام‌های ذخیره‌شده'),h('span',{class:'mut'},'(گفتگوی هر کاربر با خودش؛ از پاک شدن خودکار ۹۰ روزه معاف است و در سهمیهٔ فضای همان کاربر حساب می‌شود)')),
+    h('div',{class:'row'},h('label',null,fsc,' ارسال زمان‌دار'),h('span',{class:'mut'},'(پیام رمزشده تا زمان تعیین‌شده روی سرور می‌ماند؛ حداکثر ۳۰ روز جلوتر و ۱۰۰ پیام در صف هر کاربر)')),
+    h('div',{class:'row'},h('button',{class:'grn',onclick:async function(){fe.textContent='';
+      try{await api('POST','/auth',{feats:{saved:fsv.checked,sched:fsc.checked}});fe.textContent='ذخیره شد';}catch(e){fe.textContent=msg(e);}}},'ذخیره'),fe)));
   var du=h('input',{value:A.diag_users,placeholder:'mostafa',style:'direction:ltr;min-width:260px'}),de=h('span');
   box.appendChild(h('div',{class:'card',style:'max-width:760px'},h('h3',null,'عیب‌یابی تماس (آزمایشی)'),
     h('div',{class:'mut',style:'margin-bottom:10px;white-space:normal'},'این کاربران در تماس صوتی و تصویری پینگ (تأخیر رفت‌وبرگشت)، لرزش، بستهٔ گم‌شده و نوع اتصال را کنار صفحه می‌بینند و با دکمهٔ «مسیر» هاب‌های بین راه را (traceroute از سرور تا هر دو طرف). برای خاموش کردن، فهرست را خالی کنید و ذخیره بزنید.'),
