@@ -16,8 +16,7 @@
     <!-- 1.9: Bluetooth headsets in calls -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-    <!-- 1.9: in-app update from the server's APK -->
-    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- 1.9 in-app update permission: only in the direct build (src/direct/AndroidManifest.xml) -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- 1.13: vibrate on incoming calls -->
     <uses-permission android:name="android.permission.VIBRATE" />

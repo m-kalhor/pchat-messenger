@@ -65,12 +65,12 @@ jobs:
           echo "SEPAN_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
       - name: Build
         run: |
-          ./gradlew assembleRelease --stacktrace -Ppchat.serverHost="$C_HOST" -Ppchat.serverPort="$C_PORT" -Ppchat.adminPort="$C_APORT" \
+          ./gradlew assembleDirectRelease :admin:assembleRelease --stacktrace -Ppchat.serverHost="$C_HOST" -Ppchat.serverPort="$C_PORT" -Ppchat.adminPort="$C_APORT" \
             -Ppchat.appName="$C_NAME" -Ppchat.appId="$C_ID" ${C_ICON:+-Ppchat.iconPng="$C_ICON"}
           BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
           mkdir -p ../out
           for M in app admin; do
-            APK=$(ls $M/build/outputs/apk/release/*.apk | head -1)
+            APK=$(ls $M/build/outputs/apk/direct/release/*.apk $M/build/outputs/apk/release/*.apk 2>/dev/null | head -1)
             "$BT/apksigner" verify "$APK"
             "$BT/aapt" dump badging "$APK" | grep -E "^package:|^application-label:"
             cp "$APK" "../out/$C_ID-$M.apk"

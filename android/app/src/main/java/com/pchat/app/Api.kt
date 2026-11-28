@@ -195,7 +195,8 @@ object Api {
     }
 
     /** 1.9: the version of the APK on the server: {code, name, size} or {code: null} */
-    fun appVersion(): JSONObject = JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/version").get().build()))
+    fun appVersion(store: String? = null): JSONObject =
+        JSONObject(exec(Request.Builder().url(Config.BASE + "/api/app/version" + (if (store != null) "?store=$store" else "")).get().build()))
 
     /** 1.22.1: the short «what's new / fixed» lines of a version name. */
     fun appNotes(v: String): List<String> {

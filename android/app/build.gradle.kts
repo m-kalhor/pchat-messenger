@@ -60,6 +60,22 @@ android {
 
     sourceSets["main"].res.srcDir(iconRes)
 
+    // 1.28.1: «direct» = the APK from our own site and the customers' APKs, which update themselves from the
+    // server; «bazaar» = the build published on Café Bazaar, which may only be updated through Bazaar, so it
+    // has no install permission and no APK download (src/bazaar), and its update offer opens Bazaar.
+    flavorDimensions += "store"
+    productFlavors {
+        create("direct") {
+            dimension = "store"
+            isDefault = true
+            buildConfigField("String", "STORE", "\"direct\"")
+        }
+        create("bazaar") {
+            dimension = "store"
+            buildConfigField("String", "STORE", "\"bazaar\"")
+        }
+    }
+
     signingConfigs {
         if (sepanKeystore != null) create("sepan") {
             storeFile = sepanKeystore

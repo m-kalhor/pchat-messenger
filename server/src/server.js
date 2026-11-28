@@ -15,6 +15,7 @@ const auth = require('./auth');
 const diag = require('./diag');
 const callcfg = require('./callcfg');
 const { apkVersion } = require('./apkinfo');
+const bazaar = require('./bazaar');
 const stickers = require('./stickers');
 const usage = require('./usage');
 const gcall = require('./gcall');
@@ -697,6 +698,11 @@ async function route(req, res) {
   if (p === '/download/sepan.apk' && (req.method === 'GET' || req.method === 'HEAD')) return serveApk(req, res);
   // 1.9: the version of the APK the admin uploaded, so the app can offer an update (never forced)
   if (p === '/api/app/version' && req.method === 'GET') {
+    // 1.28.1: the Bazaar build only updates through Café Bazaar: the version Bazaar publishes, and its page
+    if (url.searchParams.get('store') === 'bazaar') {
+      const name = await bazaar.version();
+      return send(res, 200, name ? { store: 'bazaar', name, url: bazaar.PAGE, notes: releaseNotes(name) } : { store: 'bazaar', name: null });
+    }
     const info = apkInfo();
     const v = info ? apkVersion(APK) : null;
     return send(res, 200, v ? { code: v.code, name: v.name, size: info.size, notes: releaseNotes(v.name) } : { code: null });
