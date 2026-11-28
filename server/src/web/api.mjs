@@ -53,7 +53,13 @@ export const deleteAvatar = () => call('DELETE', '/api/avatar');
 export const pin = (target, messageId) => call('POST', '/api/pin', { target, messageId });
 /** 1.22.1: the short «what's new / fixed» lines of a version. */
 export const appNotes = (v) => call('GET', '/api/app/notes?v=' + encodeURIComponent(v));
-export const send = (target, payload, fileId, fx) => call('POST', '/api/send', fileId ? { target, kind: 'msg', payload, fileId } : { target, kind: 'msg', payload, ...(fx ? { fx: 1 } : {}) });
+export const send = (target, payload, fileId, fx, silent) => call('POST', '/api/send', fileId ? { target, kind: 'msg', payload, fileId, ...(silent ? { silent: 1 } : {}) } : { target, kind: 'msg', payload, ...(fx ? { fx: 1 } : {}), ...(silent ? { silent: 1 } : {}) });
+// 1.29: scheduled messages wait on the server; synced chat-list settings (sealed by the app)
+export const schedule = (target, payload, at, silent) => call('POST', '/api/send', { target, kind: 'msg', payload, at, ...(silent ? { silent: 1 } : {}) });
+export const scheduled = () => call('GET', '/api/scheduled');
+export const scheduledAction = (what, body) => call('POST', '/api/scheduled/' + what, body);
+export const prefsGet = (k) => call('GET', '/api/prefs?k=' + encodeURIComponent(k));
+export const prefsSet = (k, v, dev) => call('POST', '/api/prefs', { k, v, dev });
 export const signal = (target, kind, payload) => call('POST', '/api/send', { target, kind, payload }).then((r) => !!r.delivered);
 export const turn = () => call('GET', '/api/turn');
 // 1.19: group calls

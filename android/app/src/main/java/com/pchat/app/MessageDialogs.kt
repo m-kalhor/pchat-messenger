@@ -43,7 +43,8 @@ import kotlinx.coroutines.launch
 fun ForwardDialog(count: Int, onClose: () -> Unit, onSend: (targets: List<String>, hideSender: Boolean) -> Unit) {
     val targets = remember {
         val canDm = Engine.users.value.filter { it.dm }.map { it.username }.toSet()
-        Engine.summaries().map { it.convo }.filter { Engine.isGroup(it) || it in canDm }
+        // 1.29: «پیام‌های ذخیره‌شده» first
+        Engine.summaries().map { it.convo }.filter { Engine.isGroup(it) || it in canDm || Engine.isSaved(it) }.sortedByDescending { Engine.isSaved(it) }
     }
     val picked = remember { mutableStateListOf<String>() }
     var hide by remember { mutableStateOf(false) }

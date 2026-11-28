@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -31,6 +32,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.layout.widthIn
@@ -98,6 +100,13 @@ fun Avatar(name: String, online: Boolean, size: Int = 48) {
     val ver = if (group) (g?.avatarVer ?: 0) else (users.firstOrNull { it.username == name }?.avatarVer ?: 0)
     val bmp by produceState<ImageBitmap?>(null, name, ver) {
         value = if (ver <= 0) null else if (g != null) Engine.groupAvatarBitmap(g.id, ver) else Engine.avatarBitmap(name, ver)
+    }
+    // 1.29: «پیام‌های ذخیره‌شده» shows a bookmark
+    if (Engine.isSaved(name)) {
+        Box(Modifier.size(size.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary), contentAlignment = Alignment.Center) {
+            Icon(SIcons.bookmark, null, tint = Color.White, modifier = Modifier.size((size * 0.48).dp))
+        }
+        return
     }
     Box(Modifier.size(size.dp)) {
         Box(
@@ -362,10 +371,27 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
     LaunchedEffect(typing, gtyping) { now = System.currentTimeMillis(); delay(4600); now = System.currentTimeMillis() }
     val pinned = remember(chatTick) { Prefs.pinnedChats() }
-    val rows = remember(tick, users, pinned) {
+    val allRows = remember(tick, users, pinned) {
         val all = Engine.summaries()
         pinned.mapNotNull { p -> all.firstOrNull { it.convo == p } } + all.filter { it.convo !in pinned }
     }
+    // 1.29: folders (tabs) and the archive
+    val folders by ChatList.folders.collectAsState()
+    val archived by ChatList.archived.collectAsState()
+    val hideTabs by ChatList.hideTabs.collectAsState()
+    val feats by Engine.feats.collectAsState()
+    var tabKey by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf("all") }
+    var showArchive by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
+    androidx.activity.compose.BackHandler(enabled = showArchive) { showArchive = false }
+    var foldersDlg by remember { mutableStateOf(false) }
+    var folderFor by remember { mutableStateOf<String?>(null) }
+    if (foldersDlg) FoldersDialog(onClose = { foldersDlg = false })
+    folderFor?.let { c -> FolderPickDialog(c, onClose = { folderFor = null }) }
+    val chatTabs = remember(folders) { ChatList.tabs() }
+    val curTab = chatTabs.firstOrNull { it.key == tabKey } ?: ChatTab.All
+    val active = remember(allRows, archived) { allRows.filter { it.convo !in archived } }
+    val archRows = remember(allRows, archived) { allRows.filter { it.convo in archived } }
+    val rows = if (showArchive) archRows else if (hideTabs) active else active.filter { ChatList.inTab(curTab, it) }
     var rowMenu by remember { mutableStateOf<String?>(null) }
     var clearFor by remember { mutableStateOf<String?>(null) }
     clearFor?.let { c -> ClearChatDialog(c, onClose = { clearFor = null }) { clearFor = null } }
@@ -409,7 +435,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
     // 1.28: the «new chat» sheet behind the round ✏ button (the same choices the ⋮ menu had)
     var newSheet by remember { mutableStateOf(false) }
     val haptic = LocalHapticFeedback.current
-    val unreadChats = remember(rows, chatTick) { rows.count { it.unread > 0 && !Prefs.isMuted(it.convo) } }
+    val unreadChats = remember(active, chatTick) { active.count { it.unread > 0 && !Prefs.isMuted(it.convo) } }
     val listState = rememberLazyListState()
 
     SystemBars.HeaderShown()
@@ -418,22 +444,36 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
           Column {
             TopAppBar(
                 colors = Look.barColors(),
+                navigationIcon = {
+                    if (showArchive) IconButton(onClick = { showArchive = false }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت")
+                    }
+                },
                 title = {
                     Column {
-                        Text("${BuildConfig.APP_NAME}", fontWeight = FontWeight.Bold)
-                        Text(if (connected) "متصل" else "در حال اتصال…", fontSize = 12.sp, color = Look.barSub)
+                        Text(if (showArchive) "بایگانی" else "${BuildConfig.APP_NAME}", fontWeight = FontWeight.Bold)
+                        Text(if (!connected) "در حال اتصال…" else if (showArchive) "${U.fa(archRows.size)} گفتگو" else "متصل", fontSize = 12.sp, color = Look.barSub)
                     }
                 },
                 actions = {
                     IconButton(onClick = { menu = true }) { Icon(SIcons.more, contentDescription = "منو") }
                     DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         DropdownMenuItem(leadingIcon = { Icon(SIcons.inbox, null) }, text = { Text("درخواست‌ها" + if (incoming.isNotEmpty()) " (${U.fa(incoming.size)})" else "") }, onClick = { menu = false; showRequests = true })
+                        // 1.29
+                        if (feats.saved) DropdownMenuItem(leadingIcon = { Icon(SIcons.bookmark, null) }, text = { Text(Engine.SAVED_TITLE) }, onClick = { menu = false; onOpen(Engine.me) })
+                        DropdownMenuItem(leadingIcon = { Icon(SIcons.folder, null) }, text = { Text("پوشه‌های گفتگو") }, onClick = { menu = false; foldersDlg = true })
+                        DropdownMenuItem(leadingIcon = { Icon(SIcons.archive, null) }, text = { Text("بایگانی" + if (archRows.isNotEmpty()) " (${U.fa(archRows.size)})" else "") }, onClick = { menu = false; showArchive = true })
                         DropdownMenuItem(leadingIcon = { Icon(SIcons.logout, null) }, text = { Text("خروج از حساب") }, onClick = { menu = false; onLogout() })
                     }
                 }
             )
             // 1.28: a thin moving line while connecting, readable without reading
             if (!connected) ConnectingLine()
+            // 1.29: «همه / خصوصی / گروه‌ها / کانال‌ها / نخوانده» and my own folders
+            if (tab == 0 && !showArchive && !hideTabs) ChatTabsRow(chatTabs, curTab, active, chatTick, onPick = {
+                if (it.key == tabKey) scope.launch { listState.animateScrollToItem(0) }
+                tabKey = it.key
+            }, onEdit = { foldersDlg = true })
           }
         },
         floatingActionButton = {
@@ -460,9 +500,32 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
       Column(Modifier.padding(pad).fillMaxSize()) {
         if (tab == 1) CallsTab(onOpen)
         // 1.28: grey placeholder rows on a fresh sign-in until the list arrives; a friendly empty screen when there is nothing yet
-        else if (rows.isEmpty() && !connected) SkeletonRows()
+        else if (allRows.isEmpty() && !connected) SkeletonRows()
         else LazyColumn(Modifier.fillMaxSize(), state = listState) {
-            if (incoming.isNotEmpty()) item(key = "requests") {
+            // 1.29: the archive as one row at the top of «همه»
+            if (!showArchive && (hideTabs || curTab == ChatTab.All) && archRows.isNotEmpty()) item(key = "archive") {
+                val unreadArch = archRows.count { it.unread > 0 }
+                Column {
+                    Row(Modifier.fillMaxWidth().clickable { showArchive = true }.padding(horizontal = 14.dp, vertical = 9.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.size(54.dp).clip(CircleShape).background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)), contentAlignment = Alignment.Center) {
+                            Icon(SIcons.archive, null, tint = Color.White, modifier = Modifier.size(26.dp))
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text("بایگانی", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                            Text(archRows.take(4).joinToString("، ") { Engine.titleOf(it.convo) }, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                        }
+                        if (unreadArch > 0) Box(
+                            Modifier.padding(start = 8.dp).height(22.dp).widthIn(min = 22.dp).clip(RoundedCornerShape(11.dp))
+                                .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)).padding(horizontal = 6.dp),
+                            contentAlignment = Alignment.Center
+                        ) { Text(U.fa(unreadArch), color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold) }
+                    }
+                    HorizontalDivider(Modifier.padding(start = 80.dp), color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                }
+            }
+            if (incoming.isNotEmpty() && !showArchive) item(key = "requests") {
                 Row(
                     Modifier.fillMaxWidth().clickable { showRequests = true }.background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
                         .padding(horizontal = 16.dp, vertical = 12.dp),
@@ -474,7 +537,12 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     Text("مشاهده", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
             }
-            if (rows.isEmpty()) item(key = "empty") {
+            if (rows.isEmpty() && allRows.isNotEmpty()) item(key = "empty_tab") {
+                Text(if (showArchive) "بایگانی خالی است" else if (curTab is ChatTab.Custom) "این پوشه هنوز گفتگویی ندارد. با نگه داشتن انگشت روی هر گفتگو آن را به پوشه بیفزایید." else "گفتگویی در این بخش نیست",
+                    textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.55f),
+                    modifier = Modifier.fillMaxWidth().padding(32.dp))
+            }
+            if (allRows.isEmpty()) item(key = "empty") {
                 EmptyState(
                     SIcons.chat, "هنوز گفتگویی ندارید",
                     "مخاطبان گوشی‌تان که ${BuildConfig.APP_NAME} دارند پایین همین صفحه می‌آیند. یا با دکمهٔ ✏ به کسی پیام بدهید.",
@@ -540,6 +608,10 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                                     Text(prev, maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 14.sp, color = dim, modifier = Modifier.weight(1f))
                                 }
                             }
+                            if (r.mentions > 0) Box(
+                                Modifier.padding(start = 8.dp).size(22.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary),
+                                contentAlignment = Alignment.Center
+                            ) { Icon(SIcons.at, "منشن", tint = Color.White, modifier = Modifier.size(15.dp)) }
                             if (isPinned && r.unread == 0) Icon(SIcons.pin, null, tint = dim.copy(alpha = 0.5f), modifier = Modifier.padding(start = 6.dp).size(16.dp))
                             if (r.unread > 0) {
                                 Box(
@@ -559,6 +631,12 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                         rowMenu = null
                         if (!Prefs.togglePinned(r.convo)) Toast.makeText(ctx, "حداکثر ${Prefs.MAX_PINNED} گفتگو را می‌شود سنجاق کرد", Toast.LENGTH_SHORT).show()
                     })
+                    // 1.29: archive and folders
+                    val inArch = r.convo in archived
+                    DropdownMenuItem(leadingIcon = { Icon(if (inArch) SIcons.unarchive else SIcons.archive, null) }, text = { Text(if (inArch) "خارج کردن از بایگانی" else "بایگانی") }, onClick = {
+                        rowMenu = null; ChatList.setArchived(r.convo, !inArch)
+                    })
+                    DropdownMenuItem(leadingIcon = { Icon(SIcons.folder, null) }, text = { Text("افزودن به پوشه") }, onClick = { rowMenu = null; folderFor = r.convo })
                     // 1.27
                     DropdownMenuItem(leadingIcon = { Icon(Icons.Default.Delete, null, tint = MaterialTheme.colorScheme.error) }, text = { Text("حذف گفتگو", color = MaterialTheme.colorScheme.error) }, onClick = { rowMenu = null; clearFor = r.convo })
                 }
@@ -567,15 +645,15 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
               }
             }
             // 1.17: «مخاطبان گوشی در سپن»: members in the phone's contacts who have no chat here yet
-            val inList = rows.map { it.convo }.toSet()
+            val inList = allRows.map { it.convo }.toSet()
             val extra = phoneMatches.filter { it.username !in inList }
-            if (extra.isNotEmpty() || !contactsGranted) item(key = "phone_contacts_header") {
+            if (!showArchive && (extra.isNotEmpty() || !contactsGranted)) item(key = "phone_contacts_header") {
                 Text(
                     "مخاطبان گوشی در ${BuildConfig.APP_NAME}", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f)).padding(horizontal = 16.dp, vertical = 8.dp)
                 )
             }
-            if (!contactsGranted) item(key = "phone_contacts_ask") {
+            if (!contactsGranted && !showArchive) item(key = "phone_contacts_ask") {
                 Row(
                     Modifier.fillMaxWidth().clickable { contactsPerm.launch(Manifest.permission.READ_CONTACTS) }.padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -586,7 +664,7 @@ fun ChatListScreen(onOpen: (String) -> Unit, onSettings: () -> Unit, onLogout: (
                     Text("اجازه", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
                 }
             }
-            items(extra, key = { "pc:" + it.username }) { f ->
+            items(if (showArchive) emptyList() else extra, key = { "pc:" + it.username }) { f ->
                 Column {
                     Row(
                         Modifier.fillMaxWidth().clickable(enabled = !opening) { openMember(f.username) }.padding(horizontal = 14.dp, vertical = 9.dp),
@@ -682,4 +760,38 @@ fun KeysDialog(contacts: List<String>, onClose: () -> Unit) {
             }
         }
     )
+}
+
+/** 1.29: the scrolling strip of chat tabs with each tab's unread count. Long press = edit folders. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ChatTabsRow(tabs: List<ChatTab>, cur: ChatTab, rows: List<ConvoSummary>, chatTick: Int, onPick: (ChatTab) -> Unit, onEdit: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically
+    ) {
+        tabs.forEach { t ->
+            val sel = t.key == cur.key
+            val n = remember(rows, chatTick, t.key) { rows.count { ChatList.inTab(t, it) && it.unread > 0 && !Prefs.isMuted(it.convo) } }
+            Row(
+                Modifier.clip(RoundedCornerShape(16.dp))
+                    .background(if (sel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f))
+                    .combinedClickable(onClick = { onPick(t) }, onLongClick = onEdit)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(ChatList.tabName(t), fontSize = 14.sp, fontWeight = if (sel) FontWeight.Bold else FontWeight.Normal,
+                    color = if (sel) Color.White else MaterialTheme.colorScheme.onSurface, maxLines = 1)
+                if (n > 0 && t != ChatTab.Unread) {
+                    Spacer(Modifier.width(5.dp))
+                    Box(Modifier.clip(RoundedCornerShape(9.dp)).background(if (sel) Color.White.copy(alpha = 0.3f) else MaterialTheme.colorScheme.primary).padding(horizontal = 5.dp)) {
+                        Text(U.fa(n), fontSize = 11.sp, color = Color.White, fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+        }
+        Box(Modifier.clip(CircleShape).clickable { onEdit() }.padding(6.dp)) {
+            Icon(SIcons.edit, "ویرایش پوشه‌ها", tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f), modifier = Modifier.size(18.dp))
+        }
+    }
 }
